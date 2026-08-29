@@ -1,0 +1,358 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700;800;900&family=Playfair+Display:ital,wght@1,400;1,700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Outfit", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Playfair Display", serif;
+  --color-primary: #f43f5e;
+  --color-secondary: #0f172a;
+  --color-accent: #0284c7;
+  --color-background: var(--bg-main, #f8fafc);
+  --color-sidebar: var(--bg-sidebar, #050505);
+  --color-sidebar-foreground: var(--fg-sidebar, #ffffff);
+  --color-card: var(--bg-card, #ffffff);
+  --color-card-foreground: var(--fg-card, #050505);
+  --color-border: var(--border-color, #e5e7eb);
+}
+
+[data-theme='glass-dark'] {
+  --bg-main: #050510;
+  --bg-sidebar: rgba(10, 10, 25, 0.8);
+  --fg-sidebar: #ffffff;
+  --bg-card: rgba(255, 255, 255, 0.05);
+  --fg-card: #f8fafc;
+  --border-color: rgba(255, 255, 255, 0.1);
+  --primary: #8b5cf6; /* Vibrant violet/purple for dark theme */
+  --ink: #f8fafc;
+  --line: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme='glass-dark'] .bg-white,
+[data-theme='glass-dark'] .bg-white\/80,
+[data-theme='glass-dark'] .bg-white\/60 {
+  background-color: rgba(255, 255, 255, 0.05) !important;
+  backdrop-filter: blur(24px) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: #f8fafc !important;
+}
+
+[data-theme='glass-dark'] .text-sidebar {
+  color: #f8fafc !important;
+}
+
+[data-theme='glass-dark'] .text-neutral-500,
+[data-theme='glass-dark'] .text-neutral-400 {
+  color: rgba(255, 255, 255, 0.5) !important;
+}
+
+[data-theme='glass-dark'] .border-neutral-100,
+[data-theme='glass-dark'] .border-neutral-200,
+[data-theme='glass-dark'] .border-white {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+[data-theme='glass-dark'] .bg-neutral-50,
+[data-theme='glass-dark'] .bg-neutral-100 {
+  background-color: rgba(255, 255, 255, 0.03) !important;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-card-foreground font-sans selection:bg-primary/20 selection:text-primary transition-colors duration-500;
+  }
+}
+
+@layer components {
+  .dashboard-card {
+    @apply bg-card rounded-[2.5rem] p-8 shadow-xl shadow-neutral-200/50 border border-border transition-all hover:shadow-2xl hover:-translate-y-1;
+  }
+
+  [data-theme='glass-dark'] .dashboard-card {
+    @apply backdrop-blur-2xl bg-white/5 border-white/10 shadow-black/40 shadow-2xl;
+  }
+  
+  .glass-card {
+    @apply bg-white/60 backdrop-blur-xl border border-white/40 shadow-xl;
+  }
+
+  [data-theme='glass-dark'] .glass-card {
+    @apply bg-white/5 backdrop-blur-3xl border-white/10 shadow-2xl;
+  }
+
+  .btn-primary {
+    @apply bg-primary text-white px-6 py-3 rounded-2xl font-black uppercase tracking-widest shadow-lg shadow-primary/20 hover:opacity-90 transition-all hover:-translate-y-0.5 active:translate-y-0;
+  }
+  
+  .glass-theme-bg {
+    @apply fixed inset-0 -z-10 overflow-hidden pointer-events-none opacity-0 transition-opacity duration-1000;
+  }
+
+  [data-theme='glass-dark'] .glass-theme-bg {
+    @apply opacity-100;
+    background: #050510;
+  }
+
+  /* Compact Mode Styles for Maximized Workspace */
+  [data-sidebar-collapsed="true"] .dashboard-card {
+    @apply p-5 rounded-[1.5rem];
+  }
+
+  [data-sidebar-collapsed="true"] .space-y-10 {
+    @apply space-y-6;
+  }
+
+  [data-sidebar-collapsed="true"] .space-y-6 {
+    @apply space-y-4;
+  }
+
+  [data-sidebar-collapsed="true"] .gap-6 {
+    @apply gap-4;
+  }
+
+  [data-sidebar-collapsed="true"] .p-8 {
+    @apply p-5;
+  }
+
+  [data-sidebar-collapsed="true"] h1.text-3xl {
+    @apply text-2xl;
+  }
+
+  [data-sidebar-collapsed="true"] h3.text-xl {
+    @apply text-lg;
+  }
+
+  [data-sidebar-collapsed="true"] .glass-theme-bg::before,
+  [data-sidebar-collapsed="true"] .glass-theme-bg::after {
+    @apply opacity-10 blur-[80px];
+  }
+
+  [data-theme='glass-dark'] .glass-theme-bg::before,
+  [data-theme='glass-dark'] .glass-theme-bg::after {
+    content: '';
+    @apply absolute w-[60vw] h-[60vw] rounded-full opacity-20 blur-[120px];
+    animation: float-bg 30s infinite alternate ease-in-out;
+  }
+
+  [data-theme='glass-dark'] .glass-theme-bg::before {
+    background: radial-gradient(circle, #8b5cf6 0%, transparent 70%);
+    top: -10%;
+    left: -10%;
+  }
+
+  [data-theme='glass-dark'] .glass-theme-bg::after {
+    background: radial-gradient(circle, #f43f5e 0%, transparent 70%);
+    bottom: -10%;
+    right: -10%;
+    animation-delay: -15s;
+  }
+
+  @keyframes float-bg {
+    0% { transform: translate(0, 0) scale(1) rotate(0deg); }
+    100% { transform: translate(15%, 10%) scale(1.1) rotate(15deg); }
+  }
+
+  @media print {
+    /* Hide everything on the body */
+    body {
+      background: white !important;
+      visibility: hidden !important;
+    }
+    
+    /* Make the specific area visible */
+    #print-area, 
+    #print-area * {
+      visibility: visible !important;
+    }
+
+    #print-area {
+      position: absolute !important;
+      left: 0 !important;
+      top: 0 !important;
+      width: 100% !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      box-shadow: none !important;
+      border: none !important;
+    }
+
+    /* Hide specific UI elements within the print area */
+    .no-print,
+    .no-print * {
+      display: none !important;
+      visibility: hidden !important;
+    }
+
+    /* Reset background colors for printing */
+    .bg-white {
+      background: white !important;
+    }
+    
+    .bg-neutral-50, .bg-emerald-50 {
+      background: #f9fafb !important;
+      -webkit-print-color-adjust: exact;
+    }
+
+    /* Ensure modals don't have backdrops in print */
+    .fixed.inset-0.z-50 {
+      position: absolute !important;
+      display: block !important;
+    }
+    
+    .bg-sidebar\/60 {
+      display: none !important;
+    }
+  }
+}
+
+/* --- UNIVERSAL POPUP AUTO-RESIZING & FULL DISPLAY OPTIMIZER --- */
+/*
+  This module ensures every popup screen/modal dynamically adjusts to the actual viewport scale:
+  - Small/mobile viewports: Large popup pages stretch to fill 100vw and 100vh workspace, ensuring flawless visibility, high-fidelity interaction, and scroll safety without outer margin clipping. Smaller alerts/decisions stay centered, taking optimal compact widths (94vw).
+  - Medium viewports: Modals scale naturally to standard centered panels up to 92vh height.
+  - Widescreen/larger viewports: Large table-dense or multi-tab modals automatically scale up (up to 1440px wide) to utilize the generous horizontal real estate, avoiding squished layouts.
+*/
+
+@media (max-width: 768px) {
+  /* Center micro-alerts / compact confirmations beautifully on mobile screens */
+  .fixed.inset-0.flex > div.max-w-xs,
+  .fixed.inset-0.flex > div.max-w-sm,
+  .fixed.inset-0.flex > div.max-w-md,
+  .fixed.inset-0.flex > div.max-w-lg,
+  .fixed.inset-0[class*="flex"] > div.max-w-xs,
+  .fixed.inset-0[class*="flex"] > div.max-w-sm,
+  .fixed.inset-0[class*="flex"] > div.max-w-md,
+  .fixed.inset-0[class*="flex"] > div.max-w-lg {
+    width: 94vw !important;
+    max-width: 94vw !important;
+    height: auto !important;
+    max-height: 88vh !important;
+    margin: auto !important;
+    border-radius: 20px !important;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.45) !important;
+  }
+
+  /* Expand wide/form-heavy/grid-dense modal workspace templates to true full-screen dimensions */
+  .fixed.inset-0.flex > div.max-w-xl,
+  .fixed.inset-0.flex > div.max-w-2xl,
+  .fixed.inset-0.flex > div.max-w-3xl,
+  .fixed.inset-0.flex > div.max-w-4xl,
+  .fixed.inset-0.flex > div.max-w-5xl,
+  .fixed.inset-0.flex > div.max-w-6xl,
+  .fixed.inset-0.flex > div.max-w-7xl,
+  .fixed.inset-0[class*="flex"] > div.max-w-xl,
+  .fixed.inset-0[class*="flex"] > div.max-w-2xl,
+  .fixed.inset-0[class*="flex"] > div.max-w-3xl,
+  .fixed.inset-0[class*="flex"] > div.max-w-4xl,
+  .fixed.inset-0[class*="flex"] > div.max-w-5xl,
+  .fixed.inset-0[class*="flex"] > div.max-w-6xl,
+  .fixed.inset-0[class*="flex"] > div.max-w-7xl,
+  .fixed.inset-0[class*="flex"] > div[class*="w-["],
+  .fixed.inset-0[class*="flex"] > div[class*="max-w-["] {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: 100vh !important;
+    max-height: 100vh !important;
+    margin: 0 !important;
+    border-radius: 0px !important;
+    border: none !important;
+    display: flex !important;
+    flex-direction: column !important;
+    box-shadow: none !important;
+  }
+
+  /* Make sure internal scroll sections have proper heights & scrolling inside mobile fullscreen popups */
+  .fixed.inset-0.flex > div.max-w-xl form,
+  .fixed.inset-0.flex > div.max-w-2xl form,
+  .fixed.inset-0.flex > div.max-w-3xl form,
+  .fixed.inset-0.flex > div.max-w-4xl form,
+  .fixed.inset-0.flex > div.max-w-5xl form,
+  .fixed.inset-0.flex > div.max-w-6xl form,
+  .fixed.inset-0.flex > div.max-w-7xl form,
+  .fixed.inset-0[class*="flex"] > div.max-w-xl form,
+  .fixed.inset-0[class*="flex"] > div.max-w-2xl form,
+  .fixed.inset-0[class*="flex"] > div.max-w-3xl form,
+  .fixed.inset-0[class*="flex"] > div.max-w-4xl form,
+  .fixed.inset-0[class*="flex"] > div.max-w-5xl form,
+  .fixed.inset-0[class*="flex"] > div.max-w-6xl form,
+  .fixed.inset-0[class*="flex"] > div.max-w-7xl form,
+  /* Handle standard overflow blocks inside full-screen mobile popups */
+  .fixed.inset-0.flex > div.max-w-xl [class*="max-h-"],
+  .fixed.inset-0.flex > div.max-w-2xl [class*="max-h-"],
+  .fixed.inset-0.flex > div.max-w-3xl [class*="max-h-"],
+  .fixed.inset-0.flex > div.max-w-4xl [class*="max-h-"],
+  .fixed.inset-0.flex > div.max-w-5xl [class*="max-h-"],
+  .fixed.inset-0.flex > div.max-w-6xl [class*="max-h-"],
+  .fixed.inset-0.flex > div.max-w-7xl [class*="max-h-"],
+  .fixed.inset-0[class*="flex"] > div.max-w-xl [class*="max-h-"],
+  .fixed.inset-0[class*="flex"] > div.max-w-2xl [class*="max-h-"],
+  .fixed.inset-0[class*="flex"] > div.max-w-3xl [class*="max-h-"],
+  .fixed.inset-0[class*="flex"] > div.max-w-4xl [class*="max-h-"],
+  .fixed.inset-0[class*="flex"] > div.max-w-5xl [class*="max-h-"],
+  .fixed.inset-0[class*="flex"] > div.max-w-6xl [class*="max-h-"],
+  .fixed.inset-0[class*="flex"] > div.max-w-7xl [class*="max-h-"] {
+    max-height: calc(100vh - 80px) !important;
+    overflow-y: auto !important;
+    flex-grow: 1 !important;
+    padding-bottom: 2rem !important;
+  }
+
+  /* Make sure buttons/footers stick nicely without overflow */
+  .fixed.inset-0.flex > div.max-w-xl [class*="bg-neutral-50"],
+  .fixed.inset-0.flex > div.max-w-2xl [class*="bg-neutral-50"],
+  .fixed.inset-0.flex > div.max-w-3xl [class*="bg-neutral-50"],
+  .fixed.inset-0.flex > div.max-w-4xl [class*="bg-neutral-50"],
+  .fixed.inset-0.flex > div.max-w-5xl [class*="bg-neutral-50"],
+  .fixed.inset-0.flex > div.max-w-6xl [class*="bg-neutral-50"],
+  .fixed.inset-0.flex > div.max-w-7xl [class*="bg-neutral-50"] {
+    margin-top: auto !important;
+    padding-bottom: env(safe-area-inset-bottom, 1rem) !important;
+  }
+}
+
+@media (min-width: 1280px) {
+  /* Scale up large workspace popups on wider screens to make full use of the generous landscape */
+  .fixed.inset-0.flex > div.max-w-4xl,
+  .fixed.inset-0[class*="flex"] > div.max-w-4xl {
+    max-width: 85vw !important;
+    width: 1240px !important;
+    max-height: 94vh !important;
+  }
+
+  .fixed.inset-0.flex > div.max-w-2xl,
+  .fixed.inset-0[class*="flex"] > div.max-w-2xl {
+    max-width: 70vw !important;
+    width: 960px !important;
+    max-height: 94vh !important;
+  }
+
+  .fixed.inset-0.flex > div.max-w-3xl,
+  .fixed.inset-0[class*="flex"] > div.max-w-3xl {
+    max-width: 75vw !important;
+    width: 1080px !important;
+    max-height: 94vh !important;
+  }
+}
+
+@media (min-width: 1536px) {
+  /* Expand further on extreme widescreen/2K+ presentations */
+  .fixed.inset-0.flex > div.max-w-4xl,
+  .fixed.inset-0[class*="flex"] > div.max-w-4xl {
+    max-width: 80vw !important;
+    width: 1440px !important;
+    max-height: 92vh !important;
+  }
+
+  .fixed.inset-0.flex > div.max-w-2xl,
+  .fixed.inset-0[class*="flex"] > div.max-w-2xl {
+    max-width: 65vw !important;
+    width: 1120px !important;
+    max-height: 92vh !important;
+  }
+
+  .fixed.inset-0.flex > div.max-w-3xl,
+  .fixed.inset-0[class*="flex"] > div.max-w-3xl {
+    max-width: 70vw !important;
+    width: 1280px !important;
+    max-height: 92vh !important;
+  }
+}

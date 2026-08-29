@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>St. Antony's School ERP</title>
+    
+    <!-- PWA Settings and iOS Safari Support -->
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#4f46e5" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="St. Antony's ERP" />
+    <link rel="apple-touch-icon" href="/school_logo.svg" />
+    <link rel="icon" type="image/svg+xml" href="/school_logo.svg" />
+
+    <!-- Preconnect to Font Servers for optimal loading speed -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <script>
+      // Block benign ResizeObserver error loop notifications from triggering iframe and console alerts
+      window.addEventListener('error', function(e) {
+        if (e.message && (e.message.indexOf('ResizeObserver') !== -1 || e.message.indexOf('loop limit exceeded') !== -1)) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
+      }, true);
+      window.addEventListener('unhandledrejection', function(e) {
+        var msg = (e.reason && e.reason.message) || '';
+        if (msg.indexOf('ResizeObserver') !== -1 || msg.indexOf('loop limit exceeded') !== -1) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
+      }, true);
+
+      // Polyfill/shim writable fetch property for sandbox environments where window.fetch has only a getter
+      (function() {
+        try {
+          var originalFetch = typeof window !== 'undefined' ? window.fetch : null;
+          var customFetch = originalFetch;
+
+          function makeWritableFetch(target) {
+            if (!target) return;
+            try {
+              Object.defineProperty(target, 'fetch', {
+                get: function() {
+                  return customFetch || originalFetch || (typeof window !== 'undefined' ? window.fetch : undefined);
+                },
+                set: function(fn) {
+                  customFetch = fn;
+                },
+                configurable: true,
+                enumerable: true
+              });
+            } catch (e) {}
+          }
+
+          makeWritableFetch(window);
+          if (typeof Window !== 'undefined' && Window.prototype) {
+            makeWritableFetch(Window.prototype);
+          }
+          if (typeof self !== 'undefined' && self !== window) {
+            makeWritableFetch(self);
+          }
+          if (typeof globalThis !== 'undefined') {
+            makeWritableFetch(globalThis);
+          }
+        } catch (fetchErr) {}
+      })();
+
+      // Install safe fallback proxy for window.localStorage and window.sessionStorage in sandboxed context where third-party state access is blocked
+      (function() {
+        try {
+          function makeMemoryStorage() {
+            var store = {};
+            return {
+              getItem: function(key) { return store[key] !== undefined ? store[key] : null; },
+              setItem: function(key, val) { store[key] = String(val); },
+              removeItem: function(key) { delete store[key]; },
+              clear: function() { store = {}; },
+              key: function(i) { return Object.keys(store)[i] || null; },
+              get length() { return Object.keys(store).length; }
+            };
+          }
+
+          var testLocal;
+          try {
+            testLocal = window.localStorage;
+            if (testLocal) {
+              testLocal.setItem('__storage_test__', '1');
+              testLocal.removeItem('__storage_test__');
+            } else {
+              throw new Error("No localStorage");
+            }
+          } catch (e) {
+            var mockLocal = makeMemoryStorage();
+            try {
+              Object.defineProperty(window, 'localStorage', {
+                get: function() { return mockLocal; },
+                configurable: true,
+                enumerable: true
+              });
+            } catch (err) {
+              try {
+                Object.defineProperty(Window.prototype, 'localStorage', {
+                  get: function() { return mockLocal; },
+                  configurable: true,
+                  enumerable: true
+                });
+              } catch (err2) {}
+            }
+          }
+
+          var testSession;
+          try {
+            testSession = window.sessionStorage;
+            if (testSession) {
+              testSession.setItem('__session_test__', '1');
+              testSession.removeItem('__session_test__');
+            } else {
+              throw new Error("No sessionStorage");
+            }
+          } catch (e) {
+            var mockSession = makeMemoryStorage();
+            try {
+              Object.defineProperty(window, 'sessionStorage', {
+                get: function() { return mockSession; },
+                configurable: true,
+                enumerable: true
+              });
+            } catch (err) {
+              try {
+                Object.defineProperty(Window.prototype, 'sessionStorage', {
+                  get: function() { return mockSession; },
+                  configurable: true,
+                  enumerable: true
+                });
+              } catch (err2) {}
+            }
+          }
+        } catch (globalStorageErr) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+    <script async defer src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  </body>
+</html>
+

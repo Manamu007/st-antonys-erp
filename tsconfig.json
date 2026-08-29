@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
+    "module": "ESNext",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "allowJs": true,
+    "jsx": "react-jsx",
+    "types": ["vite/client"],
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    },
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": [
+    "src/**/*",
+    "server.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "Before_Performance_Optimization_Backup_St_Antony_School_ERP",
+    "Before_Restore_Current_Live_App_Backup_St_Antony_School_ERP",
+    "Final_Optimized_Production_Backup_St_Antony_School_ERP_Before_Live_Deployment"
+  ]
+}

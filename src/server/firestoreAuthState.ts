@@ -1,0 +1,235 @@
+import { 
+  AuthenticationState, 
+  AuthenticationCreds, 
+  SignalDataTypeMap, 
+  initAuthCreds, 
+  BufferJSON, 
+  proto,
+  useMultiFileAuthState
+} from '@whiskeysockets/baileys';
+import path from 'path';
+import fs from 'fs';
+import { getDbAdmin, isDatabaseDenied } from './firebaseAdmin.js';
+
+// Global in-memory cache for ultra-fast, non-blocking Baileys authentication handshake
+const keysCache: { [sessionId: string]: { [key: string]: any } } = {};
+const credsCache: { [sessionId: string]: AuthenticationCreds } = {};
+const cacheInitialized: { [sessionId: string]: boolean } = {};
+
+export const useFirestoreAuthState = async (sessionId: string): Promise<{ state: AuthenticationState, saveCreds: () => Promise<void>, clearState: () => Promise<void>, clearKeys: () => Promise<void> }> => {
+  let db: any;
+  let useFallback = false;
+
+  try {
+    if (isDatabaseDenied()) {
+      console.warn("[FirestoreAuthState] Database is marked as denied. Falling back to local multi-file auth state.");
+      useFallback = true;
+    } else {
+      db = getDbAdmin();
+    }
+  } catch (err: any) {
+    console.warn(`[FirestoreAuthState] Failed to get database: ${err.message}. Falling back to local multi-file auth state.`);
+    useFallback = true;
+  }
+
+  if (useFallback) {
+    const authFolder = path.join(process.cwd(), 'wa_auth', sessionId);
+    if (!fs.existsSync(authFolder)) {
+      fs.mkdirSync(authFolder, { recursive: true });
+    }
+    const localAuth = await useMultiFileAuthState(authFolder);
+    return {
+      state: localAuth.state,
+      saveCreds: localAuth.saveCreds,
+      clearState: async () => {
+        if (fs.existsSync(authFolder)) {
+          fs.rmSync(authFolder, { recursive: true, force: true });
+        }
+      },
+      clearKeys: async () => {
+        if (fs.existsSync(authFolder)) {
+          try {
+            const files = fs.readdirSync(authFolder);
+            for (const file of files) {
+              if (file !== 'creds.json') {
+                fs.rmSync(path.join(authFolder, file), { force: true });
+              }
+            }
+          } catch (_) {}
+        }
+      }
+    };
+  }
+
+  const collection = db.collection('whatsapp_sessions').doc(sessionId);
+  const keysCollection = collection.collection('keys');
+
+  // Pre-initialize in-memory cache with all existing keys from Firestore in ONE single query
+  if (!cacheInitialized[sessionId]) {
+    try {
+      keysCache[sessionId] = {};
+      const keys = await keysCollection.get();
+      keys.forEach((doc: any) => {
+        try {
+          const rawData = doc.data()?.data;
+          if (rawData) {
+            keysCache[sessionId][doc.id] = JSON.parse(rawData, BufferJSON.reviver);
+          }
+        } catch (_) {}
+      });
+      cacheInitialized[sessionId] = true;
+      console.log(`[FirestoreAuthState] Pre-populated in-memory cache for session ${sessionId} with ${keys.size} keys.`);
+    } catch (err: any) {
+      console.warn(`[FirestoreAuthState] Failed to pre-populate cache: ${err.message}. Falling back to lazy caching.`);
+    }
+  }
+
+  // Load creds directly from Firestore to prevent multi-instance stale credentials
+  let creds: AuthenticationCreds;
+  const credsDoc = await collection.get();
+  if (credsDoc.exists && credsDoc.data()?.creds) {
+    creds = JSON.parse(credsDoc.data()?.creds, BufferJSON.reviver);
+  } else {
+    creds = initAuthCreds();
+  }
+
+  const saveCreds = async () => {
+    try {
+      await collection.set({ 
+        creds: JSON.stringify(creds, BufferJSON.replacer),
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+    } catch (err: any) {
+      console.error(`[FirestoreAuthState] Creds write error:`, err);
+    }
+  };
+
+  const deleteDocsInChunks = async (docs: any[]) => {
+    const CHUNK_SIZE = 400;
+    for (let i = 0; i < docs.length; i += CHUNK_SIZE) {
+      const chunk = docs.slice(i, i + CHUNK_SIZE);
+      const batch = db.batch();
+      chunk.forEach(doc => batch.delete(doc.ref));
+      await batch.commit();
+    }
+  };
+
+  const clearState = async () => {
+    keysCache[sessionId] = {};
+    delete credsCache[sessionId];
+    cacheInitialized[sessionId] = false;
+    const keys = await keysCollection.get();
+    await deleteDocsInChunks(keys.docs);
+    await collection.delete().catch(() => {});
+  };
+
+  const clearKeys = async () => {
+    keysCache[sessionId] = {};
+    cacheInitialized[sessionId] = false;
+    const keys = await keysCollection.get();
+    await deleteDocsInChunks(keys.docs);
+    console.log(`[FirestoreAuthState] Successfully cleared keys subcollection for session ${sessionId} in Firestore.`);
+  };
+
+  return {
+    state: {
+      creds,
+      keys: {
+        get: async (type, ids) => {
+          const data: { [id: string]: any } = {};
+          if (ids.length === 0) return data;
+
+          const missingIds: string[] = [];
+          const isSessionOrSenderKey = type === 'session' || type === 'sender-key' || type === 'pre-key' || type === 'sender-key-memory';
+
+          // 1. Try reading from cache first
+          for (const id of ids) {
+            const key = `${type}-${id}`;
+            if (keysCache[sessionId] && keysCache[sessionId][key] !== undefined) {
+              let value = keysCache[sessionId][key];
+              if (type === 'app-state-sync-key' && value) {
+                value = proto.Message.AppStateSyncKeyData.fromObject(value);
+              }
+              data[id] = value;
+            } else {
+              missingIds.push(id);
+            }
+          }
+
+          // 2. Fetch missing keys from Firestore if any are not in cache (lazy loading)
+          if (missingIds.length > 0) {
+            try {
+              const refs = missingIds.map(id => keysCollection.doc(`${type}-${id}`));
+              const docs = await db.getAll(...refs);
+
+              docs.forEach((doc: any) => {
+                if (doc.exists) {
+                  try {
+                    const rawData = doc.data()?.data;
+                    if (rawData) {
+                      let value = JSON.parse(rawData, BufferJSON.reviver);
+                      const key = doc.id;
+                      if (!keysCache[sessionId]) keysCache[sessionId] = {};
+                      keysCache[sessionId][key] = value;
+
+                      if (type === 'app-state-sync-key' && value) {
+                        value = proto.Message.AppStateSyncKeyData.fromObject(value);
+                      }
+                      const id = doc.id.substring(type.length + 1);
+                      data[id] = value;
+                    }
+                  } catch (parseErr) {
+                    console.error(`[FirestoreAuthState] Parse error for key ${doc.id}:`, parseErr);
+                  }
+                }
+              });
+            } catch (err) {
+              console.error(`[FirestoreAuthState] Error in get (${type}) for missing IDs:`, err);
+            }
+          }
+          return data;
+        },
+        set: async (data) => {
+          if (!keysCache[sessionId]) keysCache[sessionId] = {};
+          const promises: Promise<any>[] = [];
+
+          for (const category in data) {
+            for (const id in data[category as keyof SignalDataTypeMap]) {
+              const value = data[category as keyof SignalDataTypeMap]![id];
+              const key = `${category}-${id}`;
+
+              // Update in-memory cache synchronously
+              if (value) {
+                keysCache[sessionId][key] = value;
+                
+                // Add write promise to array
+                promises.push(
+                  keysCollection.doc(key).set({ 
+                    data: JSON.stringify(value, BufferJSON.replacer), 
+                    updatedAt: new Date().toISOString() 
+                  }).catch((err: any) => {
+                    console.error(`[FirestoreAuthState] Write error for ${key}:`, err);
+                  })
+                );
+              } else {
+                delete keysCache[sessionId][key];
+                
+                // Add delete promise to array
+                promises.push(
+                  keysCollection.doc(key).delete().catch((err: any) => {
+                    console.error(`[FirestoreAuthState] Delete error for ${key}:`, err);
+                  })
+                );
+              }
+            }
+          }
+          // Wait for all Firestore I/O tasks to complete in parallel to prevent decryption/session race conditions
+          await Promise.all(promises);
+        },
+      },
+    },
+    saveCreds,
+    clearState,
+    clearKeys
+  };
+};

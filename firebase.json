@@ -1,0 +1,51 @@
+{
+  "firestore": [
+    {
+      "database": "(default)",
+      "rules": "firestore.rules"
+    },
+    {
+      "database": "antony-database1",
+      "rules": "firestore.rules"
+    }
+  ],
+  "storage": {
+    "rules": "storage.rules"
+  },
+  "hosting": {
+    "site": "antonyserp-cc9df",
+    "public": "dist",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "/api/**",
+        "run": {
+          "serviceId": "st-antony-s-school-erp",
+          "region": "us-west1"
+        }
+      },
+      {
+        "source": "/uploads/**",
+        "run": {
+          "serviceId": "st-antony-s-school-erp",
+          "region": "us-west1"
+        }
+      },
+      {
+        "source": "/socket.io/**",
+        "run": {
+          "serviceId": "st-antony-s-school-erp",
+          "region": "us-west1"
+        }
+      },
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  }
+}

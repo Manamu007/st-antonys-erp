@@ -1,0 +1,11 @@
+{
+  "name": "Spears Academy ERP",
+  "description": "A cutting-edge, AI-powered School Management System with student/staff records, smart attendance, fee tracking, communication portal, and intelligent performance insights.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
