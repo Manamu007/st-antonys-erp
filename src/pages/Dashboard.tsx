@@ -740,23 +740,6 @@ const Dashboard: React.FC = () => {
           studentCount = filteredStudents.length;
           playSchoolTotalCount = studentCount;
           myStudentIds = filteredStudents.map((s: any) => s.id || s.uid).filter(Boolean);
-
-          try {
-            unsubStudents = dbService.subscribe('students', [], (listData) => {
-              const matched = (listData || []).filter((s: any) => {
-                if (!s) return false;
-                const status = (s.status || 'active').toLowerCase().trim();
-                if (status === 'inactive' || status === 'deleted' || status === 'transferred' || status === 'archived') return false;
-                return assignedClassIds.has(s.classId) || assignedBatchIds.has(s.batchId);
-              });
-              studentCount = matched.length;
-              setStats((prev: any) => ({ ...prev, students: matched.length }));
-            }, (err) => {
-              console.error("Realtime student subscription error for incharge:", err);
-            });
-          } catch (err) {
-            console.error("Failed to subscribe to students:", err);
-          }
         } else if (isTeacher && profile?.uid) {
           const [ttData, bData] = await Promise.all([
             getTimetableSlots(),
@@ -869,27 +852,6 @@ const Dashboard: React.FC = () => {
           
           studentCount = filteredMyStudents.length;
           myStudentIds = filteredMyStudents.map((s: any) => s.id || s.uid).filter(Boolean);
-
-          try {
-            unsubStudents = dbService.subscribe('students', [], (listData) => {
-              const filtered = (listData || []).filter((s: any) => {
-                if (!s) return false;
-                const status = (s.status || 'active').toLowerCase().trim();
-                if (status === 'inactive' || status === 'deleted' || status === 'transferred' || status === 'archived') return false;
-                const sBatch = s.batchId ? String(s.batchId) : '';
-                const sClass = s.classId ? String(s.classId) : '';
-                const matchesAssignment = (sBatch && assignedBatchIds.has(sBatch)) || (sClass && assignedClassIds.has(sClass));
-                if (!matchesAssignment) return false;
-                return !s.academicYear || normalizeYear(s.academicYear) === targetYearNorm;
-              });
-              studentCount = filtered.length;
-              setStats((prev: any) => ({ ...prev, students: filtered.length }));
-            }, (err) => {
-              console.error("Realtime student subscription error:", err);
-            });
-          } catch (err) {
-            console.error("Failed to subscribe to students:", err);
-          }
         } else {
           const allStudents = await dbService.list('students', []).catch(() => []);
           const activeStudents = (allStudents || []).filter((s: any) => {
@@ -900,105 +862,20 @@ const Dashboard: React.FC = () => {
           const targetYearNorm = normalizeYear(activeYear);
           const yearMatched = activeStudents.filter((s: any) => !s.academicYear || normalizeYear(s.academicYear) === targetYearNorm);
           studentCount = yearMatched.length > 0 ? yearMatched.length : activeStudents.length;
-
-          try {
-            unsubStudents = dbService.subscribe('students', [], (listData) => {
-              const active = (listData || []).filter((s: any) => {
-                if (!s) return false;
-                const status = (s.status || 'active').toLowerCase().trim();
-                return status !== 'inactive' && status !== 'deleted' && status !== 'transferred' && status !== 'archived';
-              });
-              const matched = active.filter((s: any) => !s.academicYear || normalizeYear(s.academicYear) === targetYearNorm);
-              const count = matched.length > 0 ? matched.length : active.length;
-              studentCount = count;
-              setStats((prev: any) => ({ ...prev, students: count }));
-            }, (err) => {
-              console.error("Realtime student subscription error:", err);
-            });
-          } catch (err) {
-            console.error("Failed to subscribe to students:", err);
-          }
         }
 
-        // Get staff counts efficiently and subscribe to updates
+        // Get staff counts efficiently
         let teacherCount = 0;
         if (!isTeacher && !isStudent && !isParent) {
           const batchesForStaff = profile?.role === 'play_school_incharge'
             ? await dbService.list('batches').catch(() => [])
             : [];
 
-          let latestUsers: any[] = [];
-          let latestStaff: any[] = [];
-
-          const updateUnifiedCount = () => {
-            const unifiedStaffMap = new Map<string, any>();
-            
-            // 1. Add all existing staff profiles
-            latestStaff.forEach((s: any) => {
-              if (!s) return;
-              const sId = s.uid || s.id;
-              if (sId) {
-                unifiedStaffMap.set(sId, {
-                  ...s,
-                  status: s.status || 'active',
-                });
-              }
-            });
-
-            // 2. Add or enrich with users that have a staff-like role (exclude students and parents)
-            latestUsers.forEach((u: any) => {
-              if (!u) return;
-              const uId = u.uid || u.id;
-              const role = (u.role || '').toLowerCase().trim();
-              if (role === 'student' || role === 'parent') return;
-
-              if (uId) {
-                const existing = unifiedStaffMap.get(uId);
-                if (existing) {
-                  unifiedStaffMap.set(uId, {
-                    ...u,
-                    ...existing,
-                    uid: uId,
-                  });
-                } else {
-                  unifiedStaffMap.set(uId, {
-                    ...u,
-                    uid: uId,
-                    status: u.status || 'active',
-                  });
-                }
-              }
-            });
-
-            let finalStaff = Array.from(unifiedStaffMap.values())
-              .filter((s: any) => (s.status || 'active') === 'active');
-
-            if (profile?.role === 'play_school_incharge') {
-              finalStaff = finalStaff.filter((t: any) => {
-                const isSelf = t.id === profile?.uid || t.uid === profile?.uid || t.role === 'play_school_incharge';
-                const hasAsg = Array.isArray(t.subjectAssignments) && t.subjectAssignments.some((asg: any) => 
-                  (asg?.classId && assignedClassIds.has(asg.classId)) || (asg?.batchId && assignedBatchIds.has(asg.batchId))
-                );
-                const isClassTeach = batchesForStaff.some((b: any) => 
-                  b.classTeacherId === (t.id || t.uid) && 
-                  (assignedClassIds.has(b.classId) || assignedBatchIds.has(b.id))
-                );
-                const hasClassId = t.classId && assignedClassIds.has(t.classId);
-                const hasBatchId = t.batchId && assignedBatchIds.has(t.batchId);
-
-                return isSelf || hasAsg || isClassTeach || hasClassId || hasBatchId;
-              });
-            }
-
-            teacherCount = finalStaff.length;
-            setStats((prev: any) => ({ ...prev, teachers: finalStaff.length }));
-          };
-
-          // Fetch initial data
-          latestUsers = await dbService.list('users', []).catch(() => []);
-          latestStaff = await dbService.list('staff', []).catch(() => []);
+          const [latestUsers, latestStaff] = await Promise.all([
+            dbService.list('users', []).catch(() => []),
+            dbService.list('staff', []).catch(() => [])
+          ]);
           
-          // Calculate the initial count synchronously
           const initialUnifiedMap = new Map<string, any>();
           latestStaff.forEach((s: any) => {
             if (s && (s.uid || s.id)) {
@@ -1037,31 +914,6 @@ const Dashboard: React.FC = () => {
             });
           }
           teacherCount = initialStaff.length;
-
-          // Subscribe in real-time
-          try {
-            unsubStaff = dbService.subscribe('staff', [], (listData) => {
-              latestStaff = listData || [];
-              updateUnifiedCount();
-            }, (err) => {
-              console.error("Realtime staff subscription error:", err);
-              try { handleFirestoreError(err, OperationType.LIST, 'staff'); } catch (e) {}
-            });
-          } catch (err) {
-            console.error("Failed to subscribe to staff:", err);
-          }
-
-          try {
-            unsubUsersStaff = dbService.subscribe('users', [], (listData) => {
-              latestUsers = listData || [];
-              updateUnifiedCount();
-            }, (err) => {
-              console.error("Realtime users subscription error for staff count:", err);
-              try { handleFirestoreError(err, OperationType.LIST, 'users'); } catch (e) {}
-            });
-          } catch (err) {
-            console.error("Failed to subscribe to users for staff count:", err);
-          }
         }
 
         // Calculate today's attendance percentage
@@ -1570,59 +1422,10 @@ const Dashboard: React.FC = () => {
       }
     };
 
-    if (profile) {
+    if (profile?.uid) {
       fetchStats();
     }
-
-    return () => {
-      if (unsubStudents) unsubStudents();
-      if (unsubStaff) unsubStaff();
-      if (unsubUsersStaff) unsubUsersStaff();
-    };
-  }, [profile?.uid, isTeacher, isStudent, isParent, settings?.currentAcademicYear, refreshTrigger]);
-
-  useEffect(() => {
-    if (!profile) return;
-
-    // Subscribe to students to keep student count real-time
-    const unsubStudentsRealtime = dbService.subscribe('students', [limit(200)], () => {
-      setRefreshTrigger(prev => prev + 1);
-    });
-
-    // Subscribe to staff to keep staff count real-time
-    const unsubStaffRealtime = dbService.subscribe('staff', [limit(200)], () => {
-      setRefreshTrigger(prev => prev + 1);
-    });
-
-    // Subscribe to payments to keep financials real-time
-    const unsubPayments = dbService.subscribe('payments', [limit(200)], () => {
-      setRefreshTrigger(prev => prev + 1);
-    });
-
-    // Subscribe to fees to keep financials real-time
-    const unsubFees = dbService.subscribe('fees', [limit(200)], () => {
-      setRefreshTrigger(prev => prev + 1);
-    });
-
-    // Subscribe to attendance to keep attendance/presence stats real-time
-    const unsubAttendance = dbService.subscribe('attendance', [limit(100)], () => {
-      setRefreshTrigger(prev => prev + 1);
-    });
-
-    // Subscribe to calendar events for real-time timeline milestones
-    const unsubEvents = dbService.subscribe('calendar_events', [limit(50)], () => {
-      setRefreshTrigger(prev => prev + 1);
-    });
-
-    return () => {
-      unsubStudentsRealtime();
-      unsubStaffRealtime();
-      unsubPayments();
-      unsubFees();
-      unsubAttendance();
-      unsubEvents();
-    };
-  }, [profile?.uid]);
+  }, [profile?.uid, isTeacher, isStudent, isParent, settings?.currentAcademicYear]);
 
   const barData = useMemo(() => [
     { name: 'Jan', attendance: 92 },

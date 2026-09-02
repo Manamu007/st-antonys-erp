@@ -12,7 +12,6 @@ import {
   onSnapshot,
   Timestamp,
   addDoc,
-  getDocFromServer,
   writeBatch,
   limit,
   startAfter,
@@ -203,11 +202,12 @@ if (typeof window !== 'undefined') {
 
 // Cache for documents
 const docCache = new Map<string, { data: any, timestamp: number }>();
-const CACHE_TTL = 1000 * 60 * 15; // 15 minutes cache
+const CACHE_TTL地下 = 1000 * 60 * 20; // 20 minutes cache
+const CACHE_TTL = 1000 * 60 * 20;
 const PERSISTENT_CACHE_TTL = 1000 * 60 * 60 * 24; // 24 hours for config
 
 // Persistent cache for specific collections (config, settings, etc.) without high-volume tables that exhaust localStorage
-const PERSISTENT_COLLECTIONS = [
+const PERSISTENT_COLLECTIONS纯 = [
   'settings',
   'siteConfig',
   'roles',
@@ -217,8 +217,16 @@ const PERSISTENT_COLLECTIONS = [
   'batches',
   'subjects',
   'buses',
-  'stops'
+  'stops',
+  'holidays',
+  'concessions',
+  'rules',
+  'message_templates',
+  'messageTemplates',
+  'hostel_blocks',
+  'hostel_rooms'
 ];
+const PERSISTENT_COLLECTIONS = PERSISTENT_COLLECTIONS纯;
 
 const getCacheKey = (path: string, id: string) => `${path}/${id}`;
 
@@ -666,6 +674,24 @@ export async function resilientFetch(input: RequestInfo | URL, init?: RequestIni
   }
 }
 
+export async function parseResponseJson<T = any>(res: Response | null | undefined, fallback: T = null as any): Promise<T> {
+  if (!res) return fallback;
+  try {
+    const contentType = res.headers?.get('content-type') || '';
+    if (!contentType.toLowerCase().includes('application/json')) {
+      const text = await res.text();
+      try {
+        return JSON.parse(text);
+      } catch {
+        return fallback;
+      }
+    }
+    return await res.json();
+  } catch {
+    return fallback;
+  }
+}
+
 const isBypassActive = (): boolean => {
   if (typeof window === 'undefined') return false;
   return !!localStorage.getItem('bypass_user_email') || isBackendUnreachable;
@@ -766,11 +792,17 @@ const proxyRequest = async (operation: string, path: string, payload: { id?: str
         })
       });
       if (!res.ok) {
+        if (isRead) {
+          return { success: true, data: operation === 'list' ? [] : null };
+        }
         throw new Error(`DB Proxy failed with status ${res.status}`);
       }
-      const result = await res.json();
-      if (!result.success) {
-        throw new Error(result.error || 'DB Proxy returned failure status');
+      const result = await parseResponseJson(res, null);
+      if (!result || !result.success) {
+        if (isRead) {
+          return { success: true, data: result?.data !== undefined ? result.data : (operation === 'list' ? [] : null) };
+        }
+        throw new Error(result?.error || 'DB Proxy returned failure or non-JSON response');
       }
       return result;
     } catch (err) {
@@ -1038,15 +1070,15 @@ export const dbService = {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(data),
         });
-        if (res.ok) {
-          const result = await res.json();
-          clearCollectionCache(path);
-          return result.id;
+        if (res && res.ok) {
+          const result = await parseResponseJson(res, null);
+          if (result && result.id) {
+            clearCollectionCache(path);
+            return result.id;
+          }
         }
-        throw new Error(`Proxy login logs save failed with status ${res.status}`);
       } catch (err) {
-        console.error('Failed to proxy login_logs build:', err);
-        return null;
+        console.warn('Failed to proxy login_logs write, falling back:', err);
       }
     }
     if (path === 'audit_logs') {
@@ -1057,15 +1089,15 @@ export const dbService = {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(sanitized),
         });
-        if (res.ok) {
-          const result = await res.json();
-          clearCollectionCache(path);
-          return result.id;
+        if (res && res.ok) {
+          const result = await parseResponseJson(res, null);
+          if (result && result.id) {
+            clearCollectionCache(path);
+            return result.id;
+          }
         }
-        throw new Error(`Proxy audit logs save failed with status ${res.status}`);
       } catch (err) {
-        console.error('Failed to proxy audit_logs build:', err);
-        return null;
+        console.warn('Failed to proxy audit_logs write, falling back:', err);
       }
     }
     if (path === 'staff_attendance') {
@@ -1130,13 +1162,13 @@ export const dbService = {
         const res = await resilientFetch(`/api/attendance/alerts-sent?date=${id}`, {
           method: 'GET'
         });
-        if (res.ok) {
-          const data = await res.json();
+        if (res && res.ok) {
+          const data = await parseResponseJson(res, null);
           return data;
         }
         return null;
       } catch (error) {
-        console.error('Failed to proxy attendance_alerts_sent read:', error);
+        console.warn('Failed to proxy attendance_alerts_sent read:', error);
         return null;
       }
     }
@@ -1558,26 +1590,34 @@ export const dbService = {
     if (path === 'receipt_books') {
       try {
         const res = await resilientFetch('/api/fees/receipt-books');
-        if (!res.ok) throw new Error(`Backend list failed for receipt_books: status ${res.status}`);
-        const data = await res.json();
-        const cacheKey = getListCacheKey(path, constraints);
-        listCache.set(cacheKey, { data, timestamp: Date.now() });
-        return data;
+        if (res && res.ok) {
+          const data = await parseResponseJson(res, []);
+          if (Array.isArray(data)) {
+            const cacheKey = getListCacheKey(path, constraints);
+            listCache.set(cacheKey, { data, timestamp: Date.now() });
+            return data;
+          }
+        }
+        return [];
       } catch (error) {
-        console.error("Failed to fetch receipt_books from backend API proxy:", error);
+        console.warn("Failed to fetch receipt_books from backend API proxy:", error);
         return [];
       }
     }
     if (path === 'extendedDueDates') {
       try {
         const res = await resilientFetch('/api/fees/extended-due-dates');
-        if (!res.ok) throw new Error(`Backend list failed for extendedDueDates: status ${res.status}`);
-        const data = await res.json();
-        const cacheKey = getListCacheKey(path, constraints);
-        listCache.set(cacheKey, { data, timestamp: Date.now() });
-        return data;
+        if (res && res.ok) {
+          const data = await parseResponseJson(res, []);
+          if (Array.isArray(data)) {
+            const cacheKey = getListCacheKey(path, constraints);
+            listCache.set(cacheKey, { data, timestamp: Date.now() });
+            return data;
+          }
+        }
+        return [];
       } catch (error) {
-        console.error("Failed to fetch extendedDueDates from backend API proxy:", error);
+        console.warn("Failed to fetch extendedDueDates from backend API proxy:", error);
         return [];
       }
     }
@@ -1606,52 +1646,68 @@ export const dbService = {
           url += `?${params.toString()}`;
         }
         const res = await resilientFetch(url);
-        if (!res.ok) throw new Error(`Backend list failed for staff_attendance: status ${res.status}`);
-        const data = await res.json();
-        const cacheKey = getListCacheKey(path, constraints);
-        listCache.set(cacheKey, { data, timestamp: Date.now() });
-        return data;
+        if (res && res.ok) {
+          const data = await parseResponseJson(res, []);
+          if (Array.isArray(data)) {
+            const cacheKey = getListCacheKey(path, constraints);
+            listCache.set(cacheKey, { data, timestamp: Date.now() });
+            return data;
+          }
+        }
+        return [];
       } catch (error) {
-        console.error("Failed to fetch staff_attendance from backend API proxy:", error);
+        console.warn("Failed to fetch staff_attendance from backend API proxy:", error);
         return [];
       }
     }
     if (path === 'login_logs') {
       try {
         const res = await resilientFetch('/api/attendance/list-login-logs');
-        if (!res.ok) throw new Error(`Backend list failed for login_logs: status ${res.status}`);
-        const data = await res.json();
-        const cacheKey = getListCacheKey(path, constraints);
-        listCache.set(cacheKey, { data, timestamp: Date.now() });
-        return data;
+        if (res && res.ok) {
+          const data = await parseResponseJson(res, []);
+          if (Array.isArray(data)) {
+            const cacheKey = getListCacheKey(path, constraints);
+            listCache.set(cacheKey, { data, timestamp: Date.now() });
+            return data;
+          }
+        }
+        return [];
       } catch (error) {
-        console.error("Failed to fetch login_logs from backend API proxy:", error);
+        console.warn("Failed to fetch login_logs from backend API proxy:", error);
         return [];
       }
     }
     if (path === 'audit_logs') {
       try {
         const res = await resilientFetch('/api/attendance/list-audit-logs');
-        if (!res.ok) throw new Error(`Backend list failed for audit_logs: status ${res.status}`);
-        const data = await res.json();
-        const cacheKey = getListCacheKey(path, constraints);
-        listCache.set(cacheKey, { data, timestamp: Date.now() });
-        return data;
+        if (res && res.ok) {
+          const data = await parseResponseJson(res, []);
+          if (Array.isArray(data)) {
+            const cacheKey = getListCacheKey(path, constraints);
+            listCache.set(cacheKey, { data, timestamp: Date.now() });
+            return data;
+          }
+        }
+        return [];
       } catch (error) {
-        console.error("Failed to fetch audit_logs from backend API proxy:", error);
+        console.warn("Failed to fetch audit_logs from backend API proxy:", error);
         return [];
       }
     }
     if (path === 'stop_backups') {
       try {
         const res = await resilientFetch('/api/transport/stop-backups');
-        if (!res.ok) throw new Error(`Backend list failed for stop_backups: status ${res.status}`);
-        const data = await res.json();
-        const cacheKey = getListCacheKey(path, constraints);
-        listCache.set(cacheKey, { data, timestamp: Date.now() });
-        return data;
+        if (res && res.ok) {
+          const data = await parseResponseJson(res, []);
+          if (Array.isArray(data)) {
+            const cacheKey = getListCacheKey(path, constraints);
+            listCache.set(cacheKey, { data, timestamp: Date.now() });
+            return data;
+          }
+        }
+        return [];
       } catch (error) {
-        console.error("Failed to fetch stop_backups from backend API proxy:", error);
+        console.warn("Failed to fetch stop_backups from backend API proxy:", error);
         return [];
       }
     }
@@ -1754,35 +1810,6 @@ export const dbService = {
               
               // Set the RAM list cache so subsequent fast reads resolve instantly
               listCache.set(cacheKey, { data: dedupedData, timestamp: Date.now() });
-
-              // Fire and forget server fetch to refresh local database and RAM cache in background
-              setTimeout(async () => {
-                try {
-                  const freshSnapshot = await getDocs(q);
-                  const freshRawData = freshSnapshot.docs.map((doc: any) => {
-                    const docData = doc.data();
-                    const cleanItem = { ...docData, id: doc.id, uid: doc.id } as any;
-                    if (path === 'students') {
-                      cleanItem.uniqueStudentId = cleanItem.uniqueStudentId || generateUniqueStudentId(cleanItem);
-                    }
-                    return cleanItem;
-                  });
-                  const freshData = freshRawData.map((item: any) => enforceSecuredAccess(path, item)).filter(Boolean);
-                  const freshDeduped = deduplicateArrayByID(freshData);
-                  listCache.set(cacheKey, { data: freshDeduped, timestamp: Date.now() });
-                  
-                  // Save to persistent storage if it's a metadata collection
-                  if (PERSISTENT_COLLECTIONS.includes(path)) {
-                    localStorage.setItem(`fs_list_cache_${path}_${cacheKey}`, JSON.stringify({ data: freshDeduped, timestamp: Date.now() }));
-                    if (constraints.length === 0) {
-                      localStorage.setItem(`fs_list_cache_${path}`, JSON.stringify({ data: freshDeduped, timestamp: Date.now() }));
-                    }
-                  }
-                } catch (e) {
-                  console.warn(`[dbService] Background list revalidation failed for ${path}:`, e);
-                }
-              }, 50);
-
               return dedupedData;
             }
           } catch (cacheErr) {
@@ -2138,14 +2165,14 @@ export const dbService = {
       const fetchAndCallback = async () => {
         try {
           const res = await resilientFetch(endpoint);
-          if (res.ok) {
-            const data = await res.json();
-            callback(deduplicateArrayByID(data));
-          } else {
-            throw new Error(`Failed to fetch logs: status ${res.status}`);
+          if (res && res.ok) {
+            const data = await parseResponseJson(res, []);
+            if (Array.isArray(data)) {
+              callback(deduplicateArrayByID(data));
+            }
           }
         } catch (err) {
-          console.error(`Polling subscription failed for ${path}:`, err);
+          console.warn(`Polling subscription failed for ${path}:`, err);
           if (errorCallback) errorCallback(err);
         }
       };

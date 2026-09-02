@@ -188,6 +188,7 @@ const ParentDashboard: React.FC = () => {
     if (!selectedChild) return;
 
     setLoading(true);
+    let isCancelled = false;
 
     const initialCandidateIds = Array.from(new Set([
       selectedChild.id,
@@ -199,150 +200,112 @@ const ParentDashboard: React.FC = () => {
       (profile as any)?.studentId
     ].filter(Boolean))) as string[];
 
-    // 1. Subscribe to 'students' collection to find matching full student document
-    const unsubStudents = dbService.subscribe('students', [], (allStudents) => {
-      const matched = allStudents.find((s: any) => 
-        initialCandidateIds.includes(s.id) ||
-        initialCandidateIds.includes(s.uid) ||
-        initialCandidateIds.includes(s.studentId) ||
-        (s.email && (selectedChild.email || profile?.email) && s.email.toLowerCase() === (selectedChild.email || profile?.email || '').toLowerCase()) ||
-        (s.rollNumber && (selectedChild.rollNumber || (profile as any)?.rollNumber) && String(s.rollNumber) === String(selectedChild.rollNumber || (profile as any)?.rollNumber)) ||
-        (s.name && (selectedChild.name || profile?.name) && s.name.toLowerCase() === (selectedChild.name || profile?.name || '').toLowerCase())
-      );
-      if (matched) {
-        setFullStudentData(matched);
-      } else {
-        setFullStudentData(null);
-      }
-    });
-
-    // 2. Real-time Subscriptions for payments & fees using candidate IDs
-    const unsubAttendance = dbService.subscribe('attendance', [], (data) => {
-      const targetIds = new Set([
-        ...initialCandidateIds,
-        fullStudentData?.id,
-        fullStudentData?.uid,
-        (fullStudentData as any)?.studentId
-      ].filter(Boolean));
-      const filtered = data.filter((a: any) => targetIds.has(a.studentId) || targetIds.has(a.studentUid));
-      const sorted = [...filtered].sort((a, b) => {
-        const dateA = new Date(a.date || 0).getTime();
-        const dateB = new Date(b.date || 0).getTime();
-        return dateB - dateA;
-      });
-      setAttendance(sorted);
-    });
-
-    const unsubFees = dbService.subscribe('fees', [], (data) => {
-      const targetIds = new Set([
-        ...initialCandidateIds,
-        fullStudentData?.id,
-        fullStudentData?.uid,
-        (fullStudentData as any)?.studentId
-      ].filter(Boolean));
-      setFees(data.filter((f: any) => targetIds.has(f.studentId) || targetIds.has(f.studentUid)));
-    });
-
-    const unsubPayments = dbService.subscribe('payments', [], (data) => {
-      const targetIds = new Set([
-        ...initialCandidateIds,
-        fullStudentData?.id,
-        fullStudentData?.uid,
-        (fullStudentData as any)?.studentId
-      ].filter(Boolean));
-      setPayments(data.filter((p: any) => targetIds.has(p.studentId) || targetIds.has(p.studentUid)));
-    });
-
-    const unsubExams = dbService.subscribe('examMarks', [], (data) => {
-      const targetIds = new Set([
-        ...initialCandidateIds,
-        fullStudentData?.id,
-        fullStudentData?.uid,
-        (fullStudentData as any)?.studentId
-      ].filter(Boolean));
-      const filtered = data.filter((e: any) => targetIds.has(e.studentId) || targetIds.has(e.studentUid));
-      const sorted = [...filtered].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-      setExamResults(sorted.slice(0, 3));
-    });
-
-    const unsubHomework = dbService.subscribe('homework', [
-      where('class', '==', selectedChild.classId || fullStudentData?.classId || ''),
-      limit(50)
-    ], (data) => {
-      const sortedData = [...data].sort((a, b) => {
-        const dateA = new Date(a.dueDate || 0).getTime();
-        const dateB = new Date(b.dueDate || 0).getTime();
-        return dateB - dateA;
-      });
-      let filtered = sortedData;
-      const bId = selectedChild.batchId || fullStudentData?.batchId;
-      if (bId) {
-        filtered = sortedData.filter(h => !h.batchId || h.batchId === bId);
-      }
-      setHomework(filtered.slice(0, 5));
-    });
-
-    const unsubNotices = dbService.subscribe('notices', [
-      orderBy('createdAt', 'desc'),
-      limit(5)
-    ], setNotices);
-
-    const unsubTimetable = dbService.subscribe('timetableSlots', [
-      where('classId', '==', selectedChild.classId || fullStudentData?.classId || ''),
-    ], (data) => {
-      const bId = selectedChild.batchId || fullStudentData?.batchId;
-      if (bId) {
-        setTimetable(data.filter(t => !t.batchId || t.batchId === bId));
-      } else {
-        setTimetable(data);
-      }
-    });
-
-    const unsubLeaves = dbService.subscribe('leaves', [], (data) => {
-      const targetIds = new Set([
-        ...initialCandidateIds,
-        fullStudentData?.id,
-        fullStudentData?.uid,
-        (fullStudentData as any)?.studentId
-      ].filter(Boolean));
-      const filtered = data.filter((l: any) => targetIds.has(l.applicantId) || targetIds.has(l.studentId));
-      const sorted = [...filtered].sort((a, b) => (b.startDate || '').localeCompare(a.startDate || ''));
-      setLeaves(sorted.slice(0, 5));
-    });
-
-    // One-time fetches for static-ish metadata
-    const fetchMetadata = async () => {
+    const loadParentDashboardData = async () => {
       try {
-        const [structData, concData, classData, batchData] = await Promise.all([
-          dbService.list('feeStructures', []),
-          dbService.list('concessions', []),
-          dbService.list('classes', []),
-          dbService.list('batches', [])
+        const [
+          allStudents,
+          allAttendance,
+          allFees,
+          allPayments,
+          allExams,
+          allLeaves,
+          structData,
+          concData,
+          classData,
+          batchData,
+          noticesData
+        ] = await Promise.all([
+          dbService.list('students', []).catch(() => []),
+          dbService.list('attendance', []).catch(() => []),
+          dbService.list('fees', []).catch(() => []),
+          dbService.list('payments', []).catch(() => []),
+          dbService.list('examMarks', []).catch(() => []),
+          dbService.list('leaves', []).catch(() => []),
+          dbService.list('feeStructures', []).catch(() => []),
+          dbService.list('concessions', []).catch(() => []),
+          dbService.list('classes', []).catch(() => []),
+          dbService.list('batches', []).catch(() => []),
+          dbService.list('notices', [limit(5)]).catch(() => [])
         ]);
 
+        if (isCancelled) return;
+
+        // 1. Find matching full student document
+        const matched = allStudents.find((s: any) => 
+          initialCandidateIds.includes(s.id) ||
+          initialCandidateIds.includes(s.uid) ||
+          initialCandidateIds.includes(s.studentId) ||
+          (s.email && (selectedChild.email || profile?.email) && s.email.toLowerCase() === (selectedChild.email || profile?.email || '').toLowerCase()) ||
+          (s.rollNumber && (selectedChild.rollNumber || (profile as any)?.rollNumber) && String(s.rollNumber) === String(selectedChild.rollNumber || (profile as any)?.rollNumber)) ||
+          (s.name && (selectedChild.name || profile?.name) && s.name.toLowerCase() === (selectedChild.name || profile?.name || '').toLowerCase())
+        );
+        setFullStudentData(matched || null);
+
+        const targetIds = new Set([
+          ...initialCandidateIds,
+          matched?.id,
+          matched?.uid,
+          (matched as any)?.studentId
+        ].filter(Boolean));
+
+        // 2. Attendance
+        const filteredAtt = allAttendance.filter((a: any) => targetIds.has(a.studentId) || targetIds.has(a.studentUid));
+        const sortedAtt = [...filteredAtt].sort((a, b) => {
+          const dateA = new Date(a.date || 0).getTime();
+          const dateB = new Date(b.date || 0).getTime();
+          return dateB - dateA;
+        });
+        setAttendance(sortedAtt);
+
+        // 3. Fees & Payments
+        setFees(allFees.filter((f: any) => targetIds.has(f.studentId) || targetIds.has(f.studentUid)));
+        setPayments(allPayments.filter((p: any) => targetIds.has(p.studentId) || targetIds.has(p.studentUid)));
+
+        // 4. Exam marks
+        const filteredExams = allExams.filter((e: any) => targetIds.has(e.studentId) || targetIds.has(e.studentUid));
+        const sortedExams = [...filteredExams].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+        setExamResults(sortedExams.slice(0, 3));
+
+        // 5. Leaves
+        const filteredLeaves = allLeaves.filter((l: any) => targetIds.has(l.applicantId) || targetIds.has(l.studentId));
+        const sortedLeaves = [...filteredLeaves].sort((a, b) => (b.startDate || '').localeCompare(a.startDate || ''));
+        setLeaves(sortedLeaves.slice(0, 5));
+
+        // 6. Metadata
         setFeeStructures(structData);
         setConcessions(concData);
         setClasses(classData);
         setBatches(batchData);
+        setNotices(noticesData);
+
+        // 7. Homework & Timetable for child's class
+        const targetClassId = matched?.classId || selectedChild.classId;
+        const targetBatchId = matched?.batchId || selectedChild.batchId;
+        if (targetClassId) {
+          const [hwData, ttData] = await Promise.all([
+            dbService.list('homework', [where('class', '==', targetClassId), limit(50)]).catch(() => []),
+            dbService.list('timetableSlots', [where('classId', '==', targetClassId)]).catch(() => [])
+          ]);
+          if (!isCancelled) {
+            const sortedHw = [...hwData].sort((a, b) => new Date(b.dueDate || 0).getTime() - new Date(a.dueDate || 0).getTime());
+            const filteredHw = targetBatchId ? sortedHw.filter(h => !h.batchId || h.batchId === targetBatchId) : sortedHw;
+            setHomework(filteredHw.slice(0, 5));
+
+            const filteredTt = targetBatchId ? ttData.filter((t: any) => !t.batchId || t.batchId === targetBatchId) : ttData;
+            setTimetable(filteredTt);
+          }
+        }
       } catch (error) {
-        console.error("Error fetching child metadata:", error);
+        console.error("Error loading parent dashboard data:", error);
       } finally {
-        setLoading(false);
+        if (!isCancelled) setLoading(false);
       }
     };
 
-    fetchMetadata();
+    loadParentDashboardData();
 
     return () => {
-      unsubStudents();
-      unsubAttendance();
-      unsubFees();
-      unsubPayments();
-      unsubExams();
-      unsubHomework();
-      unsubNotices();
-      unsubTimetable();
-      unsubLeaves();
+      isCancelled = true;
     };
   }, [selectedChild?.uid || selectedChild?.id]);
 

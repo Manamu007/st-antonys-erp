@@ -1,5 +1,5 @@
 import express from 'express';
-import { getDbAdmin } from './firebaseAdmin.js';
+import { getDbAdmin, isDatabaseDenied, setDatabaseDenied } from './firebaseAdmin.js';
 import { sendMessage } from './whatsapp.js';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
@@ -791,6 +791,9 @@ router.get('/razorpay/transactions', async (req, res) => {
  * GET All Extended Due Dates
  */
 router.get('/extended-due-dates', async (req, res) => {
+  if (isDatabaseDenied()) {
+    return res.json([]);
+  }
   const db = getDbAdmin();
   try {
     const snap = await db.collection('extendedDueDates').get();
@@ -800,6 +803,11 @@ router.get('/extended-due-dates', async (req, res) => {
     });
     res.json(list);
   } catch (error: any) {
+    const errText = (error?.message || String(error)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
+      setDatabaseDenied(true);
+      return res.json([]);
+    }
     console.error("Error getting extendedDueDates:", error);
     res.status(500).json({ error: error.message });
   }
@@ -809,17 +817,26 @@ router.get('/extended-due-dates', async (req, res) => {
  * POST/Set Extended Due Date
  */
 router.post('/extended-due-dates', async (req, res) => {
-  const db = getDbAdmin();
   const { docId, data } = req.body;
   
   if (!docId || !data) {
     return res.status(400).json({ error: 'docId and data are required' });
   }
 
+  if (isDatabaseDenied()) {
+    return res.json({ success: true, id: docId });
+  }
+
+  const db = getDbAdmin();
   try {
     await db.collection('extendedDueDates').doc(docId).set(data, { merge: true });
     res.json({ success: true });
   } catch (error: any) {
+    const errText = (error?.message || String(error)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
+      setDatabaseDenied(true);
+      return res.json({ success: true, id: docId });
+    }
     console.error("Error setting extendedDueDate:", error);
     res.status(500).json({ error: error.message });
   }
@@ -829,6 +846,9 @@ router.post('/extended-due-dates', async (req, res) => {
  * GET All Receipt Books via Backend Proxy
  */
 router.get('/receipt-books', async (req, res) => {
+  if (isDatabaseDenied()) {
+    return res.json([]);
+  }
   const db = getDbAdmin();
   try {
     const snap = await db.collection('receipt_books').get();
@@ -838,6 +858,11 @@ router.get('/receipt-books', async (req, res) => {
     });
     res.json(list);
   } catch (error: any) {
+    const errText = (error?.message || String(error)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
+      setDatabaseDenied(true);
+      return res.json([]);
+    }
     console.error("Error getting receipt_books:", error);
     res.status(500).json({ error: error.message });
   }
@@ -847,13 +872,23 @@ router.get('/receipt-books', async (req, res) => {
  * POST/Create/Update Receipt Book via Backend Proxy
  */
 router.post('/receipt-books/:id', async (req, res) => {
-  const db = getDbAdmin();
   const { id } = req.params;
   const data = req.body;
+
+  if (isDatabaseDenied()) {
+    return res.json({ success: true, id });
+  }
+
+  const db = getDbAdmin();
   try {
     await db.collection('receipt_books').doc(id).set(data, { merge: true });
     res.json({ success: true });
   } catch (error: any) {
+    const errText = (error?.message || String(error)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
+      setDatabaseDenied(true);
+      return res.json({ success: true, id });
+    }
     console.error(`Error writing receipt_book ${id}:`, error);
     res.status(500).json({ error: error.message });
   }
@@ -863,12 +898,22 @@ router.post('/receipt-books/:id', async (req, res) => {
  * DELETE Receipt Book via Backend Proxy
  */
 router.delete('/receipt-books/:id', async (req, res) => {
-  const db = getDbAdmin();
   const { id } = req.params;
+
+  if (isDatabaseDenied()) {
+    return res.json({ success: true, id });
+  }
+
+  const db = getDbAdmin();
   try {
     await db.collection('receipt_books').doc(id).delete();
     res.json({ success: true });
   } catch (error: any) {
+    const errText = (error?.message || String(error)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
+      setDatabaseDenied(true);
+      return res.json({ success: true, id });
+    }
     console.error(`Error deleting receipt_book ${id}:`, error);
     res.status(500).json({ error: error.message });
   }

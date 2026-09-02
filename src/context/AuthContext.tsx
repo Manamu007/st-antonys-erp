@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { onAuthStateChanged, User, setPersistence, inMemoryPersistence } from 'firebase/auth';
-import { where, doc, getDocFromServer, collection, query, onSnapshot } from 'firebase/firestore';
+import { where, doc, getDoc, collection, query, onSnapshot } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { dbService } from '../services/dbService';
 import { normalizeRole, fetchAndMergeProfile, isStaffRole, isStaffAccountOrEmail } from '../lib/profileUtils';
@@ -85,19 +85,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (JSON.stringify(prev) === JSON.stringify(profiles)) return prev;
       return profiles;
     });
-  }, []);
-
-  useEffect(() => {
-    const testConnection = async () => {
-      try {
-        await getDocFromServer(doc(db, 'settings', 'school_info'));
-      } catch (error: any) {
-        if (error?.message?.includes('offline')) {
-          console.error("Firestore is offline. Check internet connection.");
-        }
-      }
-    };
-    testConnection();
   }, []);
 
   useEffect(() => {
@@ -1429,9 +1416,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!roleKey) {
       setStablePermissions(ROLE_PERMISSIONS.student || []);
       setLoading(false);
-      return () => {};
+      return;
     }
-    const unsubscribeRole = dbService.subscribeDoc('roles', roleKey, (roleData: any) => {
+
+    let isSubscribed = true;
+    dbService.get('roles', roleKey).then((roleData: any) => {
+      if (!isSubscribed) return;
       if (roleData && !roleData.isDeleted && roleData.permissions && roleData.permissions.length > 0) {
         // Safe merge with system defaults of the role to ensure they never lose core capability
         const defaults = ROLE_PERMISSIONS[roleKey as Role] || [];
@@ -1441,8 +1431,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setStablePermissions(ROLE_PERMISSIONS[roleKey as Role] || []);
       }
       setLoading(false);
+    }).catch(() => {
+      if (isSubscribed) {
+        setStablePermissions(ROLE_PERMISSIONS[roleKey as Role] || []);
+        setLoading(false);
+      }
     });
-    return () => unsubscribeRole();
+
+    return () => {
+      isSubscribed = false;
+    };
   }, [profile?.role, setStablePermissions]);
 
   useEffect(() => {
@@ -1455,7 +1453,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         sessionStorage.removeItem('auth_user_email');
       }
     }
-  }, [profile, user]);
+  }, [profile?.role, profile?.email, user?.email]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -1466,7 +1464,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         sessionStorage.removeItem('auth_allowed_profile_ids');
       }
     }
-  }, [availableProfiles]);
+  }, [availableProfiles?.length, profile?.uid]);
 
   const hasPermission = React.useCallback((permission: Permission) => {
     if (!profile) return false;

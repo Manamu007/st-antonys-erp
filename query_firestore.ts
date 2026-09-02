@@ -4,8 +4,7 @@ import * as fs from 'fs';
 
 const firebaseConfig = JSON.parse(fs.readFileSync('firebase-applet-config.json', 'utf8'));
 const app = initializeApp(firebaseConfig);
-// Initialize with database ID 'antony-database1'
-const db = initializeFirestore(app, {}, 'antony-database1');
+const db = initializeFirestore(app, {}, firebaseConfig.firestoreDatabaseId === '(default)' ? undefined : firebaseConfig.firestoreDatabaseId);
 
 async function run() {
   try {

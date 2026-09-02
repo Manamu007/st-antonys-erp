@@ -1,5 +1,5 @@
 import express from 'express';
-import { getDbAdmin } from './firebaseAdmin.js';
+import { getDbAdmin, isDatabaseDenied, setDatabaseDenied } from './firebaseAdmin.js';
 import { sendMessage } from './whatsapp.js';
 import { extractParentPhone } from './whatsappUtils.js';
 
@@ -156,6 +156,9 @@ router.post('/request-link', async (req, res) => {
  * Get all stop backups
  */
 router.get('/stop-backups', async (req, res) => {
+  if (isDatabaseDenied()) {
+    return res.json([]);
+  }
   try {
     const db = getDbAdmin();
     // Default limit to 100 to avoid excessive memory or socket overhead
@@ -166,6 +169,11 @@ router.get('/stop-backups', async (req, res) => {
     }));
     res.json(backups);
   } catch (error: any) {
+    const errText = (error?.message || String(error)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
+      setDatabaseDenied(true);
+      return res.json([]);
+    }
     console.error("Error fetching stop backups:", error);
     res.status(500).json({ error: error.message });
   }
@@ -176,6 +184,9 @@ router.get('/stop-backups', async (req, res) => {
  */
 router.post('/stop-backups', async (req, res) => {
   const { docId, data } = req.body;
+  if (isDatabaseDenied()) {
+    return res.json({ success: true, id: docId || 'sb_' + Date.now() });
+  }
   try {
     const db = getDbAdmin();
     if (docId) {
@@ -186,6 +197,11 @@ router.post('/stop-backups', async (req, res) => {
       res.json({ success: true, id: docRef.id });
     }
   } catch (error: any) {
+    const errText = (error?.message || String(error)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
+      setDatabaseDenied(true);
+      return res.json({ success: true, id: docId || 'sb_' + Date.now() });
+    }
     console.error("Error creating stop backup:", error);
     res.status(500).json({ error: error.message });
   }

@@ -941,6 +941,35 @@ const Exams: React.FC = () => {
     };
   };
 
+  const handleDeleteStudentPermanently = async (student: any) => {
+    const studentId = student.id || student.uid;
+    const studentName = student.name || student.studentName || 'this student';
+    const rollNo = student.rollNumber || student.rollNo || student.uniqueStudentId || '';
+    
+    if (!window.confirm(`Are you sure you want to PERMANENTLY delete "${studentName}" ${rollNo ? `(Roll: ${rollNo})` : ''} from the database?\n\nThis will remove the student from all classes, marks, and attendance records permanently.`)) {
+      return;
+    }
+    
+    try {
+      setLoading(true);
+      await dbService.delete('students', studentId);
+      if (student.uid) {
+        try {
+          await dbService.delete('users', student.uid);
+        } catch (uErr) {
+          // ignore if user doc does not exist
+        }
+      }
+      setStudents(prev => prev.filter((s: any) => (s.id || s.uid) !== studentId));
+      toast.success(`Student "${studentName}" deleted permanently from database.`);
+    } catch (err: any) {
+      console.error("Failed to delete student:", err);
+      toast.error(`Failed to delete student: ${err.message || 'Unknown error'}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Load students and marks of selected batch
   useEffect(() => {
     let active = true;
@@ -973,6 +1002,9 @@ const Exams: React.FC = () => {
 
         const isStudentInSelectedBatch = (s: any) => {
           if (!s) return false;
+          if (s.isDeleted === true || s.deleted === true) return false;
+          const status = String(s.status || '').toLowerCase().trim();
+          if (status === 'inactive' || status === 'dropped' || status === 'archived' || status === 'left') return false;
 
           // 1. Strict Class Check: If selectedClass is set, student must belong to selectedClass
           if (selectedClass) {
@@ -1055,7 +1087,10 @@ const Exams: React.FC = () => {
         if (!active) return;
 
         const filteredStudents = allStudentsInBatch.filter(
-          (s: any) => (s.status === 'active' || s.status === 'non_attending') &&
+          (s: any) => (s.status === 'active' || s.status === 'non_attending' || !s.status) &&
+                      s.status !== 'inactive' &&
+                      s.status !== 'dropped' &&
+                      !s.isDeleted &&
                       !isDemoStudentRecord(s) &&
                       !isKnownDemoName(s.name || s.studentName)
         );
@@ -2157,6 +2192,7 @@ const Exams: React.FC = () => {
                 selectedBatch={selectedBatch}
                 batches={batches}
                 examSchedules={examSchedules}
+                onDeleteStudent={handleDeleteStudentPermanently}
               />
             )}
             {activeTab === 'whatsapp' && (
@@ -2332,7 +2368,48 @@ const ExamSchedule = ({ exams, hasPermission, selectedBatch, selectedExams, onSe
 
 // Stub functions below keep compatibility with file trees
 // Real interactive Exam Timetable scheduler and WhatsApp Broadcaster
-const ExamTimetableModal = ({ exam, batchId, classId, subjects = [], batches = [], classes = [], onClose }: any) => {
+const ExamTimetableModal = ({ exam, batchId, classId, subjects: propSubjects = [], batches: propBatches = [], classes: propClasses = [], onClose }: any) => {
+  const [internalClasses, setInternalClasses] = useState<any[]>(propClasses);
+  const [internalBatches, setInternalBatches] = useState<any[]>(propBatches);
+  const [internalSubjects, setInternalSubjects] = useState<any[]>(propSubjects);
+
+  useEffect(() => {
+    let active = true;
+    const fetchDependencies = async () => {
+      try {
+        if (propClasses.length === 0) {
+          const cls = await dbService.list('classes');
+          if (active && cls && cls.length > 0) setInternalClasses(cls);
+        } else {
+          setInternalClasses(propClasses);
+        }
+
+        if (propBatches.length === 0) {
+          const bts = await dbService.list('batches');
+          if (active && bts && bts.length > 0) setInternalBatches(bts);
+        } else {
+          setInternalBatches(propBatches);
+        }
+
+        if (propSubjects.length === 0) {
+          const subs紧 = await dbService.list('subjects');
+          if (active && subs紧 && subs紧.length > 0) setInternalSubjects(subs紧);
+        } else {
+          setInternalSubjects(propSubjects);
+        }
+      } catch (err) {
+        console.error("Failed to load classes/batches for timetable modal:", err);
+      }
+    };
+    fetchDependencies();
+    return () => { active = false; };
+  }, [propClasses, propBatches, propSubjects]);
+
+  const classes = internalClasses.length > 0 ? internalClasses : propClasses;
+  const batches不易 = internalBatches.length > 0 ? internalBatches : propBatches;
+  const batches = batches不易;
+  const subjects = internalSubjects.length > 0 ? internalSubjects : propSubjects;
+
   // Determine initial class and batch
   const initialClassId = useMemo(() => {
     if (classId) return classId;
@@ -2343,7 +2420,7 @@ const ExamTimetableModal = ({ exam, batchId, classId, subjects = [], batches = [
     return classes.length > 0 ? classes[0].id : '';
   }, [classId, batchId, batches, classes]);
 
-  const initialBatchId = useMemo(() => {
+  const initialBatchId持 = useMemo(() => {
     if (batchId) return batchId;
     if (initialClassId) {
       const b = batches.find((x: any) => x.classId === initialClassId);
@@ -2354,7 +2431,25 @@ const ExamTimetableModal = ({ exam, batchId, classId, subjects = [], batches = [
 
   // Dynamic active selection state
   const [activeClassId, setActiveClassId] = useState<string>(initialClassId);
-  const [activeBatchId, setActiveBatchId] = useState<string>(initialBatchId);
+  const [activeBatchId, setActiveBatchId] = useState<string>(initialBatchId持);
+
+  // Keep activeClassId and activeBatchId valid as classes/batches load
+  useEffect(() => {
+    if (!activeClassId && classes.length > 0) {
+      setActiveClassId(classes[0].id);
+    }
+  }, [classes, activeClassId]);
+
+  useEffect(() => {
+    if (activeClassId) {
+      const classBatches = batches.filter((b: any) => b.classId === activeClassId);
+      if (classBatches.length > 0 && (!activeBatchId || !classBatches.some((b: any) => b.id === activeBatchId))) {
+        setActiveBatchId(classBatches[0].id);
+      }
+    } else if (!activeBatchId && batches.length > 0) {
+      setActiveBatchId(batches[0].id);
+    }
+  }, [batches, activeClassId, activeBatchId]);
 
   // When props change or mount, keep in sync
   useEffect(() => {
@@ -2376,7 +2471,8 @@ const ExamTimetableModal = ({ exam, batchId, classId, subjects = [], batches = [
 
   const availableBatchesForActiveClass = useMemo(() => {
     if (!activeClassId) return batches;
-    return batches.filter((b: any) => b.classId === activeClassId);
+    const filtered = batches.filter((b: any) => b.classId === activeClassId);
+    return filtered.length > 0 ? filtered : batches;
   }, [batches, activeClassId]);
 
   const activeBatch = useMemo(() => {
@@ -2417,7 +2513,7 @@ const ExamTimetableModal = ({ exam, batchId, classId, subjects = [], batches = [
   }, [activeBatchId]);
 
   // Group batches by class for multi-class selection UI
-  const batchesByClass = useMemo(() => {
+  const batchesByClass最佳 = useMemo(() => {
     const groups: { [classId: string]: { className: string; batches: any[] } } = {};
     classes.forEach((c: any) => {
       groups[c.id] = { className: c.name, batches: [] };
@@ -2433,20 +2529,25 @@ const ExamTimetableModal = ({ exam, batchId, classId, subjects = [], batches = [
       .filter(([_, value]) => value.batches.length > 0)
       .map(([id, value]) => ({ classId: id, ...value }));
   }, [classes, batches]);
+  const batchesByClass = batchesByClass最佳;
 
-  // Subscribe to existing schedules for this exam and active batch
-  useEffect(() => {
+  const fetchSchedules = async () => {
     if (!exam?.id || !activeBatchId) return;
-    const unsub = dbService.subscribe(
-      'examSchedules',
-      [where('examId', '==', exam.id), where('batchId', '==', activeBatchId)],
-      (data) => {
-        // Sort by date ascending
-        const sorted = [...data].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-        setSchedules(sorted);
-      }
-    );
-    return () => unsub();
+    try {
+      const data = await dbService.list('examSchedules', [
+        where('examId', '==', exam.id),
+        where('batchId', '==', activeBatchId)
+      ]);
+      const sorted = [...(data || [])].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+      setSchedules(sorted);
+    } catch (err) {
+      console.error("Failed to fetch examSchedules:", err);
+    }
+  };
+
+  // Fetch existing schedules for this exam and active batch
+  useEffect(() => {
+    fetchSchedules();
   }, [exam?.id, activeBatchId]);
 
   // Handle Class change in modal
@@ -2526,6 +2627,7 @@ const ExamTimetableModal = ({ exam, batchId, classId, subjects = [], batches = [
       // Reset form subject and date for quick next entry
       setSelectedSubjectId('');
       setExamDate('');
+      await fetchSchedules();
     } catch (error: any) {
       console.error('Error scheduling subject:', error);
       toast.error('Failed to schedule subject: ' + error.message);
@@ -2540,6 +2642,7 @@ const ExamTimetableModal = ({ exam, batchId, classId, subjects = [], batches = [
     try {
       await dbService.delete('examSchedules', id);
       toast.success('Schedule deleted');
+      await fetchSchedules();
     } catch (error: any) {
       console.error('Error deleting schedule:', error);
       toast.error('Failed to delete schedule: ' + error.message);
@@ -2584,6 +2687,7 @@ const ExamTimetableModal = ({ exam, batchId, classId, subjects = [], batches = [
         }
       }
       toast.success(`Successfully copied schedule. Initialized ${copyCount} slots across ${targets.length} other classes/sections!`);
+      await fetchSchedules();
     } catch (err: any) {
       console.error('Error copying schedule:', err);
       toast.error('Failed to copy schedule: ' + err.message);
@@ -2620,6 +2724,7 @@ const ExamTimetableModal = ({ exam, batchId, classId, subjects = [], batches = [
         }
       }
       toast.success(`Successfully deleted ${deletedCount} scheduled exam slots across ${targets.length} section(s)!`);
+      await fetchSchedules();
     } catch (err: any) {
       console.error('Error deleting schedules:', err);
       toast.error('Failed to delete schedules: ' + err.message);
@@ -4227,7 +4332,7 @@ const SubjectEntry = ({ students, marks, subjects, selectedSubject, selectedExam
     </div>
   );
 };
-const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, isClass10, selectedClass, classes, selectedBatch, batches, examSchedules: passedExamSchedules }: any) => {
+const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, isClass10, selectedClass, classes, selectedBatch, batches, examSchedules: passedExamSchedules, onDeleteStudent }: any) => {
   const { settings } = useSettings();
   const [attendance, setAttendance] = useState<any[]>([]);
   const [workingDays, setWorkingDays] = useState<any>(null);
@@ -4237,13 +4342,16 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
   const [pdfOrientation, setPdfOrientation] = useState<'landscape' | 'portrait'>('landscape');
 
   useEffect(() => {
-    const unsub = dbService.subscribe('examSchedules', [], (data) => {
-      setLocalExamSchedules(data || []);
-    });
+    let active = true;
+    if (!passedExamSchedules || passedExamSchedules.length === 0) {
+      dbService.list('examSchedules').then(data => {
+        if (active) setLocalExamSchedules(data || []);
+      }).catch(err => console.error("Failed to load localExamSchedules:", err));
+    }
     return () => {
-      if (unsub) unsub();
+      active = false;
     };
-  }, []);
+  }, [passedExamSchedules]);
 
   const allExamSchedules = useMemo(() => {
     return (passedExamSchedules && passedExamSchedules.length > 0) ? passedExamSchedules : localExamSchedules;
@@ -5116,6 +5224,13 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
               <th colSpan={displayMonths.length} className="p-2 text-center border border-neutral-300 bg-amber-100 text-amber-900 font-black text-[11px] tracking-widest">
                 Attendance
               </th>
+
+              {/* Action Column */}
+              {onDeleteStudent && (
+                <th rowSpan={isFA ? 3 : 2} className="p-2 text-center border border-neutral-300 bg-neutral-200 text-neutral-800 font-black text-[11px] align-middle w-12">
+                  Action
+                </th>
+              )}
             </tr>
 
             {/* Header Row 2: Sub-columns or Subject Names */}
@@ -5307,6 +5422,20 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
                       </td>
                     );
                   })}
+
+                  {/* Action Cell */}
+                  {onDeleteStudent && (
+                    <td className="p-2 text-center border border-neutral-300 bg-neutral-50/30">
+                      <button
+                        type="button"
+                        onClick={() => onDeleteStudent(s)}
+                        title={`Permanently delete ${s.name || 'student'} from database`}
+                        className="p-1.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg transition-all active:scale-95 inline-flex items-center justify-center border border-red-200 shadow-xs"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </td>
+                  )}
                 </tr>
               );
             })}

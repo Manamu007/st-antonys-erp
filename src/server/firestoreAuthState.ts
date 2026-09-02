@@ -32,7 +32,7 @@ export const useFirestoreAuthState = async (sessionId: string): Promise<{ state:
     useFallback = true;
   }
 
-  if (useFallback) {
+  const getLocalAuth = async () => {
     const authFolder = path.join(process.cwd(), 'wa_auth', sessionId);
     if (!fs.existsSync(authFolder)) {
       fs.mkdirSync(authFolder, { recursive: true });
@@ -59,50 +59,55 @@ export const useFirestoreAuthState = async (sessionId: string): Promise<{ state:
         }
       }
     };
-  }
-
-  const collection = db.collection('whatsapp_sessions').doc(sessionId);
-  const keysCollection = collection.collection('keys');
-
-  // Pre-initialize in-memory cache with all existing keys from Firestore in ONE single query
-  if (!cacheInitialized[sessionId]) {
-    try {
-      keysCache[sessionId] = {};
-      const keys = await keysCollection.get();
-      keys.forEach((doc: any) => {
-        try {
-          const rawData = doc.data()?.data;
-          if (rawData) {
-            keysCache[sessionId][doc.id] = JSON.parse(rawData, BufferJSON.reviver);
-          }
-        } catch (_) {}
-      });
-      cacheInitialized[sessionId] = true;
-      console.log(`[FirestoreAuthState] Pre-populated in-memory cache for session ${sessionId} with ${keys.size} keys.`);
-    } catch (err: any) {
-      console.warn(`[FirestoreAuthState] Failed to pre-populate cache: ${err.message}. Falling back to lazy caching.`);
-    }
-  }
-
-  // Load creds directly from Firestore to prevent multi-instance stale credentials
-  let creds: AuthenticationCreds;
-  const credsDoc = await collection.get();
-  if (credsDoc.exists && credsDoc.data()?.creds) {
-    creds = JSON.parse(credsDoc.data()?.creds, BufferJSON.reviver);
-  } else {
-    creds = initAuthCreds();
-  }
-
-  const saveCreds = async () => {
-    try {
-      await collection.set({ 
-        creds: JSON.stringify(creds, BufferJSON.replacer),
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-    } catch (err: any) {
-      console.error(`[FirestoreAuthState] Creds write error:`, err);
-    }
   };
+
+  if (useFallback) {
+    return await getLocalAuth();
+  }
+
+  try {
+    const collection = db.collection('whatsapp_sessions').doc(sessionId);
+    const keysCollection = collection.collection('keys');
+
+    // Pre-initialize in-memory cache with all existing keys from Firestore in ONE single query
+    if (!cacheInitialized[sessionId]) {
+      try {
+        keysCache[sessionId] = {};
+        const keys = await keysCollection.get();
+        keys.forEach((doc: any) => {
+          try {
+            const rawData = doc.data()?.data;
+            if (rawData) {
+              keysCache[sessionId][doc.id] = JSON.parse(rawData, BufferJSON.reviver);
+            }
+          } catch (_) {}
+        });
+        cacheInitialized[sessionId] = true;
+        console.log(`[FirestoreAuthState] Pre-populated in-memory cache for session ${sessionId} with ${keys.size} keys.`);
+      } catch (err: any) {
+        console.warn(`[FirestoreAuthState] Note on pre-populating cache: ${err.message}.`);
+      }
+    }
+
+    // Load creds directly from Firestore to prevent multi-instance stale credentials
+    let creds: AuthenticationCreds;
+    const credsDoc = await collection.get();
+    if (credsDoc.exists && credsDoc.data()?.creds) {
+      creds = JSON.parse(credsDoc.data()?.creds, BufferJSON.reviver);
+    } else {
+      creds = initAuthCreds();
+    }
+
+    const saveCreds = async () => {
+      try {
+        await collection.set({ 
+          creds: JSON.stringify(creds, BufferJSON.replacer),
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      } catch (err: any) {
+        console.error(`[FirestoreAuthState] Creds write error:`, err);
+      }
+    };
 
   const deleteDocsInChunks = async (docs: any[]) => {
     const CHUNK_SIZE = 400;
@@ -175,7 +180,8 @@ export const useFirestoreAuthState = async (sessionId: string): Promise<{ state:
                       if (type === 'app-state-sync-key' && value) {
                         value = proto.Message.AppStateSyncKeyData.fromObject(value);
                       }
-                      const id = doc.id.substring(type.length + 1);
+                      const prefix = `${type}-`;
+                      const id = doc.id.startsWith(prefix) ? doc.id.substring(prefix.length) : doc.id;
                       data[id] = value;
                     }
                   } catch (parseErr) {
@@ -232,4 +238,8 @@ export const useFirestoreAuthState = async (sessionId: string): Promise<{ state:
     clearState,
     clearKeys
   };
+  } catch (err: any) {
+    console.warn(`[FirestoreAuthState] Firestore connection failed: ${err?.message}. Falling back to multi-file local storage.`);
+    return await getLocalAuth();
+  }
 };

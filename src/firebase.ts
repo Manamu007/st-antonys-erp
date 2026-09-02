@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, setPersistence, inMemoryPersistence } from 'firebase/auth';
-import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, memoryLocalCache, doc, getDocFromServer, getFirestore, setLogLevel } from 'firebase/firestore';
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, memoryLocalCache, doc, getDoc, getFirestore, setLogLevel } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import firebaseConfig from '../firebase-applet-config.json';
 
@@ -215,7 +215,7 @@ export const testConnection = async (attempt = 1) => {
 
     // Lightweight connection check
     await Promise.race([
-      getDocFromServer(doc(db, 'settings', 'school')).catch(() => null),
+      getDoc(doc(db, 'settings', 'school')).catch(() => null),
       new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeoutMs))
     ]);
 

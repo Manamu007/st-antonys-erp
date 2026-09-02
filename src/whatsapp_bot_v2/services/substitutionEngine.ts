@@ -1,4 +1,4 @@
-import { getDbAdmin, initializationPromise } from '../../server/firebaseAdmin.js';
+import { getDbAdmin, initializationPromise, isDatabaseDenied, setDatabaseDenied } from '../../server/firebaseAdmin.js';
 import { sendMessage } from '../../server/whatsapp.js';
 
 /**
@@ -336,22 +336,28 @@ export async function runTeacherSubstitutionEngine(leaveId: string): Promise<boo
  * Starts a real-time Firestore listener on the 'leaves' collection to detect
  * when a staff leave request has been approved (e.g. from the admin panel, WhatsApp, or AI).
  */
+let unsubscribeLeavesListener: (() => void) | null = null;
+
 export async function startSubstitutionEngineListener(): Promise<void> {
-  console.log(`[Substitution Engine] Initializing real-time Firestore listener for approved leaves...`);
+  if (isDatabaseDenied()) {
+    return;
+  }
   
   // Set of already processed approved leave IDs to avoid redundant executions during startup/snapshots
   const processedLeaveIds = new Set<string>();
 
   try {
     await initializationPromise;
+    if (isDatabaseDenied()) return;
+
     const db = getDbAdmin();
     if (!db) {
-      console.warn(`[Substitution Engine Listener] Admin DB is not initialized. Retrying in 5 seconds...`);
-      setTimeout(startSubstitutionEngineListener, 5000);
       return;
     }
 
-    db.collection('leaves')
+    console.log(`[Substitution Engine] Initializing real-time Firestore listener for approved leaves...`);
+
+    unsubscribeLeavesListener = db.collection('leaves')
       .where('status', '==', 'approved')
       .onSnapshot((snapshot: any) => {
         snapshot.docChanges().forEach(async (change: any) => {
@@ -365,7 +371,7 @@ export async function startSubstitutionEngineListener(): Promise<void> {
             
             const leaveData = change.doc.data();
             // Ensure status is approved and applicant role is teacher/staff
-            if (leaveData.status === 'approved' && (leaveData.applicantRole === 'staff' || leaveData.applicantRole === 'teacher')) {
+            if (leaveData && leaveData.status === 'approved' && (leaveData.applicantRole === 'staff' || leaveData.applicantRole === 'teacher')) {
               processedLeaveIds.add(leaveId);
               console.log(`[Substitution Engine Listener] Detected newly approved leave: ${leaveId} for ${leaveData.applicantName}. Running engine...`);
               
@@ -378,11 +384,24 @@ export async function startSubstitutionEngineListener(): Promise<void> {
           }
         });
       }, (error: any) => {
-        console.error(`[Substitution Engine Listener] Firestore listener encountered an error:`, error);
-        // Attempt restart in 10 seconds
-        setTimeout(startSubstitutionEngineListener, 10000);
+        const errText = (error?.message || String(error)).toLowerCase();
+        if (errText.includes('retries') || errText.includes('billing') || errText.includes('permission_denied') || errText.includes('quota') || errText.includes('exceeded')) {
+          setDatabaseDenied(true);
+          if (unsubscribeLeavesListener) {
+            try { unsubscribeLeavesListener(); } catch {}
+            unsubscribeLeavesListener = null;
+          }
+          console.warn(`[Substitution Engine Listener] Firestore listener deactivated (database requires billing or permissions).`);
+        } else {
+          console.error(`[Substitution Engine Listener] Firestore listener encountered an error:`, error);
+        }
       });
   } catch (err: any) {
-    console.error(`[Substitution Engine Listener] Failed to start:`, err.message);
+    const errText = (err?.message || String(err)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('quota')) {
+      setDatabaseDenied(true);
+    } else {
+      console.error(`[Substitution Engine Listener] Failed to start:`, err.message);
+    }
   }
 }

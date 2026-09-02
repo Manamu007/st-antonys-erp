@@ -2,7 +2,7 @@ import { Router } from "express";
 import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
-import { getDbAdmin } from "./firebaseAdmin.js";
+import { getDbAdmin, isDatabaseDenied, setDatabaseDenied } from "./firebaseAdmin.js";
 
 const router = Router();
 const BACKUPS_DIR = path.join(process.cwd(), "backups");
@@ -339,6 +339,13 @@ router.post("/db-proxy", async (req, res) => {
     invalidateProxyCache(colPath);
   }
 
+  if (isDatabaseDenied()) {
+    if (isReadOp) {
+      return res.json({ success: false, denied: true, requiresBilling: true, data: operation === 'list' ? [] : null });
+    }
+    return res.status(403).json({ success: false, error: "Database requires Google Cloud billing to be enabled.", requiresBilling: true });
+  }
+
   try {
     const db = getDbAdmin();
     const colRef = db.collection(colPath);
@@ -513,6 +520,15 @@ router.post("/db-proxy", async (req, res) => {
 
     return res.status(400).json({ error: "Unsupported operation: " + operation });
   } catch (err: any) {
+    const errText = (err?.message || String(err)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing') || errText.includes('quota') || errText.includes('not_found') || errText.includes('not found') || errText.includes('5 not_found') || errText.includes('unavailable')) {
+      setDatabaseDenied(true);
+      console.warn(`[db-proxy] Database is unavailable or requires creation/billing on project (${err.message}). Returning fallback response for ${operation} on ${colPath}.`);
+      if (isReadOp) {
+        return res.json({ success: false, denied: true, notFound: errText.includes('not_found') || errText.includes('not found'), requiresBilling: errText.includes('billing'), data: operation === 'list' ? [] : null });
+      }
+      return res.status(403).json({ success: false, error: err.message, denied: true, notFound: true });
+    }
     console.error(`[db-proxy] Operation ${operation} failed on ${colPath}:`, err);
     return res.status(500).json({ error: err.message });
   }

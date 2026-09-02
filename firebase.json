@@ -1,11 +1,11 @@
 {
   "firestore": [
     {
-      "database": "(default)",
+      "database": "antony-database1",
       "rules": "firestore.rules"
     },
     {
-      "database": "antony-database1",
+      "database": "(default)",
       "rules": "firestore.rules"
     }
   ],

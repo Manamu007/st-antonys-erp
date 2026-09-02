@@ -13,7 +13,7 @@ import { Server } from 'socket.io';
 import path from 'path';
 import fs from 'fs';
 import { getSmartBotResponse } from './aiBotService.js';
-import { getDbAdmin, initializationPromise, isDatabaseDenied } from './firebaseAdmin.js';
+import { getDbAdmin, initializationPromise, isDatabaseDenied, setDatabaseDenied } from './firebaseAdmin.js';
 import admin from './firebaseAdmin.js';
 import { useFirestoreAuthState } from './firestoreAuthState.js';
 import {
@@ -460,13 +460,10 @@ async function cleanupStalledMessages() {
       }
     }
   } catch (err: any) {
-    if (err.message.includes('PERMISSION_DENIED')) {
-      const db = getDbAdmin();
-      const fsAdmin = db as any;
-      console.error(`[WhatsApp Queue] Cleanup failed with PERMISSION_DENIED.`);
-      console.error(`[WhatsApp Queue] DB Info - Project: ${fsAdmin._projectId || fsAdmin.projectId}, Database: ${fsAdmin._databaseId || fsAdmin.databaseId || '(default)'}`);
-      console.error(`[WhatsApp Queue] This error occurs when the service account lacks 'datastore.databases.get' or 'datastore.entities.get' on the target database.`);
-      console.error(`[WhatsApp Queue] Error Detail: ${err.message}`);
+    const errText = (err?.message || String(err)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing') || errText.includes('not_found') || errText.includes('not found') || errText.includes('5 not_found')) {
+      setDatabaseDenied(true);
+      console.warn(`[WhatsApp Queue] Database is currently unavailable or requires billing/setup (${err.message}). Skipping cleanup.`);
     } else {
       console.error("[WhatsApp Queue] Cleanup failed:", err.message);
     }
@@ -888,11 +885,19 @@ async function processQueue() {
               try {
                 const { state } = await useFirestoreAuthState(getSessionId());
                 if (state && state.keys && state.keys.set) {
-                  await state.keys.set({
-                    'session': { [jid]: null },
-                    'sender-key': { [jid]: null },
-                    'pre-key': { [jid]: null }
-                  });
+                  const cleanJid = jid.replace(/:\d+@/, '@');
+                  const jidVariations = Array.from(new Set([jid, cleanJid]));
+                  const keysToClear: any = {
+                    'session': {},
+                    'sender-key': {},
+                    'pre-key': {}
+                  };
+                  for (const jidVar of jidVariations) {
+                    keysToClear['session'][jidVar] = null;
+                    keysToClear['sender-key'][jidVar] = null;
+                    keysToClear['pre-key'][jidVar] = null;
+                  }
+                  await state.keys.set(keysToClear);
                 }
               } catch (healErr: any) {
                 console.warn(`[WhatsApp Queue] Session key clear error:`, healErr?.message || healErr);
@@ -1204,7 +1209,12 @@ export async function reconcileWhatsAppStats() {
     // Reconciliation succeeded cleanly
     return summaryPayload;
   } catch (err: any) {
-    console.warn(`[WhatsApp Stats Reconcile] Sync failed:`, err.message);
+    const errText = (err?.message || String(err)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing') || errText.includes('not_found') || errText.includes('not found') || errText.includes('5 not_found')) {
+      setDatabaseDenied(true);
+    } else {
+      console.warn(`[WhatsApp Stats Reconcile] Sync note:`, err.message);
+    }
     return null;
   }
 }
@@ -2755,24 +2765,30 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
           hasDecryptionErrorInThisBatch = true;
           
           const remoteJid = msg.key?.remoteJid;
-          if (remoteJid) {
-            console.warn(`[WhatsApp] Self-Healing: Clearing corrupted session, sender-key & pre-key for JID ${remoteJid}...`);
+          const participant = (msg.key as any)?.participant;
+          const targetJids = Array.from(new Set([remoteJid, participant].filter(Boolean) as string[]));
+
+          for (const rawJid of targetJids) {
+            const cleanJid = rawJid.replace(/:\d+@/, '@');
+            const variations = Array.from(new Set([rawJid, cleanJid]));
+            
+            console.warn(`[WhatsApp] Self-Healing: Clearing corrupted session, sender-key & pre-key for JID ${cleanJid}...`);
             try {
-              await state.keys.set({
-                'session': {
-                  [remoteJid]: null
-                },
-                'sender-key': {
-                  [remoteJid]: null
-                },
-                'pre-key': {
-                  [remoteJid]: null
-                }
-              });
+              const keysToClear: any = {
+                'session': {},
+                'sender-key': {},
+                'pre-key': {}
+              };
+              for (const jidVar of variations) {
+                keysToClear['session'][jidVar] = null;
+                keysToClear['sender-key'][jidVar] = null;
+                keysToClear['pre-key'][jidVar] = null;
+              }
+              await state.keys.set(keysToClear);
               hasHealedAny = true;
-              console.log(`[WhatsApp] Cleared session & pre-keys for ${remoteJid} in database.`);
+              console.log(`[WhatsApp] Cleared session & pre-keys for ${cleanJid} in database.`);
             } catch (healErr: any) {
-              console.error(`[WhatsApp] Healing keys error for ${remoteJid}:`, healErr.message);
+              console.error(`[WhatsApp] Healing keys error for ${cleanJid}:`, healErr.message);
             }
           }
         }
@@ -3328,6 +3344,9 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
 
 // Watchdog to ensure connection stays alive
 let watchdogStarted = false;
+let unsubscribeStatusListener: (() => void) | null = null;
+let unsubscribeCommandsListener: (() => void) | null = null;
+
 export async function startWhatsAppWatchdog(io: Server) {
   if (watchdogStarted) return;
   watchdogStarted = true;
@@ -3339,93 +3358,121 @@ export async function startWhatsAppWatchdog(io: Server) {
     const db = getDbAdmin();
     if (db && !isDatabaseDenied()) {
       console.log(`[WhatsApp Sync] Setting up real-time listener for multi-instance sync (instanceId: ${instanceId})...`);
-      db.collection(LOCK_COLLECTION).doc(STATUS_DOC).onSnapshot((doc) => {
-        if (doc.exists) {
-          const data = doc.data();
-          if (data) {
-            // If we are the active owner instance, monitor for on-demand group refresh triggers from standby instances
-            if (sock && connectionStatus === 'open') {
-              if (data.triggerGroupRefresh && data.triggerGroupRefresh !== lastProcessedGroupRefreshTrigger) {
-                lastProcessedGroupRefreshTrigger = data.triggerGroupRefresh;
-                console.log(`[WhatsApp Sync] Live group refresh trigger detected. Executing fetchGroups()...`);
-                fetchGroups().catch((e: any) => console.error("[WhatsApp Sync] Live triggered fetchGroups error:", e.message));
+      try {
+        unsubscribeStatusListener = db.collection(LOCK_COLLECTION).doc(STATUS_DOC).onSnapshot((doc) => {
+          if (doc.exists) {
+            const data = doc.data();
+            if (data) {
+              // If we are the active owner instance, monitor for on-demand group refresh triggers from standby instances
+              if (sock && connectionStatus === 'open') {
+                if (data.triggerGroupRefresh && data.triggerGroupRefresh !== lastProcessedGroupRefreshTrigger) {
+                  lastProcessedGroupRefreshTrigger = data.triggerGroupRefresh;
+                  console.log(`[WhatsApp Sync] Live group refresh trigger detected. Executing fetchGroups()...`);
+                  fetchGroups().catch((e: any) => console.error("[WhatsApp Sync] Live triggered fetchGroups error:", e.message));
+                }
               }
-            }
 
-            const isOwner = data.instanceId === instanceId;
-            if (!isOwner) {
-              const updatedAt = data.updatedAt;
-              let docTime = 0;
-              if (updatedAt) {
-                if (typeof updatedAt.toMillis === 'function') docTime = updatedAt.toMillis();
-                else if (updatedAt instanceof Date) docTime = updatedAt.getTime();
-                else docTime = new Date(updatedAt).getTime() || 0;
-              }
-              const isRecent = docTime === 0 || (Date.now() - docTime < 35000);
+              const isOwner = data.instanceId === instanceId;
+              if (!isOwner) {
+                const updatedAt = data.updatedAt;
+                let docTime = 0;
+                if (updatedAt) {
+                  if (typeof updatedAt.toMillis === 'function') docTime = updatedAt.toMillis();
+                  else if (updatedAt instanceof Date) docTime = updatedAt.getTime();
+                  else docTime = new Date(updatedAt).getTime() || 0;
+                }
+                const isRecent = docTime === 0 || (Date.now() - docTime < 35000);
 
-              if (isRecent && data.status && data.status !== connectionStatus) {
-                console.log(`[WhatsApp Sync] Status synchronized from Firestore: ${connectionStatus} -> ${data.status}`);
-                connectionStatus = data.status;
-                io?.emit('wa:status', connectionStatus);
-              }
-              if (isRecent && data.qr !== qrCode && data.status === 'qr') {
-                console.log(`[WhatsApp Sync] QR code synchronized from Firestore`);
-                qrCode = data.qr || null;
-                io?.emit('wa:qr', qrCode);
-              }
-            }
-          }
-        }
-      }, (err) => {
-        console.error(`[WhatsApp Sync] Firestore listener error: ${err.message}`);
-      });
-
-      // Listen for interactive WhatsApp commands from standby instances (such as resolveInviteLink)
-      db.collection('whatsapp_commands')
-        .where('status', '==', 'pending')
-        .onSnapshot((snapshot) => {
-          if (!sock || connectionStatus !== 'open') return; // Only the active owner processes commands
-          
-          snapshot.docChanges().forEach(async (change) => {
-            if (change.type === 'added' || change.type === 'modified') {
-              const doc = change.doc;
-              const commandData = doc.data();
-              if (commandData && commandData.status === 'pending') {
-                const commandId = doc.id;
-                console.log(`[WhatsApp Command] Received pending command "${commandData.command}" (ID: ${commandId})`);
-                
-                // Update status to processing
-                await doc.ref.update({ status: 'processing', startedAt: new Date().toISOString() }).catch(() => {});
-                
-                try {
-                  let result: any = null;
-                  if (commandData.command === 'resolve_invite') {
-                    const { inviteLink } = commandData.args;
-                    result = await resolveInviteLink(inviteLink);
-                  } else {
-                    throw new Error(`Unknown command: ${commandData.command}`);
-                  }
-                  
-                  await doc.ref.update({
-                    status: 'completed',
-                    result,
-                    completedAt: new Date().toISOString()
-                  });
-                  console.log(`[WhatsApp Command] Command ${commandId} completed successfully.`);
-                } catch (cmdErr: any) {
-                  console.error(`[WhatsApp Command] Command ${commandId} failed:`, cmdErr.message);
-                  await doc.ref.update({
-                    status: 'failed',
-                    error: cmdErr.message || String(cmdErr),
-                    failedAt: new Date().toISOString()
-                  }).catch(() => {});
+                if (isRecent && data.status && data.status !== connectionStatus) {
+                  console.log(`[WhatsApp Sync] Status synchronized from Firestore: ${connectionStatus} -> ${data.status}`);
+                  connectionStatus = data.status;
+                  io?.emit('wa:status', connectionStatus);
+                }
+                if (isRecent && data.qr !== qrCode && data.status === 'qr') {
+                  console.log(`[WhatsApp Sync] QR code synchronized from Firestore`);
+                  qrCode = data.qr || null;
+                  io?.emit('wa:qr', qrCode);
                 }
               }
             }
-          });
+          }
         }, (err) => {
-          console.error(`[WhatsApp Command] Firestore commands listener error:`, err.message);
+          const errText = (err?.message || String(err)).toLowerCase();
+          if (errText.includes('retries') || errText.includes('billing') || errText.includes('permission_denied') || errText.includes('quota') || errText.includes('exceeded')) {
+            setDatabaseDenied(true);
+            if (unsubscribeStatusListener) {
+              try { unsubscribeStatusListener(); } catch {}
+              unsubscribeStatusListener = null;
+            }
+            console.warn(`[WhatsApp Sync] Firestore multi-instance listener deactivated (database requires billing or permissions).`);
+          } else {
+            console.error(`[WhatsApp Sync] Firestore listener error: ${err.message}`);
+          }
         });
+      } catch (err: any) {
+        console.warn(`[WhatsApp Sync] Could not attach status listener: ${err.message}`);
+      }
+
+      // Listen for interactive WhatsApp commands from standby instances (such as resolveInviteLink)
+      try {
+        unsubscribeCommandsListener = db.collection('whatsapp_commands')
+          .where('status', '==', 'pending')
+          .onSnapshot((snapshot) => {
+            if (!sock || connectionStatus !== 'open') return; // Only the active owner processes commands
+            
+            snapshot.docChanges().forEach(async (change) => {
+              if (change.type === 'added' || change.type === 'modified') {
+                const doc = change.doc;
+                const commandData = doc.data();
+                if (commandData && commandData.status === 'pending') {
+                  const commandId = doc.id;
+                  console.log(`[WhatsApp Command] Received pending command "${commandData.command}" (ID: ${commandId})`);
+                  
+                  // Update status to processing
+                  await doc.ref.update({ status: 'processing', startedAt: new Date().toISOString() }).catch(() => {});
+                  
+                  try {
+                    let result: any = null;
+                    if (commandData.command === 'resolve_invite') {
+                      const { inviteLink } = commandData.args;
+                      result = await resolveInviteLink(inviteLink);
+                    } else {
+                      throw new Error(`Unknown command: ${commandData.command}`);
+                    }
+                    
+                    await doc.ref.update({
+                      status: 'completed',
+                      result,
+                      completedAt: new Date().toISOString()
+                    });
+                    console.log(`[WhatsApp Command] Command ${commandId} completed successfully.`);
+                  } catch (cmdErr: any) {
+                    console.error(`[WhatsApp Command] Command ${commandId} failed:`, cmdErr.message);
+                    await doc.ref.update({
+                      status: 'failed',
+                      error: cmdErr.message || String(cmdErr),
+                      failedAt: new Date().toISOString()
+                    }).catch(() => {});
+                  }
+                }
+              }
+            });
+          }, (err) => {
+            const errText = (err?.message || String(err)).toLowerCase();
+            if (errText.includes('retries') || errText.includes('billing') || errText.includes('permission_denied') || errText.includes('quota') || errText.includes('exceeded')) {
+              setDatabaseDenied(true);
+              if (unsubscribeCommandsListener) {
+                try { unsubscribeCommandsListener(); } catch {}
+                unsubscribeCommandsListener = null;
+              }
+              console.warn(`[WhatsApp Command] Firestore commands listener deactivated (database requires billing or permissions).`);
+            } else {
+              console.error(`[WhatsApp Command] Firestore commands listener error:`, err.message);
+            }
+          });
+      } catch (err: any) {
+        console.warn(`[WhatsApp Command] Could not attach commands listener: ${err.message}`);
+      }
     }
   } catch (syncErr: any) {
     console.error(`[WhatsApp Sync] Error setting up sync listener: ${syncErr.message}`);
@@ -3460,6 +3507,7 @@ export async function startWhatsAppWatchdog(io: Server) {
 
 // Periodic cleanup of expired temporary data and files older than 1 week
 setInterval(async () => {
+  if (isDatabaseDenied()) return;
   try {
     const db = getDbAdmin();
     const now = new Date();
@@ -3580,20 +3628,23 @@ setInterval(async () => {
     }
     
   } catch (e: any) {
-    console.warn(`[WhatsApp & Storage Cleanup] Error during periodic cleanup: ${e.message}`);
+    const errText = (e?.message || String(e)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
+      setDatabaseDenied(true);
+    } else {
+      console.warn(`[WhatsApp & Storage Cleanup] Error during periodic cleanup: ${e.message}`);
+    }
   }
 }, 4 * 60 * 60 * 1000); // Every 4 hours
 
 export async function checkAndSendAutomatedBirthdays() {
   if (isDatabaseDenied()) {
-    console.warn(`[Automated Birthdays] Database access is denied. Skipping check.`);
     return;
   }
 
   try {
     const db = getDbAdmin();
     if (!db) {
-      console.warn(`[Automated Birthdays] DB Admin not initialized. Skipping check.`);
       return;
     }
 
@@ -3716,16 +3767,25 @@ export async function checkAndSendAutomatedBirthdays() {
     });
 
     console.log(`[Automated Birthdays] Successfully logged run for ${istDateStr}. Total queued: ${wishesQueued}`);
-  } catch (error) {
-    console.error(`[Automated Birthdays] Error in automated birthday checker:`, error);
+  } catch (error: any) {
+    const errText = (error?.message || String(error)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing') || errText.includes('not_found') || errText.includes('not found') || errText.includes('5 not_found')) {
+      setDatabaseDenied(true);
+      console.warn(`[Automated Birthdays] Database requires Google Cloud billing or creation on project. Background automated birthdays skipped.`);
+    } else {
+      console.error(`[Automated Birthdays] Error in automated birthday checker:`, error);
+    }
   }
 }
 
 export async function checkAndRunStaffAutoAttendance() {
+  if (isDatabaseDenied()) {
+    return;
+  }
+
   try {
     const db = getDbAdmin();
     if (!db) {
-      console.warn(`[Staff Auto Attendance] DB Admin not initialized. Skipping check.`);
       return;
     }
 
@@ -3834,8 +3894,14 @@ export async function checkAndRunStaffAutoAttendance() {
       success: true
     });
 
-  } catch (error) {
-    console.error(`[Staff Auto Attendance] Error in automated staff attendance:`, error);
+  } catch (error: any) {
+    const errText = (error?.message || String(error)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing') || errText.includes('not_found') || errText.includes('not found') || errText.includes('5 not_found')) {
+      setDatabaseDenied(true);
+      console.warn(`[Staff Auto Attendance] Database requires Google Cloud billing or creation on project. Background automated attendance skipped.`);
+    } else {
+      console.error(`[Staff Auto Attendance] Error in automated staff attendance:`, error);
+    }
   }
 }
 

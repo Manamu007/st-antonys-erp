@@ -2536,7 +2536,7 @@ function HostelMess() {
     try {
       setLoading(true);
       // Using dbService.set which internally uses setDoc with { merge: true }
-      // This handles both initial creation and subsequent updates for antony-database1
+      // This handles both initial creation and subsequent updates for default database
       await dbService.set('hostel_mess', 'weekly_menu', { 
         menu, 
         updatedAt: new Date().toISOString() 

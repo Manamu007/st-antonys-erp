@@ -42,10 +42,12 @@ export const initializationPromise = (async () => {
         console.log(`[FirebaseAdmin] Connectivity check verified.`);
         healthDoc.set({ verified: true, at: new Date().toISOString() }, { merge: true }).catch(() => {});
       }).catch((err: any) => {
-        console.warn(`[FirebaseAdmin] Background health check info: ${err.message}`);
         const errText = (err.message || '').toLowerCase();
-        if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('quota') || errText.includes('disabled')) {
+        if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('quota') || errText.includes('disabled') || errText.includes('requires billing') || errText.includes('not_found') || errText.includes('not found') || errText.includes('5 not_found')) {
           isNamedDatabaseDenied = true;
+          console.warn(`[FirebaseAdmin] Database is unavailable or requires Google Cloud billing/creation on project ${projectId}. Background admin operations will be gracefully skipped.`);
+        } else {
+          console.warn(`[FirebaseAdmin] Background health check info: ${err.message}`);
         }
       });
 
@@ -70,19 +72,21 @@ export const initializationPromise = (async () => {
     
     // Only mark as billing denied if error explicitly indicates permission/billing issue
     const errText = (lastInitError || '').toLowerCase();
-    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('quota')) {
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('quota') || errText.includes('requires billing')) {
       isNamedDatabaseDenied = true;
     } else {
       isNamedDatabaseDenied = false;
     }
   } else {
-    console.log(`[FirebaseAdmin] SUCCESS: Connected to ${admin.app().options.projectId} / ${dbAdmin.databaseId || '(default)'}`);
-    isNamedDatabaseDenied = false;
+    console.log(`[FirebaseAdmin] Initialized Firebase Admin for ${admin.app().options.projectId} / ${dbAdmin.databaseId || '(default)'}`);
   }
 })();
 
 export const isDbInitialized = () => !!dbAdmin;
 export const getDbAdminInstance = () => dbAdmin;
+export const setDatabaseDenied = (denied = true) => {
+  isNamedDatabaseDenied = denied;
+};
 export const getDbAdmin = () => {
   if (!dbAdmin) {
     if (isNamedDatabaseDenied) {

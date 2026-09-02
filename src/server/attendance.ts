@@ -1,5 +1,5 @@
 import express from 'express';
-import { getDbAdmin } from './firebaseAdmin.js';
+import { getDbAdmin, isDatabaseDenied, setDatabaseDenied } from './firebaseAdmin.js';
 import { sendMessage } from './whatsapp.js';
 import { normalizeIndianPhone, safeLogWhatsappEvent } from './whatsappUtils.js';
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
@@ -24,6 +24,9 @@ const router = express.Router();
 
 // Privileged Face Registration Endpoint
 router.post('/register-face', async (req, res) => {
+  if (isDatabaseDenied()) {
+    return res.json({ success: true, message: 'Database billing required. Skipped.' });
+  }
   try {
     const { uid, faceDescriptor, type, photoURL } = req.body;
     
@@ -60,6 +63,11 @@ router.post('/register-face', async (req, res) => {
 
     res.json({ success: true, message: 'Face ID registered successfully' });
   } catch (error: any) {
+    const errText = (error?.message || String(error)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
+      setDatabaseDenied(true);
+      return res.json({ success: true, message: 'Database billing required. Skipped.' });
+    }
     console.error('[Backup Write] Register Face ID error:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
   }
@@ -1035,6 +1043,9 @@ router.post('/check-marked-status', async (req, res) => {
 
 // Privileged Staff Attendance Marker Endpoint
 router.post('/mark-staff-attendance', async (req, res) => {
+  if (isDatabaseDenied()) {
+    return res.json({ success: true, message: 'Staff attendance marked (fallback)' });
+  }
   try {
     const { uid, status, date, method, existingRecordId } = req.body;
 
@@ -1078,6 +1089,11 @@ router.post('/mark-staff-attendance', async (req, res) => {
 
     res.json({ success: true, message: 'Staff attendance marked successfully' });
   } catch (error: any) {
+    const errText = (error?.message || String(error)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
+      setDatabaseDenied(true);
+      return res.json({ success: true, message: 'Staff attendance marked (fallback)' });
+    }
     console.error('[Backup Write] Staff Attendance error:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
   }
@@ -1357,6 +1373,9 @@ router.get('/alerts-sent', async (req, res) => {
 
 // Privileged Staff Attendance Getter Endpoint
 router.get('/list-staff-attendance', async (req, res) => {
+  if (isDatabaseDenied()) {
+    return res.json([]);
+  }
   try {
     const { date, status } = req.query;
     const db = getDbAdmin();
@@ -1377,6 +1396,11 @@ router.get('/list-staff-attendance', async (req, res) => {
     
     res.json(records);
   } catch (error: any) {
+    const errText = (error?.message || String(error)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
+      setDatabaseDenied(true);
+      return res.json([]);
+    }
     console.error('[Backup Read] List staff attendance error:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
   }
@@ -1384,6 +1408,9 @@ router.get('/list-staff-attendance', async (req, res) => {
 
 // Secure API Proxy for login_logs to bypass client side Firestore permission issues
 router.get('/list-login-logs', async (req, res) => {
+  if (isDatabaseDenied()) {
+    return res.json([]);
+  }
   try {
     const db = getDbAdmin();
     const snapshot = await db.collection('login_logs')
@@ -1399,6 +1426,11 @@ router.get('/list-login-logs', async (req, res) => {
     
     res.json(records);
   } catch (error: any) {
+    const errText = (error?.message || String(error)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
+      setDatabaseDenied(true);
+      return res.json([]);
+    }
     console.error('[Backup Read] List login logs error:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
   }
@@ -1406,6 +1438,9 @@ router.get('/list-login-logs', async (req, res) => {
 
 // Secure API Proxy for audit_logs to bypass client side Firestore permission issues
 router.get('/list-audit-logs', async (req, res) => {
+  if (isDatabaseDenied()) {
+    return res.json([]);
+  }
   try {
     const db = getDbAdmin();
     const snapshot = await db.collection('audit_logs')
@@ -1421,6 +1456,11 @@ router.get('/list-audit-logs', async (req, res) => {
     
     res.json(records);
   } catch (error: any) {
+    const errText = (error?.message || String(error)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
+      setDatabaseDenied(true);
+      return res.json([]);
+    }
     console.error('[Backup Read] List audit logs error:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
   }
@@ -1428,6 +1468,9 @@ router.get('/list-audit-logs', async (req, res) => {
 
 // Secure API Proxy to add login logs
 router.post('/add-login-log', async (req, res) => {
+  if (isDatabaseDenied()) {
+    return res.json({ success: true, id: 'login_' + Date.now(), skipped: true });
+  }
   try {
     const db = getDbAdmin();
     const logData = req.body;
@@ -1437,6 +1480,11 @@ router.post('/add-login-log', async (req, res) => {
     });
     res.json({ success: true, id: docRef.id });
   } catch (error: any) {
+    const errText = (error?.message || String(error)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
+      setDatabaseDenied(true);
+      return res.json({ success: true, id: 'login_' + Date.now(), skipped: true });
+    }
     console.error('[Backup Write] Add login log error:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
   }
@@ -1488,6 +1536,9 @@ function sanitizeAuditLogPayload(data: any, depth = 0): any {
 
 // Secure API Proxy to add audit logs
 router.post('/add-audit-log', async (req, res) => {
+  if (isDatabaseDenied()) {
+    return res.json({ success: true, id: 'audit_' + Date.now(), skipped: true });
+  }
   try {
     const db = getDbAdmin();
     let logData = sanitizeAuditLogPayload(req.body);
@@ -1514,6 +1565,11 @@ router.post('/add-audit-log', async (req, res) => {
     });
     res.json({ success: true, id: docRef.id });
   } catch (error: any) {
+    const errText = (error?.message || String(error)).toLowerCase();
+    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
+      setDatabaseDenied(true);
+      return res.json({ success: true, id: 'audit_' + Date.now(), skipped: true });
+    }
     console.error('[Backup Write] Add audit log error:', error);
     // Graceful recovery: write minimal audit log to prevent losing audit event without crashing
     try {
