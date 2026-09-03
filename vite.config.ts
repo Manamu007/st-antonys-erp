@@ -102,8 +102,12 @@ export default defineConfig(({command, mode}) => {
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
+        'react': path.resolve(__dirname, 'node_modules/react'),
+        'react-dom': path.resolve(__dirname, 'node_modules/react-dom'),
+        'react/jsx-runtime': path.resolve(__dirname, 'node_modules/react/jsx-runtime.js'),
+        'react/jsx-dev-runtime': path.resolve(__dirname, 'node_modules/react/jsx-dev-runtime.js'),
       },
-      dedupe: ['react', 'react-dom', 'react-router-dom', 'motion', 'motion/react'],
+      dedupe: ['react', 'react-dom', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'react-router-dom', 'motion', 'motion/react'],
     },
     optimizeDeps: {
       include: [
@@ -113,10 +117,16 @@ export default defineConfig(({command, mode}) => {
         'react/jsx-runtime',
         'react/jsx-dev-runtime',
         'react-router-dom',
+        'motion',
         'motion/react',
         'sonner',
         'lucide-react',
+        'recharts',
+        'clsx',
+        'tailwind-merge',
+        'date-fns',
       ],
+      force: true,
     },
     build: {
       outDir: 'dist',

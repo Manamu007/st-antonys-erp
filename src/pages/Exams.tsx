@@ -33,7 +33,13 @@ import {
   X,
   Zap,
   RefreshCw,
-  Sparkles
+  Sparkles,
+  Eye,
+  Info,
+  ExternalLink,
+  PhoneCall,
+  CheckCircle2,
+  XCircle
 } from 'lucide-react';
 import { dbService } from '../services/dbService';
 import { Class10DailyExams } from '../components/Class10DailyExams';
@@ -279,6 +285,44 @@ const isClass10NameOrId = (val?: any): boolean => {
   return false;
 };
 
+export const isClass6to9NameOrId = (val?: any): boolean => {
+  if (!val) return false;
+  const str = String(val).toLowerCase().trim();
+  if (!str) return false;
+  if (isClass10NameOrId(val)) return false;
+
+  // Check Roman numerals: VI, VII, VIII, IX
+  if (/\b(vi|vii|viii|ix)\b/i.test(str)) return true;
+
+  // Check digits: 6, 7, 8, 9
+  if (/\b(6|7|8|9)\b/.test(str)) return true;
+  if (/\b(6th|7th|8th|9th)\b/.test(str)) return true;
+
+  if (
+    str.includes('class 6') || str.includes('class-6') || str.includes('class_6') || str.includes('class6') ||
+    str.includes('class 7') || str.includes('class-7') || str.includes('class_7') || str.includes('class7') ||
+    str.includes('class 8') || str.includes('class-8') || str.includes('class_8') || str.includes('class8') ||
+    str.includes('class 9') || str.includes('class-9') || str.includes('class_9') || str.includes('class9')
+  ) return true;
+
+  if (
+    str.includes('6th') || str.includes('7th') || str.includes('8th') || str.includes('9th') ||
+    str.includes('six') || str.includes('seven') || str.includes('eight') || str.includes('nine')
+  ) return true;
+
+  return false;
+};
+
+export const getPerformanceCategory = (percentage: number): string => {
+  if (percentage >= 90) return '🌟 Outstanding';
+  if (percentage >= 80) return '⭐ Excellent';
+  if (percentage >= 70) return 'Very Good';
+  if (percentage >= 60) return 'Good';
+  if (percentage >= 50) return 'Average';
+  if (percentage >= 40) return 'Needs Improvement';
+  return 'Poor / Fail';
+};
+
 const Exams: React.FC = () => {
   const { profile, hasPermission, isAdmin, user } = useAuth();
   const { settings } = useSettings();
@@ -365,6 +409,16 @@ const Exams: React.FC = () => {
     if (selectedBatch && isClass10NameOrId(selectedBatch)) return true;
     return false;
   }, [activeClassObj, activeBatchObj, selectedClass, selectedBatch]);
+
+  const isClass6to9 = useMemo(() => {
+    if (isClass10) return false;
+    if (activeClassObj && isClass6to9NameOrId(activeClassObj.name || activeClassObj.id || activeClassObj.code)) return true;
+    if (activeBatchObj && isClass6to9NameOrId(activeBatchObj.name || activeBatchObj.id || activeBatchObj.classId)) return true;
+    if (selectedClass && isClass6to9NameOrId(selectedClass)) return true;
+    if (selectedBatch && isClass6to9NameOrId(selectedBatch)) return true;
+    if (activeClassObj && !isPrimaryClass(activeClassObj.name) && !isClass10NameOrId(activeClassObj.name)) return true;
+    return false;
+  }, [isClass10, activeClassObj, activeBatchObj, selectedClass, selectedBatch]);
 
   // స్ట్రిక్ట్ యాక్సెస్ కంట్రోల్ వేరియబుల్స్
   const looseAccess = isAdmin || profile?.role === 'admin' || profile?.role === 'principal' || hasPermission('exams_manage') || hasPermission('exams_view_all') || hasPermission('classes_view_all');
@@ -1586,18 +1640,36 @@ const Exams: React.FC = () => {
     if (selectedExam && exams.find(e => e.id === selectedExam)?.type === 'SA') {
       return saWritten;
     }
+    if (isClass10) {
+      // Class 10 FA uses only the FA Written Test marks (Max 50) without slip tests
+      return faWritten;
+    }
+    if (isClass6to9) {
+      // Class 6 to 9 has no HW in subject marks entry: ST-1 (Max 10) + ST-2 (Max 5) + FA Written (Max 35) = 50
+      return st1 + st2 + faWritten;
+    }
     return st1 + st2 + hw + faWritten;
   };
 
   const sendWhatsApp = (student: any) => {
     const studentMarks = resolvedMarks.filter(m => m.studentId === student.id);
-    let message = `*Exam Results: ${exams.find(e => e.id === selectedExam)?.title}*\n`;
+    const activeExam = exams.find(e => e.id === selectedExam);
+    const isFA = activeExam?.type === 'FA';
+    let message = `*Exam Results: ${activeExam?.title}*\n`;
     message += `Student: ${student.name}\n`;
     message += `Roll No: ${student.rollNumber}\n\n`;
     
-    studentMarks.forEach(m => {
-      const subject = subjects.find(s => s.id === m.subjectId);
-      message += `${subject?.name}: ${calculateTotal(m)}\n`;
+    // Sort subjects by standard curriculum order: Telugu, Hindi, English, Mathematics, Physics, Biology, Social Studies
+    const sortedSubjects = [...(subjects || [])].sort(compareSubjectsStandard);
+    sortedSubjects.forEach(subject => {
+      const m = studentMarks.find(mark => mark.subjectId === subject.id);
+      if (m) {
+        if (isClass10 && isFA) {
+          message += `${subject?.name}: ${calculateTotal(m)}/50\n`;
+        } else {
+          message += `${subject?.name}: ${calculateTotal(m)}\n`;
+        }
+      }
     });
 
     const url = `https://wa.me/${student.whatsappNumber}?text=${encodeURIComponent(message)}`;
@@ -2206,6 +2278,11 @@ const Exams: React.FC = () => {
                 classes={classes}
                 batches={batches}
                 examSchedules={examSchedules}
+                isClass10={isClass10}
+                isClass6to9={isClass6to9}
+                isPrimary={isPrimary}
+                resolvedMarks={resolvedMarks}
+                setActiveTab={setActiveTab}
               />
             )}
             {activeTab === 'central-register' && (
@@ -5557,6 +5634,21 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
     </div>
   );
 };
+
+function normalizeIndianPhone(phone: string): string {
+  if (!phone) return '';
+  let cleaned = String(phone).replace(/\D/g, '');
+  if (cleaned.startsWith('91') && cleaned.length === 12) {
+    cleaned = cleaned.substring(2);
+  }
+  return cleaned;
+}
+
+function isValidIndianMobile(phone: string): boolean {
+  const cleaned = normalizeIndianPhone(phone);
+  return /^[6-9]\d{9}$/.test(cleaned);
+}
+
 const WhatsAppTab = ({
   students,
   selectedExam,
@@ -5565,20 +5657,418 @@ const WhatsAppTab = ({
   exams,
   subjects,
   classes,
-  batches
+  batches,
+  isClass10,
+  isClass6to9: propIsClass6to9,
+  isPrimary,
+  resolvedMarks,
+  setActiveTab
 }: any) => {
   const [loading, setLoading] = useState(false);
   const [forceSend, setForceSend] = useState(false);
   const [summary, setSummary] = useState<any>(null);
+  const [summaryDetails, setSummaryDetails] = useState<any>(null);
   const [resultsList, setResultsList] = useState<Record<string, { status: string; reason?: string }>>({});
+  const [showPreviewModal, setShowPreviewModal] = useState(false);
+  const [sentStatusMap, setSentStatusMap] = useState<Record<string, { sent: boolean; sentAt?: string; status?: string; messageId?: string }>>({});
+  const [fetchingSentStatus, setFetchingSentStatus] = useState(false);
+
+  // Fetch persistent WhatsApp sent marks status whenever selectedExam changes
+  useEffect(() => {
+    if (!selectedExam) {
+      setSentStatusMap({});
+      return;
+    }
+
+    let active = true;
+    setFetchingSentStatus(true);
+    fetch(`/api/exams/marks-whatsapp-status?examId=${selectedExam}`)
+      .then(r => r.json())
+      .then(data => {
+        if (active && data.success && data.sentMap) {
+          setSentStatusMap(data.sentMap);
+        }
+      })
+      .catch(err => console.warn('Failed to load marks whatsapp status:', err))
+      .finally(() => {
+        if (active) setFetchingSentStatus(false);
+      });
+
+    return () => { active = false; };
+  }, [selectedExam]);
+
+  // Itemized inspection and filtering state
+  const [selectedFilterCategory, setSelectedFilterCategory] = useState<string | null>(null);
+  const [showBreakdownModal, setShowBreakdownModal] = useState(false);
+  const [modalCategory, setModalCategory] = useState<'duplicates' | 'marksMissing' | 'invalidPhone' | 'missingPhone' | 'queued' | 'optOut' | 'failed' | 'alreadySent' | 'all'>('marksMissing');
+  const [copiedText, setCopiedText] = useState<string | null>(null);
+
+  const handleCopy = (text: string, label: string = 'Copied') => {
+    if (!text) return;
+    navigator.clipboard.writeText(text);
+    setCopiedText(text);
+    toast.success(`${label}: ${text}`);
+    setTimeout(() => setCopiedText(null), 2500);
+  };
 
   const sortedStudents = React.useMemo(() => {
     return [...(students || [])].sort(sortByRollNumber);
   }, [students]);
 
   const activeExam = exams.find((e: any) => e.id === selectedExam);
+  const isFA = activeExam?.type === 'FA';
 
-  const handleSendSingle = async (student: any) => {
+  // Pre-flight student & phone analysis to detect missing marks & duplicate numbers in class
+  const preflightAnalysis = React.useMemo(() => {
+    const marksMissing: any[] = [];
+    const missingPhone: any[] = [];
+    const invalidPhone: any[] = [];
+    const phoneToStudents = new Map<string, any[]>();
+
+    (sortedStudents || []).forEach((student: any) => {
+      const sId = student.id || student.uid;
+      const rawPhone = student.parentPhone || student.whatsappNumber || '';
+      const normPhone = rawPhone ? normalizeIndianPhone(rawPhone) : '';
+
+      // Check marks in resolvedMarks for activeExam
+      const studentMarks = (resolvedMarks || []).filter((m: any) => {
+        const matchStudent = m.studentId === sId || String(m.studentId) === String(sId);
+        if (!matchStudent) return false;
+        if (selectedExam && (m.examId === selectedExam || String(m.examId) === String(selectedExam))) return true;
+        if (activeExam?.title && m.examTitle === activeExam.title) return true;
+        return false;
+      });
+
+      if (studentMarks.length === 0) {
+        marksMissing.push({
+          studentId: sId,
+          studentName: student.name || 'Unknown',
+          rollNumber: student.rollNumber || '-',
+          phone: rawPhone || 'Not Available',
+          reason: `No marks entered for ${activeExam?.title || 'this exam'}`
+        });
+      }
+
+      if (!rawPhone.trim()) {
+        missingPhone.push({
+          studentId: sId,
+          studentName: student.name || 'Unknown',
+          rollNumber: student.rollNumber || '-',
+          reason: 'No parent phone registered in profile'
+        });
+      } else if (!isValidIndianMobile(normPhone)) {
+        invalidPhone.push({
+          studentId: sId,
+          studentName: student.name || 'Unknown',
+          rollNumber: student.rollNumber || '-',
+          phone: normPhone,
+          rawPhone,
+          reason: `Invalid 10-digit mobile number format: "${rawPhone}"`
+        });
+      } else {
+        if (!phoneToStudents.has(normPhone)) phoneToStudents.set(normPhone, []);
+        phoneToStudents.get(normPhone)!.push(student);
+      }
+    });
+
+    // Detect duplicate / shared numbers in this batch
+    const sharedPhoneMap: Record<string, { count: number; students: any[]; rollNumbers: string[] }> = {};
+    phoneToStudents.forEach((studs, phone) => {
+      if (studs.length > 1) {
+        sharedPhoneMap[phone] = {
+          count: studs.length,
+          students: studs,
+          rollNumbers: studs.map(s => s.rollNumber || '-')
+        };
+      }
+    });
+
+    return {
+      marksMissing,
+      missingPhone,
+      invalidPhone,
+      sharedPhoneMap
+    };
+  }, [sortedStudents, resolvedMarks, selectedExam, activeExam]);
+
+  // Merge authoritative server details with preflight detection
+  const currentDuplicatesList = useMemo(() => {
+    if (summaryDetails?.duplicates && summaryDetails.duplicates.length > 0) {
+      return summaryDetails.duplicates;
+    }
+    // Pre-flight shared duplicate phone numbers in current roster
+    const sharedList: any[] = [];
+    Object.entries(preflightAnalysis.sharedPhoneMap).forEach(([phone, info]) => {
+      info.students.forEach(st => {
+        sharedList.push({
+          studentId: st.id || st.uid,
+          studentName: st.name,
+          rollNumber: st.rollNumber || '-',
+          phone,
+          reason: `Duplicate phone shared by ${info.count} students: ${info.students.map(s => `${s.name} (Roll ${s.rollNumber || '-'})`).join(', ')}`
+        });
+      });
+    });
+    return sharedList;
+  }, [summaryDetails, preflightAnalysis]);
+
+  const currentMarksMissingList = useMemo(() => {
+    if (summaryDetails?.marksMissing && summaryDetails.marksMissing.length > 0) {
+      return summaryDetails.marksMissing;
+    }
+    return preflightAnalysis.marksMissing;
+  }, [summaryDetails, preflightAnalysis]);
+
+  const currentInvalidPhoneList = useMemo(() => {
+    if (summaryDetails?.invalidPhone && summaryDetails.invalidPhone.length > 0) {
+      return summaryDetails.invalidPhone;
+    }
+    return preflightAnalysis.invalidPhone;
+  }, [summaryDetails, preflightAnalysis]);
+
+  const currentMissingPhoneList = useMemo(() => {
+    if (summaryDetails?.missingPhone && summaryDetails.missingPhone.length > 0) {
+      return summaryDetails.missingPhone;
+    }
+    return preflightAnalysis.missingPhone;
+  }, [summaryDetails, preflightAnalysis]);
+
+  const currentQueuedList = useMemo(() => {
+    return summaryDetails?.queued || [];
+  }, [summaryDetails]);
+
+  const currentOptOutList = useMemo(() => {
+    return summaryDetails?.optOut || [];
+  }, [summaryDetails]);
+
+  const currentFailedList = useMemo(() => {
+    return summaryDetails?.failed || [];
+  }, [summaryDetails]);
+
+  // Check whether marks for a specific student have already been sent to WhatsApp
+  const isStudentMarksSent = React.useCallback((studentId: string) => {
+    if (sentStatusMap[studentId]?.sent) return true;
+    const resInfo = resultsList[studentId];
+    if (resInfo && (resInfo.status === 'queued' || resInfo.status === 'sent')) return true;
+    const hasMarkFlag = (resolvedMarks || []).some(
+      (m: any) => (m.studentId === studentId || String(m.studentId) === String(studentId)) &&
+                  (m.examId === selectedExam || (activeExam?.title && m.examTitle === activeExam.title)) &&
+                  m.whatsappSent === true
+    );
+    return hasMarkFlag;
+  }, [sentStatusMap, resultsList, resolvedMarks, selectedExam, activeExam]);
+
+  // List of students whose marks have already been sent to WhatsApp (Deactivated to prevent double-sending)
+  const currentAlreadySentList = useMemo(() => {
+    return (sortedStudents || [])
+      .filter((s: any) => isStudentMarksSent(s.id || s.uid))
+      .map((s: any) => {
+        const id = s.id || s.uid;
+        const sentRec = sentStatusMap[id];
+        return {
+          studentId: id,
+          studentName: s.name,
+          rollNumber: s.rollNumber || '-',
+          phone: s.parentPhone || s.whatsappNumber || '-',
+          sentAt: sentRec?.sentAt,
+          reason: sentRec?.sentAt 
+            ? `Marks sent on ${new Date(sentRec.sentAt).toLocaleDateString('en-IN')}. Deactivated to prevent duplicate messages.` 
+            : 'Marks sent via WhatsApp. Deactivated to prevent double-sending messages.'
+        };
+      });
+  }, [sortedStudents, isStudentMarksSent, sentStatusMap]);
+
+  // Students who have NOT received marks yet and have marks entered + valid phone
+  const unsentStudentsWithMarks = useMemo(() => {
+    return (sortedStudents || []).filter((student: any) => {
+      const sId = student.id || student.uid;
+      if (isStudentMarksSent(sId)) return false;
+      const rawPhone = student.parentPhone || student.whatsappNumber;
+      if (!rawPhone) return false;
+      const studentMarks = (resolvedMarks || []).filter((m: any) => {
+        const matchStudent = m.studentId === sId || String(m.studentId) === String(sId);
+        if (!matchStudent) return false;
+        if (selectedExam && (m.examId === selectedExam || String(m.examId) === String(selectedExam))) return true;
+        if (activeExam?.title && m.examTitle === activeExam.title) return true;
+        return false;
+      });
+      return studentMarks.length > 0;
+    });
+  }, [sortedStudents, isStudentMarksSent, resolvedMarks, selectedExam, activeExam]);
+
+  // Filter student table based on summary card selection
+  const filteredStudents = useMemo(() => {
+    if (!selectedFilterCategory) return sortedStudents;
+
+    if (selectedFilterCategory === 'already_sent') {
+      return sortedStudents.filter((s: any) => isStudentMarksSent(s.id || s.uid));
+    }
+
+    if (selectedFilterCategory === 'duplicate') {
+      const dupStudentIds = new Set(currentDuplicatesList.map((d: any) => d.studentId));
+      return sortedStudents.filter((s: any) => {
+        const id = s.id || s.uid;
+        return dupStudentIds.has(id) || resultsList[id]?.status === 'duplicate';
+      });
+    }
+
+    if (selectedFilterCategory === 'missing_marks') {
+      const missingIds = new Set(currentMarksMissingList.map((m: any) => m.studentId));
+      return sortedStudents.filter((s: any) => {
+        const id = s.id || s.uid;
+        return missingIds.has(id) || resultsList[id]?.status === 'missing_marks';
+      });
+    }
+
+    if (selectedFilterCategory === 'invalid_phone') {
+      const invalidIds = new Set(currentInvalidPhoneList.map((i: any) => i.studentId));
+      return sortedStudents.filter((s: any) => {
+        const id = s.id || s.uid;
+        return invalidIds.has(id) || resultsList[id]?.status === 'invalid_phone';
+      });
+    }
+
+    if (selectedFilterCategory === 'missing_phone') {
+      const missingPhoneIds = new Set(currentMissingPhoneList.map((m: any) => m.studentId));
+      return sortedStudents.filter((s: any) => {
+        const id = s.id || s.uid;
+        return missingPhoneIds.has(id) || resultsList[id]?.status === 'missing_phone';
+      });
+    }
+
+    if (selectedFilterCategory === 'queued') {
+      const queuedIds = new Set(currentQueuedList.map((q: any) => q.studentId));
+      return sortedStudents.filter((s: any) => {
+        const id = s.id || s.uid;
+        return queuedIds.has(id) || resultsList[id]?.status === 'queued';
+      });
+    }
+
+    if (selectedFilterCategory === 'optout') {
+      const optOutIds = new Set(currentOptOutList.map((o: any) => o.studentId));
+      return sortedStudents.filter((s: any) => {
+        const id = s.id || s.uid;
+        return optOutIds.has(id) || resultsList[id]?.status === 'optout';
+      });
+    }
+
+    if (selectedFilterCategory === 'failed') {
+      const failedIds = new Set(currentFailedList.map((f: any) => f.studentId));
+      return sortedStudents.filter((s: any) => {
+        const id = s.id || s.uid;
+        return failedIds.has(id) || resultsList[id]?.status === 'failed';
+      });
+    }
+
+    return sortedStudents;
+  }, [
+    sortedStudents,
+    selectedFilterCategory,
+    currentDuplicatesList,
+    currentMarksMissingList,
+    currentInvalidPhoneList,
+    currentMissingPhoneList,
+    currentQueuedList,
+    currentOptOutList,
+    currentFailedList,
+    resultsList,
+    isStudentMarksSent
+  ]);
+
+  const isClass6to9Effective = React.useMemo(() => {
+    if (isClass10) return false;
+    if (propIsClass6to9) return true;
+    const activeClassObj = (classes || []).find((c: any) => c.id === selectedClass || c.name === selectedClass);
+    const activeBatchObj = (batches || []).find((b: any) => b.id === selectedBatch || b.name === selectedBatch);
+    if (activeClassObj && isClass6to9NameOrId(activeClassObj.name || activeClassObj.id || activeClassObj.code)) return true;
+    if (activeBatchObj && isClass6to9NameOrId(activeBatchObj.name || activeBatchObj.id || activeBatchObj.classId)) return true;
+    if (selectedClass && isClass6to9NameOrId(selectedClass)) return true;
+    if (selectedBatch && isClass6to9NameOrId(selectedBatch)) return true;
+    if (activeClassObj && !isPrimaryClass(activeClassObj.name) && !isClass10NameOrId(activeClassObj.name)) return true;
+    return false;
+  }, [isClass10, propIsClass6to9, classes, batches, selectedClass, selectedBatch]);
+
+  const previewStudent = sortedStudents[0];
+  const sampleMessage = React.useMemo(() => {
+    if (!previewStudent || !activeExam) return '';
+    const studentMarks = (resolvedMarks || []).filter((m: any) => m.studentId === (previewStudent.id || previewStudent.uid));
+    
+    // Check if preview student belongs to Class 6 to 9
+    const studentIsClass6to9 = isClass6to9Effective || (
+      previewStudent && (
+        isClass6to9NameOrId(previewStudent.classId || previewStudent.className || previewStudent.class || previewStudent.grade || previewStudent.batchName || previewStudent.section) ||
+        (!isPrimaryClass(previewStudent.className || '') && !isClass10NameOrId(previewStudent.className || ''))
+      )
+    );
+
+    let text = `Dear ${previewStudent.fatherName || 'Parent'},\n`;
+    text += `Exam result for *${previewStudent.name}* has been published.\n\n`;
+    text += `📝 *Exam:* ${activeExam.title}\n`;
+    text += `📌 *Roll No:* ${previewStudent.rollNumber || 'N/A'}\n\n`;
+    text += `*Subject-wise Marks:*\n`;
+
+    let totalObtained = 0;
+    let totalMax = 0;
+
+    // Sort subjects by standard curriculum order: Telugu, Hindi, English, Mathematics, Physics, Biology, Social Studies
+    const sortedSubs = [...(subjects || [])].sort(compareSubjectsStandard);
+
+    sortedSubs.forEach((sub: any) => {
+      const m = studentMarks.find((mark: any) => mark.subjectId === sub.id);
+      const maxMarks = isFA ? 50 : 100;
+      if (m) {
+        const faW = Number(m.faWritten) || 0;
+        const saW = Number(m.saWritten) || 0;
+        const st1 = Number(m.st1) || 0;
+        const st2 = Number(m.st2) || 0;
+        const hw = Number(m.hw) || 0;
+        
+        let subTotal = 0;
+        if (isFA) {
+          if (isClass10) {
+            // Class 10 FA directly mentions only FA written test marks without (FA Written)
+            subTotal = faW;
+            text += `🔹 *${sub.name}*: ${subTotal}/${maxMarks}\n`;
+          } else if (studentIsClass6to9) {
+            // For Class 6 to 9: NO HW in subject marks entry, just ST-1 (Max 10) + ST-2 (Max 5) + FA Written (Max 35) = 50
+            subTotal = st1 + st2 + faW;
+            text += `🔹 *${sub.name}*: ${subTotal}/${maxMarks} (ST1(${st1}) + ST2(${st2}) + FA(${faW}))\n`;
+          } else {
+            // Primary classes: ST-1 (10) + ST-2 (10) + HW/ST-3 (5) + FA (25) = 50
+            subTotal = st1 + st2 + hw + faW;
+            text += `🔹 *${sub.name}*: ${subTotal}/${maxMarks} (ST1(${st1}) + ST2(${st2}) + HW(${hw}) + FA(${faW}))\n`;
+          }
+        } else {
+          if (isClass10) {
+            subTotal = saW;
+            text += `🔹 *${sub.name}*: ${subTotal}/${maxMarks}\n`;
+          } else if (studentIsClass6to9) {
+            // Class 6 to 9 SA: NO HW
+            subTotal = st1 + st2 + saW;
+            const breakdown = (st1 > 0 || st2 > 0) ? ` (ST1(${st1}) + ST2(${st2}) + SA(${saW}))` : '';
+            text += `🔹 *${sub.name}*: ${subTotal}/${maxMarks}${breakdown}\n`;
+          } else {
+            subTotal = st1 + st2 + hw + saW;
+            text += `🔹 *${sub.name}*: ${subTotal}/${maxMarks} (ST1(${st1}) + ST2(${st2}) + HW(${hw}) + SA(${saW}))\n`;
+          }
+        }
+        totalObtained += subTotal;
+        totalMax += maxMarks;
+      } else {
+        text += `🔹 *${sub.name}*: Not entered\n`;
+      }
+    });
+
+    const pct = totalMax > 0 ? Math.round((totalObtained / totalMax) * 100) : 0;
+    const statusCategory = getPerformanceCategory(pct);
+    text += `\n📊 *Total:* ${totalObtained}/${totalMax || 50}\n`;
+    text += `📈 *Percentage:* ${pct}%\n`;
+    text += `🏁 *Status:* ${statusCategory}\n\n`;
+    text += `For more details, please contact St. Antony’s School office.\nThis is an automated message.`;
+    return text;
+  }, [previewStudent, activeExam, subjects, resolvedMarks, isClass10, isClass6to9Effective, isFA]);
+
+  const handleSendSingle = async (student: any, bypassDup: boolean = forceSend) => {
     if (!selectedExam) {
       toast.error("Please select an exam first");
       return;
@@ -5598,7 +6088,7 @@ const WhatsAppTab = ({
           examId: selectedExam,
           classId: selectedClass,
           section: selectedBatch,
-          forceSend
+          forceSend: bypassDup
         })
       });
 
@@ -5610,29 +6100,51 @@ const WhatsAppTab = ({
 
         if (sums.queuedCount > 0) {
           finalStatus = 'queued';
+          setSentStatusMap(prev => ({
+            ...prev,
+            [studentId]: { sent: true, status: 'sent', sentAt: new Date().toISOString() }
+          }));
           toast.success(`Result queued successfully for ${student.name}!`);
         } else if (sums.duplicateSkipped > 0) {
           finalStatus = 'duplicate';
-          reason = 'Duplicate skipped (already sent/pending)';
-          toast.warning(`Duplicate skipped for ${student.name}.`);
+          reason = data.details?.duplicates?.[0]?.reason || 'Duplicate skipped (already sent/pending today)';
+          setSentStatusMap(prev => ({
+            ...prev,
+            [studentId]: { sent: true, status: 'duplicate', sentAt: new Date().toISOString() }
+          }));
+          toast.warning(`Duplicate skipped for ${student.name} (already sent).`);
         } else if (sums.optOutSkipped > 0) {
           finalStatus = 'optout';
           reason = 'Parent opted out';
           toast.error(`${student.name}'s parent opted out of WhatsApp.`);
         } else if (sums.missingPhone > 0 || sums.invalidPhone > 0) {
-          finalStatus = 'invalid_phone';
+          finalStatus = sums.missingPhone > 0 ? 'missing_phone' : 'invalid_phone';
           reason = 'Missing or invalid phone number';
-          toast.error(`Invalid phone number for ${student.name}.`);
+          toast.error(`Invalid or missing phone number for ${student.name}.`);
         } else if (sums.marksMissing > 0) {
           finalStatus = 'missing_marks';
           reason = 'No marks entered for this exam';
           toast.error(`No marks entered for ${student.name}.`);
         }
 
-        setResultsList(prev => ({
-          ...prev,
-          [studentId]: { status: finalStatus, reason }
-        }));
+        if (data.resultsByStudentId && data.resultsByStudentId[studentId]) {
+          setResultsList(prev => ({
+            ...prev,
+            [studentId]: data.resultsByStudentId[studentId]
+          }));
+        } else {
+          setResultsList(prev => ({
+            ...prev,
+            [studentId]: { status: finalStatus, reason }
+          }));
+        }
+
+        if (data.summary) {
+          setSummary(data.summary);
+        }
+        if (data.details) {
+          setSummaryDetails(data.details);
+        }
       } else {
         throw new Error(data.error || 'Server error');
       }
@@ -5655,11 +6167,20 @@ const WhatsAppTab = ({
       return;
     }
 
+    if (!forceSend && unsentStudentsWithMarks.length === 0) {
+      toast.info("All eligible students have already received their marks via WhatsApp. Double-send prevention is active. Check 'Bypass Duplicate Check' if you need to resend.");
+      return;
+    }
+
+    const ids = forceSend 
+      ? sortedStudents.map((s: any) => s.id || s.uid)
+      : unsentStudentsWithMarks.map((s: any) => s.id || s.uid);
+
     setLoading(true);
     setSummary(null);
-    toast.info(`Starting production queue send for ${sortedStudents.length} students...`);
+    setSelectedFilterCategory(null);
+    toast.info(`Starting production queue send for ${ids.length} students...`);
 
-    const ids = sortedStudents.map((s: any) => s.id || s.uid);
     try {
       const response = await fetch('/api/exams/send-marks-whatsapp', {
         method: 'POST',
@@ -5676,6 +6197,26 @@ const WhatsAppTab = ({
       const data = await response.json();
       if (response.ok && data.success) {
         setSummary(data.summary);
+        if (data.details) {
+          setSummaryDetails(data.details);
+        }
+        if (data.resultsByStudentId) {
+          setResultsList(prev => ({
+            ...prev,
+            ...data.resultsByStudentId
+          }));
+        }
+
+        // Refresh persistent sent status
+        fetch(`/api/exams/marks-whatsapp-status?examId=${selectedExam}`)
+          .then(r => r.json())
+          .then(res => {
+            if (res.success && res.sentMap) {
+              setSentStatusMap(prev => ({ ...prev, ...res.sentMap }));
+            }
+          })
+          .catch(() => {});
+
         toast.success(`Bulk queuing request completed!`);
       } else {
         toast.error(data.error || 'Server error occurred');
@@ -5703,6 +6244,7 @@ const WhatsAppTab = ({
 
   return (
     <div className="p-6 space-y-6">
+      {/* Header Banner */}
       <div className="p-5 bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200/60 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="space-y-1">
           <h2 className="text-lg font-black text-emerald-900 uppercase tracking-tight flex items-center gap-2">
@@ -5712,9 +6254,43 @@ const WhatsAppTab = ({
           <p className="text-emerald-700/80 text-xs font-bold leading-relaxed max-w-xl uppercase tracking-wider">
             Queue and trigger results safely to parents using the St. Antony’s School offline-first backend delivery queues.
           </p>
+          {isFA && (
+            <div className={`mt-2 inline-flex items-center gap-2 px-3 py-1 rounded-md text-[11px] font-black uppercase tracking-wider border shadow-sm ${
+              isClass10 
+                ? 'bg-amber-100/80 text-amber-900 border-amber-300' 
+                : isClass6to9Effective 
+                  ? 'bg-indigo-50 text-indigo-800 border-indigo-200' 
+                  : 'bg-blue-50 text-blue-800 border-blue-200'
+            }`}>
+              {isClass10 ? (
+                <>
+                  <span className="w-2 h-2 rounded-full bg-amber-600 animate-ping inline-block" />
+                  <span>Class 10 Direct FA Mode: Messages directly include FA Written Test marks only (Slip Tests disabled)</span>
+                </>
+              ) : isClass6to9Effective ? (
+                <>
+                  <span className="w-2 h-2 rounded-full bg-indigo-600 inline-block" />
+                  <span>Class 6 to 9 Format: Messages include Slip Tests ST-1 (Max 10), ST-2 (Max 5) & FA Written (Max 35) — No HW</span>
+                </>
+              ) : (
+                <>
+                  <span className="w-2 h-2 rounded-full bg-blue-600 inline-block" />
+                  <span>Primary Format: Messages include Slip Tests (ST-1, ST-2, HW/ST-3) & Written Test</span>
+                </>
+              )}
+            </div>
+          )}
         </div>
         
-        <div className="flex flex-wrap items-center gap-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={() => setShowPreviewModal(true)}
+            className="px-4 py-2 bg-white border border-neutral-200 hover:bg-neutral-50 rounded-lg text-xs font-black uppercase tracking-wider text-neutral-700 transition-colors shadow-sm flex items-center gap-1.5"
+          >
+            <Eye className="w-3.5 h-3.5 text-primary" />
+            Preview Message
+          </button>
+
           <label className="flex items-center gap-2 select-none cursor-pointer bg-white px-3.5 py-2 rounded-lg border border-neutral-200 text-xs font-black uppercase text-neutral-600 hover:bg-neutral-50 transition-colors">
             <input 
               type="checkbox" 
@@ -5727,109 +6303,482 @@ const WhatsAppTab = ({
 
           <button
             onClick={handleSendBulk}
-            disabled={loading}
-            className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg text-xs font-black uppercase tracking-wider shadow-lg shadow-emerald-500/10 active:scale-95 transition-all flex items-center gap-2"
+            disabled={loading || (!forceSend && unsentStudentsWithMarks.length === 0)}
+            className={`px-5 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center gap-2 ${
+              !forceSend && unsentStudentsWithMarks.length === 0
+                ? 'bg-neutral-100 text-neutral-400 border border-neutral-200 cursor-not-allowed shadow-none'
+                : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-500/10 active:scale-95'
+            }`}
+            title={!forceSend && unsentStudentsWithMarks.length === 0 ? 'Deactivated: All eligible students have already received their marks via WhatsApp' : 'Queue marks for unsent students'}
           >
             {loading ? (
               <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            ) : !forceSend && unsentStudentsWithMarks.length === 0 ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
             ) : (
               <Send className="w-4 h-4" />
             )}
-            Send Queue to All ({students.length})
+            {!forceSend && unsentStudentsWithMarks.length === 0
+              ? 'All Marks Sent (Deactivated)'
+              : forceSend
+                ? `Force Send All (${students.length})`
+                : `Send Queue to Unsent (${unsentStudentsWithMarks.length})`}
           </button>
         </div>
       </div>
 
-      {summary && (
-        <div className="p-5 bg-neutral-50 border border-neutral-200 rounded-xl space-y-3">
-          <h3 className="text-xs font-black text-sidebar uppercase tracking-widest flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-primary" />
-            Queue Response Summary
-          </h3>
-          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-            {[
-              { label: 'Requested', value: summary.totalRequested, bg: 'bg-white text-neutral-800' },
-              { label: 'Queued', value: summary.queuedCount, bg: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
-              { label: 'Duplicates', value: summary.duplicateSkipped, bg: 'bg-amber-50 text-amber-800 border-amber-200' },
-              { label: 'Opt-Outs', value: summary.optOutSkipped, bg: 'bg-rose-50 text-rose-800 border-rose-200' },
-              { label: 'No Phone', value: summary.missingPhone, bg: 'bg-neutral-100 text-neutral-600' },
-              { label: 'Invalid Phone', value: summary.invalidPhone, bg: 'bg-red-50 text-red-800 border-red-200' },
-              { label: 'Marks Missing', value: summary.marksMissing, bg: 'bg-orange-50 text-orange-800 border-orange-200' },
-              { label: 'Failed', value: summary.failedCount, bg: 'bg-rose-100 text-rose-900 border-rose-200' },
-            ].map((stat, idx) => (
-              <div key={idx} className={`p-3 rounded-lg border border-neutral-200 shadow-sm text-center ${stat.bg}`}>
-                <div className="text-[10px] font-black uppercase text-neutral-400 leading-none mb-1">{stat.label}</div>
-                <div className="text-lg font-black">{stat.value}</div>
-              </div>
-            ))}
+      {/* Duplicate Prevention Status Banner */}
+      {currentAlreadySentList.length > 0 && (
+        <div className="p-4 bg-emerald-50/90 border border-emerald-300/80 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-950 shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <div className="p-1.5 rounded-lg bg-emerald-100 text-emerald-700 shrink-0">
+              <CheckCircle2 className="w-4 h-4" />
+            </div>
+            <div>
+              <span className="font-black uppercase tracking-wider text-emerald-900">Duplicate Prevention Active: </span>
+              <span className="text-emerald-800">
+                <strong>{currentAlreadySentList.length} of {sortedStudents.length}</strong> student(s) have already received marks on WhatsApp. Their send actions are <strong>deactivated</strong> to prevent double-sending messages.
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setSelectedFilterCategory(prev => prev === 'already_sent' ? null : 'already_sent')}
+              className="text-[11px] font-black uppercase tracking-wider text-emerald-800 hover:text-emerald-950 underline cursor-pointer bg-white px-3 py-1.5 rounded-lg border border-emerald-200 shadow-2xs"
+            >
+              {selectedFilterCategory === 'already_sent' ? 'Show All Students' : `Filter ${currentAlreadySentList.length} Sent`}
+            </button>
+            <span className="text-[11px] font-bold text-emerald-900 bg-emerald-200/80 px-2.5 py-1.5 rounded-lg border border-emerald-300">
+              {unsentStudentsWithMarks.length} Ready to Send
+            </span>
           </div>
         </div>
       )}
 
+      {/* Message Preview Modal */}
+      {showPreviewModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-neutral-200 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-neutral-100">
+              <div className="flex items-center gap-2">
+                <MessageSquare className="w-5 h-5 text-emerald-600" />
+                <h3 className="text-sm font-black text-sidebar uppercase tracking-tight">WhatsApp Message Preview</h3>
+              </div>
+              <button 
+                onClick={() => setShowPreviewModal(false)}
+                className="text-neutral-400 hover:text-neutral-600 text-xs font-bold px-2 py-1 rounded-md hover:bg-neutral-100"
+              >
+                ✕ Close
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-[11px] font-bold text-neutral-500 uppercase tracking-wider flex items-center justify-between">
+                <span>Target: {previewStudent?.name || 'Sample Student'} ({previewStudent?.rollNumber || 'Roll No'})</span>
+                <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${isClass10 ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>
+                  {isClass10 ? 'Class 10 (Direct FA Marks)' : 'Standard Split Format'}
+                </span>
+              </div>
+              <div className="p-4 bg-emerald-50/50 border border-emerald-200/80 rounded-xl text-xs font-mono text-neutral-800 whitespace-pre-wrap leading-relaxed max-h-80 overflow-y-auto shadow-inner">
+                {sampleMessage || 'No sample data available'}
+              </div>
+
+              {/* Performance Grading Scale Reference */}
+              <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 space-y-1.5">
+                <div className="text-[10px] font-black uppercase tracking-wider text-neutral-500">Performance Status Categories</div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[11px]">
+                  <div className="p-1.5 bg-white rounded border border-neutral-200"><span className="font-bold">90–100%:</span> 🌟 Outstanding</div>
+                  <div className="p-1.5 bg-white rounded border border-neutral-200"><span className="font-bold">80–89%:</span> ⭐ Excellent</div>
+                  <div className="p-1.5 bg-white rounded border border-neutral-200"><span className="font-bold">70–79%:</span> Very Good</div>
+                  <div className="p-1.5 bg-white rounded border border-neutral-200"><span className="font-bold">60–69%:</span> Good</div>
+                  <div className="p-1.5 bg-white rounded border border-neutral-200"><span className="font-bold">50–59%:</span> Average</div>
+                  <div className="p-1.5 bg-white rounded border border-neutral-200"><span className="font-bold">40–49%:</span> Needs Improvement</div>
+                  <div className="p-1.5 bg-white rounded border border-neutral-200 col-span-2"><span className="font-bold">Below 40%:</span> Poor / Fail</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                onClick={() => setShowPreviewModal(false)}
+                className="px-5 py-2 bg-neutral-800 text-white text-xs font-black uppercase tracking-wider rounded-lg hover:bg-neutral-900 transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Summary Cards & Pre-flight Issue Header */}
+      <div className="p-5 bg-neutral-50 border border-neutral-200 rounded-xl space-y-4 shadow-sm">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-neutral-200 pb-3">
+          <div>
+            <h3 className="text-xs font-black text-sidebar uppercase tracking-widest flex items-center gap-2">
+              <TrendingUp className="w-4 h-4 text-primary" />
+              Queue Response & Status Summary
+            </h3>
+            <p className="text-[11px] text-neutral-500 mt-0.5">
+              Click any card to filter students below, or click <strong className="text-sidebar">Inspect</strong> to see exact duplicate numbers and students with missing marks.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setModalCategory(selectedFilterCategory === 'duplicate' ? 'duplicates' : selectedFilterCategory === 'missing_marks' ? 'marksMissing' : 'marksMissing');
+                setShowBreakdownModal(true);
+              }}
+              className="px-3.5 py-1.5 bg-white border border-neutral-300 hover:bg-neutral-100 rounded-lg text-xs font-bold text-sidebar flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
+            >
+              <Info className="w-3.5 h-3.5 text-primary" />
+              Inspect Breakdown Modal
+            </button>
+          </div>
+        </div>
+
+        {/* 9 Metric Summary Cards */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-9 gap-3">
+          {[
+            { label: 'Requested', key: 'totalRequested', value: summary?.totalRequested ?? sortedStudents.length, bg: 'bg-white text-neutral-800 border-neutral-200' },
+            { label: 'Sent (Deactivated)', key: 'already_sent', value: currentAlreadySentList.length, bg: 'bg-emerald-100 text-emerald-950 border-emerald-300' },
+            { label: 'Queued', key: 'queued', value: summary?.queuedCount ?? currentQueuedList.length, bg: 'bg-emerald-50 text-emerald-900 border-emerald-200' },
+            { label: 'Duplicates', key: 'duplicate', value: summary?.duplicateSkipped ?? currentDuplicatesList.length, bg: 'bg-amber-50 text-amber-900 border-amber-200' },
+            { label: 'Opt-Outs', key: 'optout', value: summary?.optOutSkipped ?? currentOptOutList.length, bg: 'bg-rose-50 text-rose-900 border-rose-200' },
+            { label: 'No Phone', key: 'missing_phone', value: summary?.missingPhone ?? currentMissingPhoneList.length, bg: 'bg-neutral-100 text-neutral-700 border-neutral-200' },
+            { label: 'Invalid Phone', key: 'invalid_phone', value: summary?.invalidPhone ?? currentInvalidPhoneList.length, bg: 'bg-red-50 text-red-900 border-red-200' },
+            { label: 'Marks Missing', key: 'missing_marks', value: summary?.marksMissing ?? currentMarksMissingList.length, bg: 'bg-orange-50 text-orange-900 border-orange-200' },
+            { label: 'Failed', key: 'failed', value: summary?.failedCount ?? currentFailedList.length, bg: 'bg-rose-100 text-rose-950 border-rose-200' },
+          ].map((stat, idx) => {
+            const isSelected = selectedFilterCategory === stat.key;
+            const count = Number(stat.value) || 0;
+            const hasItems = count > 0;
+
+            return (
+              <div
+                key={idx}
+                onClick={() => {
+                  if (stat.key === 'totalRequested') {
+                    setSelectedFilterCategory(null);
+                  } else {
+                    setSelectedFilterCategory(prev => prev === stat.key ? null : stat.key);
+                  }
+                }}
+                className={`p-3 rounded-lg border shadow-sm text-left transition-all cursor-pointer select-none group relative ${stat.bg} ${
+                  isSelected ? 'ring-2 ring-primary ring-offset-2 scale-[1.02]' : 'hover:border-neutral-400'
+                }`}
+                title={`Click to filter table by ${stat.label}`}
+              >
+                <div className="flex items-center justify-between gap-1 mb-1">
+                  <div className="text-[10px] font-black uppercase tracking-wider text-neutral-500 leading-none truncate">
+                    {stat.label}
+                  </div>
+                  {hasItems && stat.key !== 'totalRequested' && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-current opacity-70 animate-pulse" />
+                  )}
+                </div>
+
+                <div className="text-xl font-black tracking-tight">{stat.value}</div>
+
+                <div className="mt-2 flex items-center justify-between text-[9px] font-bold border-t border-current/10 pt-1.5 opacity-90">
+                  <span className="text-neutral-500">
+                    {isSelected ? 'Active Filter' : 'Click to filter'}
+                  </span>
+                  {hasItems && stat.key !== 'totalRequested' && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        let cat: any = 'all';
+                        if (stat.key === 'already_sent') cat = 'alreadySent';
+                        else if (stat.key === 'duplicate') cat = 'duplicates';
+                        else if (stat.key === 'missing_marks') cat = 'marksMissing';
+                        else if (stat.key === 'invalid_phone') cat = 'invalidPhone';
+                        else if (stat.key === 'missing_phone') cat = 'missingPhone';
+                        else if (stat.key === 'queued') cat = 'queued';
+                        else if (stat.key === 'optout') cat = 'optOut';
+                        else if (stat.key === 'failed') cat = 'failed';
+                        setModalCategory(cat);
+                        setShowBreakdownModal(true);
+                      }}
+                      className="underline font-black hover:opacity-100 flex items-center gap-0.5"
+                    >
+                      Inspect ↗
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Active Filter Banner */}
+        {selectedFilterCategory && (
+          <div className="p-3 bg-white border border-primary/30 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-xs">
+            <div className="flex items-center gap-2">
+              <Filter className="w-4 h-4 text-primary shrink-0" />
+              <div className="text-xs">
+                <span className="font-bold text-neutral-500">Showing Filtered Students: </span>
+                <span className="font-black text-primary uppercase underline tracking-wider">
+                  {selectedFilterCategory === 'already_sent' ? 'Sent (Deactivated to Prevent Double Send)' :
+                   selectedFilterCategory === 'duplicate' ? 'Duplicate Notices / Shared Phone' :
+                   selectedFilterCategory === 'missing_marks' ? 'Marks Missing' :
+                   selectedFilterCategory === 'invalid_phone' ? 'Invalid Phone Number' :
+                   selectedFilterCategory === 'missing_phone' ? 'Missing Phone Number' :
+                   selectedFilterCategory.replace('_', ' ')}
+                </span>
+                <span className="font-bold text-neutral-600 ml-1">({filteredStudents.length} Students)</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  let cat: any = 'all';
+                  if (selectedFilterCategory === 'duplicate') cat = 'duplicates';
+                  else if (selectedFilterCategory === 'missing_marks') cat = 'marksMissing';
+                  else if (selectedFilterCategory === 'invalid_phone') cat = 'invalidPhone';
+                  else if (selectedFilterCategory === 'missing_phone') cat = 'missingPhone';
+                  else if (selectedFilterCategory === 'queued') cat = 'queued';
+                  setModalCategory(cat);
+                  setShowBreakdownModal(true);
+                }}
+                className="px-2.5 py-1 bg-neutral-100 hover:bg-neutral-200 border border-neutral-300 rounded text-xs font-bold text-sidebar flex items-center gap-1 transition-colors"
+              >
+                <Info className="w-3 h-3 text-primary" />
+                View In Modal
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedFilterCategory(null)}
+                className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-900 text-white rounded text-xs font-bold flex items-center gap-1 transition-colors"
+              >
+                <X className="w-3 h-3" />
+                Clear Filter ({sortedStudents.length} Total)
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Main Students Table */}
       <div className="border border-neutral-200 rounded-xl overflow-hidden shadow-sm bg-white">
+        <div className="p-3 bg-neutral-50/70 border-b border-neutral-200 flex items-center justify-between text-xs text-neutral-500">
+          <div className="font-bold">
+            Showing <span className="text-sidebar font-black">{filteredStudents.length}</span> of <span className="text-sidebar font-black">{sortedStudents.length}</span> Students
+            {selectedFilterCategory && <span className="text-primary font-bold ml-1">(Filtered)</span>}
+          </div>
+          <div className="flex items-center gap-3 text-[11px]">
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span> Queued</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500 inline-block"></span> Duplicate</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-orange-500 inline-block"></span> Marks Missing</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500 inline-block"></span> Invalid Phone</span>
+          </div>
+        </div>
+
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className="bg-neutral-50/80 border-b border-neutral-200">
-              <th className="p-4 text-xs font-black text-neutral-400 uppercase tracking-wider">Roll No</th>
+              <th className="p-4 text-xs font-black text-neutral-400 uppercase tracking-wider w-20">Roll No</th>
               <th className="p-4 text-xs font-black text-neutral-400 uppercase tracking-wider">Student Name</th>
-              <th className="p-4 text-xs font-black text-neutral-400 uppercase tracking-wider">Parent Phone</th>
-              <th className="p-4 text-xs font-black text-neutral-400 uppercase tracking-wider text-center">Status</th>
-              <th className="p-4 text-xs font-black text-neutral-400 uppercase tracking-wider text-right">Action</th>
+              <th className="p-4 text-xs font-black text-neutral-400 uppercase tracking-wider">Parent Phone Number</th>
+              <th className="p-4 text-xs font-black text-neutral-400 uppercase tracking-wider text-center">Queue Status</th>
+              <th className="p-4 text-xs font-black text-neutral-400 uppercase tracking-wider text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-neutral-200">
-            {sortedStudents.length === 0 ? (
+            {filteredStudents.length === 0 ? (
               <tr>
-                <td colSpan={5} className="p-8 text-center text-xs font-bold text-neutral-400 uppercase tracking-widest">
-                  No students found in this selection
+                <td colSpan={5} className="p-10 text-center text-xs font-bold text-neutral-400 uppercase tracking-widest">
+                  <div className="flex flex-col items-center justify-center gap-2">
+                    <Filter className="w-6 h-6 text-neutral-300" />
+                    <span>No students match the current filter selection</span>
+                    {selectedFilterCategory && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFilterCategory(null)}
+                        className="mt-2 px-3 py-1 bg-primary text-white text-xs font-bold rounded-lg hover:bg-primary/90"
+                      >
+                        Reset Filter
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ) : (
-              sortedStudents.map((student: any) => {
+              filteredStudents.map((student: any) => {
                 const sId = student.id || student.uid;
                 const statusInfo = resultsList[sId];
                 const rawPhone = student.parentPhone || student.whatsappNumber;
-                
+                const normPhone = rawPhone ? normalizeIndianPhone(rawPhone) : '';
+                const sharedInfo = normPhone ? preflightAnalysis.sharedPhoneMap[normPhone] : null;
+                const alreadySent = isStudentMarksSent(sId);
+                const sentDetails = sentStatusMap[sId];
+                const sentDateFormatted = sentDetails?.sentAt 
+                  ? new Date(sentDetails.sentAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) 
+                  : null;
+
+                // Check marks for this student for activeExam
+                const studentMarks = (resolvedMarks || []).filter((m: any) => {
+                  const matchStudent = m.studentId === sId || String(m.studentId) === String(sId);
+                  if (!matchStudent) return false;
+                  if (selectedExam && (m.examId === selectedExam || String(m.examId) === String(selectedExam))) return true;
+                  if (activeExam?.title && m.examTitle === activeExam.title) return true;
+                  return false;
+                });
+                const hasMarks = studentMarks.length > 0;
+
                 return (
-                  <tr key={sId} className="hover:bg-neutral-50/40 transition-colors">
+                  <tr key={sId} className={`transition-colors ${alreadySent ? 'bg-emerald-50/20 hover:bg-emerald-50/40' : 'hover:bg-neutral-50/50'}`}>
                     <td className="p-4 text-sm font-black text-neutral-400">{student.rollNumber || '-'}</td>
-                    <td className="p-4 text-sm font-black text-sidebar">{student.name}</td>
-                    <td className="p-4 text-sm font-mono text-neutral-500 font-bold">{rawPhone || 'Not Available'}</td>
+                    <td className="p-4">
+                      <div className="font-black text-sidebar text-sm">{student.name}</div>
+                      {!hasMarks && (
+                        <div className="text-[10px] font-bold text-orange-600 flex items-center gap-1 mt-0.5">
+                          <AlertTriangle className="w-3 h-3 text-orange-500 shrink-0" />
+                          <span>No marks entered for {activeExam?.title || 'this exam'}</span>
+                        </div>
+                      )}
+                    </td>
+                    <td className="p-4">
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2 font-mono text-sm font-bold text-neutral-700">
+                          <span className={!rawPhone ? 'text-neutral-400 italic font-sans text-xs' : ''}>
+                            {rawPhone || 'Not Available'}
+                          </span>
+                          {rawPhone && (
+                            <button
+                              type="button"
+                              title="Copy phone number"
+                              onClick={() => handleCopy(rawPhone, 'Parent Phone')}
+                              className="text-neutral-400 hover:text-primary transition-colors p-0.5 rounded hover:bg-neutral-100"
+                            >
+                              {copiedText === rawPhone ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          )}
+                        </div>
+
+                        {sharedInfo && sharedInfo.count > 1 && (
+                          <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 border border-amber-200 text-[10px] font-bold text-amber-800 w-fit">
+                            <span>Duplicate / Shared: Roll {sharedInfo.rollNumbers.join(', ')}</span>
+                          </div>
+                        )}
+                      </div>
+                    </td>
                     <td className="p-4 text-center">
-                      {statusInfo ? (
+                      {statusInfo && statusInfo.status !== 'queued' && statusInfo.status !== 'duplicate' ? (
                         <div className="flex flex-col items-center justify-center">
                           <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border ${
-                            statusInfo.status === 'queued' ? 'bg-emerald-100 text-emerald-800 border-emerald-200' :
-                            statusInfo.status === 'duplicate' ? 'bg-amber-100 text-amber-800 border-amber-200' :
                             statusInfo.status === 'optout' ? 'bg-rose-100 text-rose-800 border-rose-200' :
                             statusInfo.status === 'invalid_phone' ? 'bg-red-100 text-red-800 border-red-200' :
+                            statusInfo.status === 'missing_phone' ? 'bg-neutral-100 text-neutral-700 border-neutral-200' :
                             statusInfo.status === 'missing_marks' ? 'bg-orange-100 text-orange-800 border-orange-200' :
                             statusInfo.status === 'loading' ? 'bg-neutral-100 text-neutral-800 border-neutral-200' :
                             'bg-neutral-100 text-neutral-800 border-neutral-200'
                           }`}>
-                            {statusInfo.status}
+                            {statusInfo.status === 'missing_marks' ? 'Marks Missing' :
+                             statusInfo.status === 'invalid_phone' ? 'Invalid Phone' :
+                             statusInfo.status === 'missing_phone' ? 'No Phone' :
+                             statusInfo.status}
                           </span>
                           {statusInfo.reason && (
-                            <span className="text-[9px] text-neutral-400 mt-1 font-bold italic block">{statusInfo.reason}</span>
+                            <span className="text-[9px] text-neutral-500 mt-1 font-bold italic block max-w-xs text-center leading-tight">
+                              {statusInfo.reason}
+                            </span>
                           )}
                         </div>
+                      ) : alreadySent || statusInfo?.status === 'queued' || statusInfo?.status === 'duplicate' ? (
+                        <div className="flex flex-col items-center justify-center">
+                          <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-100 text-emerald-800 border border-emerald-300 inline-flex items-center gap-1 shadow-2xs">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            Sent (Deactivated)
+                          </span>
+                          <span className="text-[9px] text-emerald-700 mt-1 font-bold text-center leading-tight">
+                            {sentDateFormatted ? `Sent on ${sentDateFormatted}` : 'Marks sent via WhatsApp'}
+                          </span>
+                        </div>
                       ) : (
-                        <span className="text-xs font-bold text-neutral-300 uppercase">Unsent</span>
+                        <div>
+                          {!hasMarks ? (
+                            <div className="flex flex-col items-center">
+                              <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-orange-100 text-orange-800 border border-orange-200">
+                                Marks Missing
+                              </span>
+                              <span className="text-[9px] text-orange-600 mt-0.5 font-bold">Unsent</span>
+                            </div>
+                          ) : !rawPhone ? (
+                            <div className="flex flex-col items-center">
+                              <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-neutral-100 text-neutral-600 border border-neutral-200">
+                                No Phone
+                              </span>
+                              <span className="text-[9px] text-neutral-400 mt-0.5 font-bold">Unsent</span>
+                            </div>
+                          ) : (
+                            <span className="text-xs font-bold text-neutral-400 uppercase">Unsent (Ready)</span>
+                          )}
+                        </div>
                       )}
                     </td>
                     <td className="p-4 text-right">
-                      <button
-                        onClick={() => handleSendSingle(student)}
-                        disabled={statusInfo?.status === 'loading'}
-                        className="px-3.5 py-1.5 bg-white border border-neutral-200 rounded-lg text-[10px] font-black uppercase text-neutral-600 hover:bg-neutral-100 hover:border-neutral-300 active:scale-95 transition-all inline-flex items-center gap-1.5 disabled:opacity-50"
-                      >
-                        {statusInfo?.status === 'loading' ? (
-                          <div className="w-3 h-3 border border-neutral-500/30 border-t-neutral-500 rounded-full animate-spin" />
-                        ) : (
-                          <Send className="w-3 h-3" />
+                      <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                        {!hasMarks && (
+                          <button
+                            type="button"
+                            onClick={() => setActiveTab && setActiveTab('subject-entry')}
+                            className="px-2.5 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-[10px] font-black uppercase tracking-wider transition-all inline-flex items-center gap-1 shadow-xs"
+                            title="Navigate to Subject Marks Entry tab"
+                          >
+                            <Edit2 className="w-3 h-3" />
+                            Enter Marks
+                          </button>
                         )}
-                        Queue Send
-                      </button>
+
+                        {alreadySent && !forceSend ? (
+                          <button
+                            type="button"
+                            disabled={true}
+                            className="px-3 py-1.5 bg-neutral-100 border border-neutral-200 rounded-lg text-[10px] font-black uppercase text-neutral-400 cursor-not-allowed inline-flex items-center gap-1.5 select-none opacity-80"
+                            title="Deactivated: Marks for this student have already been sent to WhatsApp to prevent duplicate messages."
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                            Deactivated (Sent)
+                          </button>
+                        ) : alreadySent && forceSend ? (
+                          <button
+                            type="button"
+                            onClick={() => handleSendSingle(student, true)}
+                            disabled={statusInfo?.status === 'loading'}
+                            className="px-2.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[10px] font-black uppercase tracking-wider transition-all inline-flex items-center gap-1 shadow-xs active:scale-95"
+                            title="Bypass duplicate check and resend marks"
+                          >
+                            {statusInfo?.status === 'loading' ? (
+                              <div className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />
+                            ) : (
+                              <Send className="w-3 h-3" />
+                            )}
+                            Bypass & Resend
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleSendSingle(student, forceSend)}
+                            disabled={statusInfo?.status === 'loading' || !hasMarks}
+                            className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-[10px] font-black uppercase text-neutral-600 hover:bg-neutral-100 hover:border-neutral-300 active:scale-95 transition-all inline-flex items-center gap-1.5 disabled:opacity-50"
+                          >
+                            {statusInfo?.status === 'loading' ? (
+                              <div className="w-3 h-3 border border-neutral-500/30 border-t-neutral-500 rounded-full animate-spin" />
+                            ) : (
+                              <Send className="w-3 h-3" />
+                            )}
+                            Queue Send
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -5838,6 +6787,571 @@ const WhatsAppTab = ({
           </tbody>
         </table>
       </div>
+
+      {/* Itemized Detail Breakdown Inspector Modal */}
+      {showBreakdownModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl max-w-4xl w-full p-6 space-y-5 border border-neutral-200 shadow-2xl max-h-[90vh] flex flex-col">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-neutral-200">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-primary/10 text-primary">
+                  <Info className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-sidebar">
+                    Queue Response Inspector & Itemized Details
+                  </h3>
+                  <p className="text-xs text-neutral-500">
+                    Exam: <span className="font-bold text-sidebar">{activeExam?.title || 'Selected Exam'}</span>
+                    {selectedClass && ` • Class: ${selectedClass}`}
+                    {selectedBatch && ` • Section: ${selectedBatch}`}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBreakdownModal(false)}
+                className="p-2 text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Navigation Tabs */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 border-b border-neutral-200 shrink-0">
+              {[
+                { id: 'alreadySent', label: 'Sent (Deactivated)', count: currentAlreadySentList.length, color: 'text-emerald-700 border-emerald-600' },
+                { id: 'marksMissing', label: 'Marks Missing', count: currentMarksMissingList.length, color: 'text-orange-600 border-orange-500' },
+                { id: 'duplicates', label: 'Duplicates', count: currentDuplicatesList.length, color: 'text-amber-600 border-amber-500' },
+                { id: 'invalidPhone', label: 'Invalid Phone', count: currentInvalidPhoneList.length, color: 'text-red-600 border-red-500' },
+                { id: 'missingPhone', label: 'No Phone', count: currentMissingPhoneList.length, color: 'text-neutral-600 border-neutral-500' },
+                { id: 'queued', label: 'Queued', count: currentQueuedList.length, color: 'text-emerald-600 border-emerald-500' },
+                { id: 'optOut', label: 'Opt-Outs', count: currentOptOutList.length, color: 'text-rose-600 border-rose-500' },
+                { id: 'failed', label: 'Failed', count: currentFailedList.length, color: 'text-rose-700 border-rose-700' },
+              ].map((tab: any) => {
+                const isActive = modalCategory === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setModalCategory(tab.id)}
+                    className={`px-3 py-2 text-xs font-black uppercase tracking-wider rounded-lg transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                      isActive
+                        ? 'bg-neutral-900 text-white shadow-xs'
+                        : 'text-neutral-600 hover:bg-neutral-100'
+                    }`}
+                  >
+                    <span>{tab.label}</span>
+                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
+                      isActive ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-700'
+                    }`}>
+                      {tab.count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Modal Tab Content Area */}
+            <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+              {/* Category: Already Sent (Deactivated) */}
+              {modalCategory === 'alreadySent' && (
+                <div className="space-y-3">
+                  <div className="p-3.5 bg-emerald-50 border border-emerald-300 rounded-xl text-xs text-emerald-950 space-y-1">
+                    <div className="font-black flex items-center gap-1.5 text-emerald-900">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                      Students Whose Marks Have Already Been Sent (Deactivated)
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-emerald-900/90">
+                      To prevent double-sending messages to parents, marks send buttons for these students are <strong>automatically deactivated</strong>. If you explicitly wish to resend, you can click "Bypass & Resend" below or enable "Bypass Duplicate Check".
+                    </p>
+                  </div>
+
+                  {currentAlreadySentList.length === 0 ? (
+                    <div className="p-8 text-center bg-neutral-50 rounded-xl border border-neutral-200 text-xs font-bold text-neutral-400">
+                      ℹ️ No marks sent via WhatsApp yet for this class & exam.
+                    </div>
+                  ) : (
+                    <div className="border border-neutral-200 rounded-xl overflow-hidden">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-500 font-black uppercase tracking-wider">
+                          <tr>
+                            <th className="p-3">Roll No</th>
+                            <th className="p-3">Student Name</th>
+                            <th className="p-3">Parent Phone</th>
+                            <th className="p-3">Status / Timestamp</th>
+                            <th className="p-3 text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-200">
+                          {currentAlreadySentList.map((item: any, i: number) => {
+                            const studentObj = sortedStudents.find((s: any) => (s.id || s.uid) === item.studentId);
+                            const formattedDate = item.sentAt 
+                              ? new Date(item.sentAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })
+                              : 'Marked as Sent';
+
+                            return (
+                              <tr key={i} className="hover:bg-neutral-50">
+                                <td className="p-3 font-mono font-bold text-neutral-500">{item.rollNumber || '-'}</td>
+                                <td className="p-3 font-bold text-sidebar">{item.studentName}</td>
+                                <td className="p-3 font-mono text-neutral-600">{item.phone}</td>
+                                <td className="p-3">
+                                  <div className="flex flex-col">
+                                    <span className="inline-flex items-center gap-1 font-bold text-emerald-700">
+                                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                      {formattedDate}
+                                    </span>
+                                    <span className="text-[10px] text-neutral-500 font-medium">Deactivated to prevent duplicates</span>
+                                  </div>
+                                </td>
+                                <td className="p-3 text-right">
+                                  {studentObj && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSendSingle(studentObj, true)}
+                                      className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-[11px] font-black uppercase tracking-wider flex items-center gap-1 ml-auto transition-all active:scale-95 shadow-2xs"
+                                      title="Bypass duplicate check and resend marks"
+                                    >
+                                      <Send className="w-3 h-3" />
+                                      Bypass & Resend
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Category 1: Marks Missing */}
+              {modalCategory === 'marksMissing' && (
+                <div className="space-y-3">
+                  <div className="p-3.5 bg-orange-50 border border-orange-200 rounded-xl text-xs text-orange-950 space-y-1">
+                    <div className="font-black flex items-center gap-1.5 text-orange-900">
+                      <AlertTriangle className="w-4 h-4 text-orange-600" />
+                      Which students have marks missing?
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-orange-900/90">
+                      The WhatsApp engine checks whether any marks records are saved for the selected exam (<strong>{activeExam?.title}</strong>). 
+                      If 0 marks are entered for a student, result dispatch is skipped to prevent sending empty reports to parents.
+                    </p>
+                  </div>
+
+                  {currentMarksMissingList.length === 0 ? (
+                    <div className="p-8 text-center bg-neutral-50 rounded-xl border border-neutral-200 text-xs font-bold text-neutral-400">
+                      ✅ All students have marks entered for {activeExam?.title}!
+                    </div>
+                  ) : (
+                    <div className="border border-neutral-200 rounded-xl overflow-hidden">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-500 font-black uppercase tracking-wider">
+                          <tr>
+                            <th className="p-3">Roll No</th>
+                            <th className="p-3">Student Name</th>
+                            <th className="p-3">Parent Phone</th>
+                            <th className="p-3">Issue Reason</th>
+                            <th className="p-3 text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-200">
+                          {currentMarksMissingList.map((item: any, i: number) => (
+                            <tr key={i} className="hover:bg-neutral-50">
+                              <td className="p-3 font-mono font-bold text-neutral-500">{item.rollNumber || '-'}</td>
+                              <td className="p-3 font-bold text-sidebar">{item.studentName}</td>
+                              <td className="p-3 font-mono text-neutral-600">
+                                <div className="flex items-center gap-1.5">
+                                  <span>{item.phone || 'Not Available'}</span>
+                                  {item.phone && item.phone !== 'Not Available' && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleCopy(item.phone, 'Phone')}
+                                      className="text-neutral-400 hover:text-primary"
+                                    >
+                                      <Copy className="w-3 h-3" />
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="p-3 text-orange-700 font-medium">{item.reason || 'No marks entered'}</td>
+                              <td className="p-3 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowBreakdownModal(false);
+                                    if (setActiveTab) setActiveTab('subject-entry');
+                                  }}
+                                  className="px-2.5 py-1 bg-orange-500 hover:bg-orange-600 text-white rounded text-[11px] font-black uppercase tracking-wider flex items-center gap-1 ml-auto"
+                                >
+                                  <Edit2 className="w-3 h-3" />
+                                  Enter Marks
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Category 2: Duplicates */}
+              {modalCategory === 'duplicates' && (
+                <div className="space-y-3">
+                  <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-950 space-y-1">
+                    <div className="font-black flex items-center gap-1.5 text-amber-900">
+                      <TrendingUp className="w-4 h-4 text-amber-600" />
+                      Which phone numbers or students are duplicates?
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-amber-900/90">
+                      <strong>Duplicate Skipped:</strong> An automated notice was already queued or sent today for this student/exam to prevent duplicate billing and parent spam.
+                      <br />
+                      <strong>Shared Phone Number:</strong> In this roster, multiple siblings or students have the same mobile number registered.
+                      <br />
+                      <em>Tip: To force re-sending, check <strong>"Bypass Duplicate Check"</strong> on the main WhatsApp screen or click <strong>Force Send</strong> below.</em>
+                    </p>
+                  </div>
+
+                  {currentDuplicatesList.length === 0 ? (
+                    <div className="p-8 text-center bg-neutral-50 rounded-xl border border-neutral-200 text-xs font-bold text-neutral-400">
+                      ✅ No duplicate notices or duplicate phone conflicts detected!
+                    </div>
+                  ) : (
+                    <div className="border border-neutral-200 rounded-xl overflow-hidden">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-500 font-black uppercase tracking-wider">
+                          <tr>
+                            <th className="p-3">Roll No</th>
+                            <th className="p-3">Student Name</th>
+                            <th className="p-3">Duplicate Phone Number</th>
+                            <th className="p-3">Duplicate Reason</th>
+                            <th className="p-3 text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-200">
+                          {currentDuplicatesList.map((item: any, i: number) => {
+                            const studentObj = sortedStudents.find((s: any) => (s.id || s.uid) === item.studentId);
+                            return (
+                              <tr key={i} className="hover:bg-neutral-50">
+                                <td className="p-3 font-mono font-bold text-neutral-500">{item.rollNumber || '-'}</td>
+                                <td className="p-3 font-bold text-sidebar">{item.studentName}</td>
+                                <td className="p-3">
+                                  <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-amber-100 text-amber-900 font-mono font-bold">
+                                    <span>{item.phone || '-'}</span>
+                                    {item.phone && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleCopy(item.phone, 'Duplicate Phone')}
+                                        className="text-amber-700 hover:text-amber-900"
+                                      >
+                                        <Copy className="w-3 h-3" />
+                                      </button>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="p-3 text-neutral-600 text-[11px] leading-tight">{item.reason}</td>
+                                <td className="p-3 text-right">
+                                  {studentObj && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        handleSendSingle(studentObj, true);
+                                      }}
+                                      className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-[11px] font-black uppercase tracking-wider flex items-center gap-1 ml-auto"
+                                    >
+                                      <Send className="w-3 h-3" />
+                                      Force Send
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Category 3: Invalid Phone */}
+              {modalCategory === 'invalidPhone' && (
+                <div className="space-y-3">
+                  <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-950 space-y-1">
+                    <div className="font-black flex items-center gap-1.5 text-red-900">
+                      <XCircle className="w-4 h-4 text-red-600" />
+                      Students with Invalid Phone Numbers
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-red-900/90">
+                      Indian mobile numbers must be exactly 10 digits starting with 6, 7, 8, or 9 (optionally prefixed with +91). Numbers with missing digits or landlines cannot receive WhatsApp notices.
+                    </p>
+                  </div>
+
+                  {currentInvalidPhoneList.length === 0 ? (
+                    <div className="p-8 text-center bg-neutral-50 rounded-xl border border-neutral-200 text-xs font-bold text-neutral-400">
+                      ✅ All registered phone numbers have valid formats!
+                    </div>
+                  ) : (
+                    <div className="border border-neutral-200 rounded-xl overflow-hidden">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-500 font-black uppercase tracking-wider">
+                          <tr>
+                            <th className="p-3">Roll No</th>
+                            <th className="p-3">Student Name</th>
+                            <th className="p-3">Entered Phone String</th>
+                            <th className="p-3">Format Error</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-200">
+                          {currentInvalidPhoneList.map((item: any, i: number) => (
+                            <tr key={i} className="hover:bg-neutral-50">
+                              <td className="p-3 font-mono font-bold text-neutral-500">{item.rollNumber || '-'}</td>
+                              <td className="p-3 font-bold text-sidebar">{item.studentName}</td>
+                              <td className="p-3 font-mono font-bold text-red-700 bg-red-50/50">
+                                {item.rawPhone || item.phone}
+                              </td>
+                              <td className="p-3 text-red-700 text-[11px]">{item.reason}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Category 4: No Phone */}
+              {modalCategory === 'missingPhone' && (
+                <div className="space-y-3">
+                  <div className="p-3.5 bg-neutral-100 border border-neutral-200 rounded-xl text-xs text-neutral-800 space-y-1">
+                    <div className="font-black flex items-center gap-1.5 text-neutral-900">
+                      <Info className="w-4 h-4 text-neutral-600" />
+                      Students with No Parent Phone Registered
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-neutral-600">
+                      These students do not have any mobile or WhatsApp contact number saved in their student profile.
+                    </p>
+                  </div>
+
+                  {currentMissingPhoneList.length === 0 ? (
+                    <div className="p-8 text-center bg-neutral-50 rounded-xl border border-neutral-200 text-xs font-bold text-neutral-400">
+                      ✅ All students have registered parent phone numbers!
+                    </div>
+                  ) : (
+                    <div className="border border-neutral-200 rounded-xl overflow-hidden">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-500 font-black uppercase tracking-wider">
+                          <tr>
+                            <th className="p-3">Roll No</th>
+                            <th className="p-3">Student Name</th>
+                            <th className="p-3">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-200">
+                          {currentMissingPhoneList.map((item: any, i: number) => (
+                            <tr key={i} className="hover:bg-neutral-50">
+                              <td className="p-3 font-mono font-bold text-neutral-500">{item.rollNumber || '-'}</td>
+                              <td className="p-3 font-bold text-sidebar">{item.studentName}</td>
+                              <td className="p-3 text-neutral-500 italic">No phone number in student profile</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Category 5: Queued */}
+              {modalCategory === 'queued' && (
+                <div className="space-y-3">
+                  <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-950 space-y-1">
+                    <div className="font-black flex items-center gap-1.5 text-emerald-900">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                      Messages Successfully Queued for Delivery
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-emerald-900/90">
+                      These student results have been submitted to the WhatsApp delivery queue and are pending transmission to parent handsets.
+                    </p>
+                  </div>
+
+                  {currentQueuedList.length === 0 ? (
+                    <div className="p-8 text-center bg-neutral-50 rounded-xl border border-neutral-200 text-xs font-bold text-neutral-400">
+                      No queued messages in current session yet. Click "Send Queue to All" to queue marks.
+                    </div>
+                  ) : (
+                    <div className="border border-neutral-200 rounded-xl overflow-hidden">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-500 font-black uppercase tracking-wider">
+                          <tr>
+                            <th className="p-3">Roll No</th>
+                            <th className="p-3">Student Name</th>
+                            <th className="p-3">Parent Phone</th>
+                            <th className="p-3">Delivery Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-200">
+                          {currentQueuedList.map((item: any, i: number) => (
+                            <tr key={i} className="hover:bg-neutral-50">
+                              <td className="p-3 font-mono font-bold text-neutral-500">{item.rollNumber || '-'}</td>
+                              <td className="p-3 font-bold text-sidebar">{item.studentName}</td>
+                              <td className="p-3 font-mono text-emerald-800 font-bold">{item.phone}</td>
+                              <td className="p-3">
+                                <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-black uppercase">
+                                  Queued
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Category 6: Opt-Outs */}
+              {modalCategory === 'optOut' && (
+                <div className="space-y-3">
+                  <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-950 space-y-1">
+                    <div className="font-black flex items-center gap-1.5 text-rose-900">
+                      <XCircle className="w-4 h-4 text-rose-600" />
+                      Opted-Out Contacts
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-rose-900/90">
+                      Parents who have previously texted "STOP" or opted out of automated WhatsApp broadcasts.
+                    </p>
+                  </div>
+
+                  {currentOptOutList.length === 0 ? (
+                    <div className="p-8 text-center bg-neutral-50 rounded-xl border border-neutral-200 text-xs font-bold text-neutral-400">
+                      ✅ No opted-out parent contacts in this class.
+                    </div>
+                  ) : (
+                    <div className="border border-neutral-200 rounded-xl overflow-hidden">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-500 font-black uppercase tracking-wider">
+                          <tr>
+                            <th className="p-3">Roll No</th>
+                            <th className="p-3">Student Name</th>
+                            <th className="p-3">Phone</th>
+                            <th className="p-3">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-200">
+                          {currentOptOutList.map((item: any, i: number) => (
+                            <tr key={i} className="hover:bg-neutral-50">
+                              <td className="p-3 font-mono font-bold text-neutral-500">{item.rollNumber || '-'}</td>
+                              <td className="p-3 font-bold text-sidebar">{item.studentName}</td>
+                              <td className="p-3 font-mono text-neutral-600">{item.phone}</td>
+                              <td className="p-3 text-rose-700 font-bold">Parent Opted-Out</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Category 7: Failed */}
+              {modalCategory === 'failed' && (
+                <div className="space-y-3">
+                  <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-950 space-y-1">
+                    <div className="font-black flex items-center gap-1.5 text-rose-900">
+                      <XCircle className="w-4 h-4 text-rose-600" />
+                      Queue Errors & Server Failures
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-rose-900/90">
+                      Unexpected exceptions encountered while constructing or inserting items into the Baileys WhatsApp delivery queue.
+                    </p>
+                  </div>
+
+                  {currentFailedList.length === 0 ? (
+                    <div className="p-8 text-center bg-neutral-50 rounded-xl border border-neutral-200 text-xs font-bold text-neutral-400">
+                      ✅ No server or queuing failures!
+                    </div>
+                  ) : (
+                    <div className="border border-neutral-200 rounded-xl overflow-hidden">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-500 font-black uppercase tracking-wider">
+                          <tr>
+                            <th className="p-3">Roll No</th>
+                            <th className="p-3">Student Name</th>
+                            <th className="p-3">Error Details</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-200">
+                          {currentFailedList.map((item: any, i: number) => (
+                            <tr key={i} className="hover:bg-neutral-50">
+                              <td className="p-3 font-mono font-bold text-neutral-500">{item.rollNumber || '-'}</td>
+                              <td className="p-3 font-bold text-sidebar">{item.studentName}</td>
+                              <td className="p-3 text-rose-700 font-mono text-[11px]">{item.error || 'Unknown error'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="pt-3 border-t border-neutral-200 flex items-center justify-between text-xs">
+              <div className="text-neutral-500 text-[11px]">
+                Total Students in Roster: <strong className="text-sidebar">{sortedStudents.length}</strong>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    let text = `Queue Breakdown for ${activeExam?.title || 'Exam'} (${selectedClass} - ${selectedBatch})\n\n`;
+                    if (currentMarksMissingList.length > 0) {
+                      text += `MARKS MISSING (${currentMarksMissingList.length}):\n`;
+                      currentMarksMissingList.forEach((m: any) => {
+                        text += `- Roll ${m.rollNumber}: ${m.studentName} (${m.phone || 'No phone'})\n`;
+                      });
+                      text += `\n`;
+                    }
+                    if (currentDuplicatesList.length > 0) {
+                      text += `DUPLICATES / SHARED NUMBERS (${currentDuplicatesList.length}):\n`;
+                      currentDuplicatesList.forEach((d: any) => {
+                        text += `- Roll ${d.rollNumber}: ${d.studentName} (${d.phone}) - ${d.reason}\n`;
+                      });
+                      text += `\n`;
+                    }
+                    if (currentInvalidPhoneList.length > 0) {
+                      text += `INVALID PHONE (${currentInvalidPhoneList.length}):\n`;
+                      currentInvalidPhoneList.forEach((iv: any) => {
+                        text += `- Roll ${iv.rollNumber}: ${iv.studentName} (${iv.rawPhone || iv.phone})\n`;
+                      });
+                      text += `\n`;
+                    }
+                    handleCopy(text, 'Breakdown Report copied to clipboard');
+                  }}
+                  className="px-3.5 py-2 bg-neutral-100 hover:bg-neutral-200 border border-neutral-300 rounded-lg text-sidebar font-bold flex items-center gap-1.5 transition-colors"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  Copy Full Summary Text
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowBreakdownModal(false)}
+                  className="px-4 py-2 bg-neutral-900 text-white font-bold rounded-lg hover:bg-neutral-800 transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

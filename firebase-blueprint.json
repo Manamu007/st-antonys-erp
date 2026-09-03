@@ -286,9 +286,27 @@
         "saWritten": { "type": "number", "description": "SA Written Test (max 100)" },
         "total": { "type": "number" },
         "isAbsent": { "type": "boolean" },
+        "whatsappSent": { "type": "boolean", "description": "Whether marks for this student and exam were sent to WhatsApp" },
+        "whatsappSentAt": { "type": "string", "format": "date-time" },
+        "whatsappStatus": { "type": "string", "description": "Status of WhatsApp delivery for these marks: queued, sent, etc." },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["examId", "studentId", "subjectId", "classId", "batchId"]
+    },
+    "ExamMarksWhatsAppStatus": {
+      "title": "Exam Marks WhatsApp Status",
+      "description": "Tracks delivery status of exam marks WhatsApp messages to prevent double sending",
+      "type": "object",
+      "properties": {
+        "examId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "phone": { "type": "string" },
+        "status": { "type": "string" },
+        "sentAt": { "type": "string", "format": "date-time" },
+        "messageId": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["examId", "studentId", "status", "sentAt"]
     },
     "ExamSchedule": {
       "title": "Exam Schedule",
@@ -1161,6 +1179,10 @@
     "/examMarks/{markId}": {
       "schema": "ExamMark",
       "description": "Student marks for subjects"
+    },
+    "/exam_marks_whatsapp_status/{id}": {
+      "schema": "ExamMarksWhatsAppStatus",
+      "description": "Delivery status of exam marks via WhatsApp to prevent duplicate sending"
     },
     "/examSchedules/{id}": {
       "schema": "ExamSchedule",

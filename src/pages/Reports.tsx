@@ -842,18 +842,27 @@ const Reports: React.FC = () => {
                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider ${
                         log.status === 'delivered' ? 'bg-green-50 text-green-700 border border-green-200' :
                         log.status === 'sent' ? 'bg-blue-50 text-blue-700 border border-blue-200' :
+                        log.status === 'duplicate' || log.status === 'skipped' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
                         log.status === 'processing' || log.status === 'pending' || log.status === 'queued' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
                         'bg-red-50 text-red-700 border border-red-200'
                       }`}>
                         {log.status === 'delivered' ? <CheckCircle2 className="w-3 h-3 text-green-600" /> :
                          log.status === 'sent' ? <Send className="w-3 h-3 text-blue-600" /> :
+                         log.status === 'duplicate' || log.status === 'skipped' ? <CheckCircle2 className="w-3 h-3 text-amber-600" /> :
                          log.status === 'processing' || log.status === 'pending' || log.status === 'queued' ? <Clock className="w-3 h-3 text-amber-600" /> :
                          <AlertCircle className="w-3 h-3 text-red-600" />}
                         {log.status}
                       </span>
                     </td>
                     <td className="px-3 py-2.5">
-                      {(log.status === 'failed' || log.lastError || log.error) ? (
+                      {(log.status === 'duplicate' || log.status === 'skipped') ? (
+                        <div className="bg-amber-50 border border-amber-100 p-1.5 rounded-lg max-w-[130px]">
+                          <p className="text-amber-700 font-black text-[8px] uppercase tracking-tighter mb-0.5">DUPLICATE</p>
+                          <p className="text-amber-600 font-semibold text-[10px] leading-tight truncate" title={log.error || 'Duplicate notice already sent/pending'}>
+                            {log.error ? log.error.replace(/^Skipped:\s*/i, '') : 'Already sent today'}
+                          </p>
+                        </div>
+                      ) : (log.status === 'failed' || log.lastError || log.error) ? (
                         <div className="bg-red-50 border border-red-100 p-1.5 rounded-lg max-w-[130px]">
                           <p className="text-red-700 font-black text-[8px] uppercase tracking-tighter mb-0.5">FAILURE</p>
                           <p className="text-red-600 font-semibold text-[10px] leading-tight truncate" title={log.error || log.lastError}>

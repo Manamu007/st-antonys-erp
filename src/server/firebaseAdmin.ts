@@ -1,7 +1,35 @@
 import './env.js';
 import firebaseConfig from '../../firebase-applet-config.json' with { type: 'json' };
 import admin from 'firebase-admin';
-import { getFirestore } from 'firebase-admin/firestore';
+import { getFirestore, DocumentReference, FieldPath } from 'firebase-admin/firestore';
+
+// Monkey-patch DocumentReference.prototype.get to seamlessly fall back to RunQuery (where documentId == id)
+// if GCP Firestore restricts BatchGetDocuments due to named database billing flags.
+const origDocGet = DocumentReference.prototype.get;
+DocumentReference.prototype.get = async function() {
+  try {
+    return await origDocGet.apply(this, arguments as any);
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+    if (msg.includes('billing') || msg.includes('PERMISSION_DENIED') || msg.includes('requires billing')) {
+      try {
+        const snap = await this.parent.where(FieldPath.documentId(), '==', this.id).limit(1).get();
+        if (!snap.empty) {
+          return snap.docs[0];
+        }
+        return {
+          exists: false,
+          id: this.id,
+          ref: this,
+          data: () => undefined
+        } as any;
+      } catch (innerErr) {
+        throw e;
+      }
+    }
+    throw e;
+  }
+};
 
 const isPlaceholder = (id?: string) => !id || id.includes('your-project-id') || id === 'project-id' || id.includes('ENTER_YOUR');
 
@@ -36,20 +64,25 @@ export const initializationPromise = (async () => {
         ? getFirestore(admin.app(), dbId)
         : getFirestore(admin.app());
 
-      // Attempt non-blocking / quick health check
-      const healthDoc = tempDb.collection('_admin_init').doc('verify');
-      healthDoc.get().then(() => {
+      // Quick connectivity verification (with timeout) to detect database availability
+      try {
+        const probe = tempDb.collection('_admin_init').limit(1).get();
+        const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('probe_timeout')), 3000));
+        await Promise.race([probe, timeout]);
         console.log(`[FirebaseAdmin] Connectivity check verified.`);
-        healthDoc.set({ verified: true, at: new Date().toISOString() }, { merge: true }).catch(() => {});
-      }).catch((err: any) => {
+        isNamedDatabaseDenied = false;
+      } catch (err: any) {
         const errText = (err.message || '').toLowerCase();
-        if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('quota') || errText.includes('disabled') || errText.includes('requires billing') || errText.includes('not_found') || errText.includes('not found') || errText.includes('5 not_found')) {
-          isNamedDatabaseDenied = true;
-          console.warn(`[FirebaseAdmin] Database is unavailable or requires Google Cloud billing/creation on project ${projectId}. Background admin operations will be gracefully skipped.`);
-        } else {
-          console.warn(`[FirebaseAdmin] Background health check info: ${err.message}`);
+        if (errText !== 'probe_timeout') {
+          if (errText.includes('permission_denied') || errText.includes('quota') || errText.includes('disabled') || errText.includes('not_found') || errText.includes('not found') || errText.includes('5 not_found')) {
+            isNamedDatabaseDenied = true;
+            lastInitError = err.message;
+            console.warn(`[FirebaseAdmin] Database is unavailable on project ${projectId}: ${err.message}. Background operations will use fallback.`);
+          } else {
+            console.warn(`[FirebaseAdmin] Background health check info: ${err.message}`);
+          }
         }
-      });
+      }
 
       return tempDb;
     } catch (err: any) {
@@ -85,7 +118,9 @@ export const initializationPromise = (async () => {
 export const isDbInitialized = () => !!dbAdmin;
 export const getDbAdminInstance = () => dbAdmin;
 export const setDatabaseDenied = (denied = true) => {
-  isNamedDatabaseDenied = denied;
+  if (!dbAdmin) {
+    isNamedDatabaseDenied = denied;
+  }
 };
 export const getDbAdmin = () => {
   if (!dbAdmin) {
@@ -96,7 +131,9 @@ export const getDbAdmin = () => {
   }
   return dbAdmin;
 };
-export const isDatabaseDenied = () => isNamedDatabaseDenied;
+export const isDatabaseDenied = () => {
+  return !dbAdmin || isNamedDatabaseDenied;
+};
 export const getAuthAdmin = () => {
   if (admin.apps.length === 0) return null;
   return admin.auth();

@@ -191,9 +191,9 @@ const DashboardRouter = () => {
 
   if (roleLower === 'driver') return <Navigate to="/dashboard/driver" replace />;
   if (roleLower === 'doctor') return <Navigate to="/dashboard/student-health" replace />;
-  if (isStaffUser) return <Dashboard />;
-  if ((isParent || isStudent || roleLower === 'student' || roleLower === 'parent') && !isStaffUser) return <ParentDashboard />;
-  return <Dashboard />;
+  if (isStaffUser) return <React.Suspense fallback={<PageLoading />}><Dashboard /></React.Suspense>;
+  if ((isParent || isStudent || roleLower === 'student' || roleLower === 'parent') && !isStaffUser) return <React.Suspense fallback={<PageLoading />}><ParentDashboard /></React.Suspense>;
+  return <React.Suspense fallback={<PageLoading />}><Dashboard /></React.Suspense>;
 };
 
 const PublicRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => (

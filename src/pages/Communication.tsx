@@ -43,8 +43,21 @@ import {
   Copy,
   X,
   ToggleLeft,
-  ToggleRight
+  ToggleRight,
+  FileSpreadsheet,
+  FileUp,
+  Eye,
+  RefreshCw,
+  Download,
+  Check
 } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import { 
+  compareSubjectsStandard, 
+  getPerformanceCategory, 
+  downloadMarksExcelTemplate, 
+  PRESET_SUBJECT_SETS 
+} from '../utils/examUtils';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
@@ -126,7 +139,7 @@ const Communication: React.FC = () => {
   const [staff, setStaff] = useState<any[]>([]);
 
   // Broadcast State
-  const [broadcastTarget, setBroadcastTarget] = useState<'students' | 'staff' | 'communities' | 'all'>('students');
+  const [broadcastTarget, setBroadcastTarget] = useState<'students' | 'staff' | 'communities' | 'excel' | 'all'>('students');
   const [selectedClassId, setSelectedClassId] = useState('');
   const [selectedBatchId, setSelectedBatchId] = useState('');
   const [selectedBusId, setSelectedBusId] = useState('');
@@ -135,6 +148,43 @@ const Communication: React.FC = () => {
   const [hostelBlocks, setHostelBlocks] = useState<any[]>([]);
   const [broadcastMessage, setBroadcastMessage] = useState('');
   const [isSendingBroadcast, setIsSendingBroadcast] = useState(false);
+
+  // Excel Marks Broadcast State
+  const [excelFile, setExcelFile] = useState<File | null>(null);
+  const [excelFileName, setExcelFileName] = useState<string>('');
+  const [parsedExcelRows, setParsedExcelRows] = useState<any[]>([]);
+  const [detectedExcelSubjects, setDetectedExcelSubjects] = useState<string[]>([]);
+  const [excelExamTitle, setExcelExamTitle] = useState<string>('');
+  const [excelTemplate, setExcelTemplate] = useState<string>(
+`Dear {fatherName},
+Exam result for {studentName} has been published.
+
+📝 Exam: {examName}
+📌 Roll No: {rollNo}
+📊 Total: {total}
+📈 Percentage: {percentage}%
+{rankLine}
+🏁 Status: {status}
+
+Subject-wise Marks:
+{subjectMarks}
+
+For more details, please contact St. Antony’s School office.
+
+This is an automated message.`
+  );
+  const [previewRowIndex, setPreviewRowIndex] = useState<number>(0);
+  const [excelSearchFilter, setExcelSearchFilter] = useState<string>('');
+  const [isProcessingExcel, setIsProcessingExcel] = useState<boolean>(false);
+
+  // Template Download & Customizer State
+  const [showTemplateModal, setShowTemplateModal] = useState<boolean>(false);
+  const [templateModalClass, setTemplateModalClass] = useState<string>('');
+  const [templateModalExam, setTemplateModalExam] = useState<string>('Unit Test 1');
+  const [templateModalMaxMarks, setTemplateModalMaxMarks] = useState<number>(25);
+  const [templatePresetType, setTemplatePresetType] = useState<keyof typeof PRESET_SUBJECT_SETS | 'custom'>('highSchool');
+  const [templateSubjectsList, setTemplateSubjectsList] = useState<string[]>(PRESET_SUBJECT_SETS.highSchool);
+  const [newSubjectInput, setNewSubjectInput] = useState<string>('');
 
   const [loadingUsers, setLoadingUsers] = useState(false);
 
@@ -667,7 +717,356 @@ const Communication: React.FC = () => {
     }
   };
 
+  const generateExcelStudentMessage = (row: any, tpl: string) => {
+    if (!row) return '';
+    let msg = tpl;
+    const rankLine = row.rank ? `🏆 Rank: ${row.rank}` : '';
+    msg = msg.replace(/{studentName}/g, row.studentName || 'Student');
+    msg = msg.replace(/{fatherName}/g, row.fatherName || 'Parent');
+    msg = msg.replace(/{examName}/g, row.testName || excelExamTitle || 'Exam');
+    msg = msg.replace(/{rollNo}/g, String(row.candidateId || row.rollNo || '-'));
+    msg = msg.replace(/{total}/g, String(row.total || '-'));
+    msg = msg.replace(/{percentage}/g, String(row.percentage || '-'));
+    msg = msg.replace(/{rankLine}/g, rankLine);
+    msg = msg.replace(/{rank}/g, String(row.rank || '-'));
+    msg = msg.replace(/{status}/g, row.status || 'Good');
+    msg = msg.replace(/{subjectMarks}/g, row.subjectMarksText || '');
+
+    // Dynamically replace individual subject placeholders if any (e.g. {Telugu}, {Mathematics}, {Science}, etc.)
+    if (row.subjects && Array.isArray(row.subjects)) {
+      for (const subj of row.subjects) {
+        const valStr = String(subj.marks ?? '-');
+        // Exact name tag e.g. {Physical Science}
+        const reExact = new RegExp(`\\{${subj.name}\\}`, 'gi');
+        msg = msg.replace(reExact, valStr);
+        // Clean alphanumeric tag e.g. {PhysicalScience} or {Maths}
+        const cleanName = subj.name.replace(/[^a-zA-Z0-9]/g, '');
+        if (cleanName) {
+          const reClean = new RegExp(`\\{${cleanName}\\}`, 'gi');
+          msg = msg.replace(reClean, valStr);
+        }
+      }
+    }
+
+    return msg.replace(/\n\n\n+/g, '\n\n').trim();
+  };
+
+  const handleQuickDownloadTemplate = (type: 'highSchool' | 'primary' | 'standard6') => {
+    const subjects = PRESET_SUBJECT_SETS[type] || PRESET_SUBJECT_SETS.highSchool;
+    const label = type === 'primary' ? 'Primary_School_4_Subjects' : type === 'standard6' ? 'Standard_6_Subjects' : 'High_School_7_Subjects';
+    downloadMarksExcelTemplate({
+      fileName: `Marks_Template_${label}`,
+      examName: 'Unit Test 1',
+      className: type === 'primary' ? 'Class 3' : 'Class 10',
+      subjects,
+      maxMarksPerSubject: 25,
+      includeSampleRows: true
+    });
+    toast.success(`Downloaded ${label.replace(/_/g, ' ')} template!`);
+  };
+
+  const handleDownloadCustomTemplate = () => {
+    // If class is selected, pre-populate students from that class
+    let classStudents: any[] = [];
+    if (templateModalClass && students && students.length > 0) {
+      const filtered = students.filter((s: any) => 
+        s.classId === templateModalClass ||
+        s.className === templateModalClass ||
+        s.grade === templateModalClass
+      );
+      if (filtered.length > 0) {
+        classStudents = filtered.map(s => ({
+          candidateId: s.rollNumber || s.admissionNumber || s.id,
+          studentName: s.name,
+          fatherName: s.fatherName || s.parentName || '',
+          phone: extractParentPhone(s),
+          group: s.className || s.classId || templateModalClass,
+          batch: s.section || s.batch || 'A'
+        }));
+      }
+    }
+
+    const selectedClassObj = classes.find(c => c.id === templateModalClass || c.name === templateModalClass);
+    const classNameStr = selectedClassObj?.name || templateModalClass || 'Custom Class';
+
+    downloadMarksExcelTemplate({
+      fileName: `Marks_Template_${classNameStr.replace(/\s+/g, '_')}_${templateSubjectsList.length}_Subjects`,
+      examName: templateModalExam || 'Unit Test 1',
+      className: classNameStr,
+      subjects: templateSubjectsList.length > 0 ? templateSubjectsList : PRESET_SUBJECT_SETS.highSchool,
+      maxMarksPerSubject: templateModalMaxMarks || 25,
+      students: classStudents,
+      includeSampleRows: classStudents.length === 0
+    });
+
+    setShowTemplateModal(false);
+    toast.success(`Downloaded customized template with ${templateSubjectsList.length} subjects!`);
+  };
+
+  const handleExcelUpload = async (file: File) => {
+    try {
+      setIsProcessingExcel(true);
+      setExcelFile(file);
+      setExcelFileName(file.name);
+
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: 'array' });
+      const firstSheetName = wb.SheetNames[0];
+      const ws = wb.Sheets[firstSheetName];
+      const rows: any[] = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
+      if (!rows || rows.length === 0) {
+        toast.error("The uploaded Excel sheet contains no rows.");
+        setIsProcessingExcel(false);
+        return;
+      }
+
+      // Fetch all active students once for fast ID/Name matching
+      const allActiveStudents = await dbService.list('students', [where('status', '==', 'active')]);
+
+      // Detect header keys in first row
+      const detectedExam = (rows[0]?.['Test'] || rows[0]?.['Test Name'] || rows[0]?.['Exam'] || rows[0]?.['Exam Name'] || '').trim();
+      if (detectedExam && !excelExamTitle) {
+        setExcelExamTitle(detectedExam);
+      }
+
+      const nonSubjectPatterns = [
+        /candidate.*id/i, /roll.*no/i, /^roll$/i, /admission.*no/i, /^adm.*no$/i, /^id$/i, /^ht.*no$/i, /hall.*ticket/i,
+        /candidate.*name/i, /student.*name/i, /^student$/i, /^name$/i,
+        /^father$/i, /father.*name/i, /^parent$/i, /parent.*name/i, /guardian/i,
+        /^group$/i, /^class$/i, /^std$/i, /^grade$/i,
+        /^other$/i, /^batch$/i, /^section$/i, /^sec$/i,
+        /test.*no/i, /exam.*no/i,
+        /^test$/i, /test.*name/i, /^exam$/i, /exam.*name/i,
+        /^total$/i, /grand.*total/i, /marks.*obtained/i,
+        /test.*rank/i, /^rank$/i, /^pos$/i, /^position$/i,
+        /^percentage$/i, /^percent$/i, /^perc$/i, /^%$/i,
+        /^phone$/i, /^mobile$/i, /^whatsapp$/i, /^contact$/i, /parent.*phone/i, /father.*mobile/i, /cell/i
+      ];
+
+      const isSubjectCol = (key: string) => {
+        const trimmed = key.trim();
+        if (!trimmed) return false;
+        return !nonSubjectPatterns.some(pat => pat.test(trimmed));
+      };
+
+      // Detect all unique subject columns present across the entire uploaded sheet
+      const detectedSubjSet = new Set<string>();
+      rows.forEach(r => {
+        Object.keys(r).forEach(k => {
+          if (isSubjectCol(k)) {
+            detectedSubjSet.add(k.trim());
+          }
+        });
+      });
+
+      const detectedSubjArray = Array.from(detectedSubjSet).sort(compareSubjectsStandard);
+      setDetectedExcelSubjects(detectedSubjArray);
+
+      // Auto-detect max marks per subject across all rows to support 25/50/80/100 tests
+      let maxMarkSeen = 0;
+      rows.forEach(r => {
+        detectedSubjArray.forEach(subj => {
+          const val = parseFloat(String(r[subj]).replace(/[^0-9.]/g, ''));
+          if (!isNaN(val) && val > maxMarkSeen) {
+            maxMarkSeen = val;
+          }
+        });
+      });
+
+      let detectedMaxPerSubj = 25;
+      if (maxMarkSeen > 80) detectedMaxPerSubj = 100;
+      else if (maxMarkSeen > 50) detectedMaxPerSubj = 80;
+      else if (maxMarkSeen > 25) detectedMaxPerSubj = 50;
+      else detectedMaxPerSubj = 25;
+
+      const parsed: any[] = rows.map((r, index) => {
+        const getCol = (patterns: RegExp[]) => {
+          for (const key of Object.keys(r)) {
+            if (patterns.some(p => p.test(key.trim()))) {
+              return String(r[key] || '').trim();
+            }
+          }
+          return '';
+        };
+
+        const candidateId = getCol([/candidate.*id/i, /roll.*no/i, /^roll$/i, /admission.*no/i, /^adm.*no$/i, /^id$/i, /^ht.*no$/i, /hall.*ticket/i]);
+        const studentName = getCol([/candidate.*name/i, /student.*name/i, /^student$/i, /^name$/i]);
+        const fatherName = getCol([/^father$/i, /father.*name/i, /^parent$/i, /parent.*name/i, /guardian/i]);
+        const group = getCol([/^group$/i, /^class$/i, /^std$/i, /^grade$/i]);
+        const batch = getCol([/^other$/i, /^batch$/i, /^section$/i, /^sec$/i]);
+        const testName = getCol([/^test$/i, /test.*name/i, /^exam$/i, /exam.*name/i]) || detectedExam || excelExamTitle;
+        let total = getCol([/^total$/i, /grand.*total/i, /marks.*obtained/i]);
+        const rank = getCol([/test.*rank/i, /^rank$/i, /^pos$/i, /^position$/i]);
+        let percentage = getCol([/^percentage$/i, /^percent$/i, /^perc$/i, /^%$/i]);
+        let phone = getCol([/^phone$/i, /^mobile$/i, /^whatsapp$/i, /^contact$/i, /parent.*phone/i, /father.*mobile/i, /cell/i]);
+
+        // Subject marks
+        const subjects: Array<{ name: string, marks: string | number }> = [];
+        let numericSum = 0;
+        let validNumericCount = 0;
+
+        for (const subjName of detectedSubjArray) {
+          const marksVal = r[subjName];
+          if (marksVal !== '' && marksVal !== undefined && marksVal !== null) {
+            subjects.push({
+              name: subjName,
+              marks: marksVal
+            });
+            const numVal = parseFloat(String(marksVal).replace(/[^0-9.]/g, ''));
+            if (!isNaN(numVal)) {
+              numericSum += numVal;
+              validNumericCount++;
+            }
+          }
+        }
+
+        // If user uploaded extra subject columns not caught in detectedSubjArray
+        for (const key of Object.keys(r)) {
+          if (isSubjectCol(key) && !detectedSubjSet.has(key.trim())) {
+            const marksVal = r[key];
+            if (marksVal !== '' && marksVal !== undefined && marksVal !== null) {
+              subjects.push({
+                name: key.trim(),
+                marks: marksVal
+              });
+            }
+          }
+        }
+
+        // Sort subjects using standard curriculum ordering (Telugu, Hindi, English, Mathematics, Physics, Biology, Social, etc.)
+        subjects.sort((a, b) => compareSubjectsStandard(a.name, b.name));
+
+        // Format subject marks text:
+        const subjectMarksText = subjects.map(s => `🔹 *${s.name}*: ${s.marks}`).join('\n');
+
+        // Auto-calculate Total if not provided
+        if (!total && validNumericCount > 0) {
+          total = String(numericSum);
+        }
+
+        // Numeric percentage calculation if needed
+        let percNum = 0;
+        if (percentage) {
+          percNum = parseFloat(percentage.replace(/[^0-9.]/g, '')) || 0;
+        } else if (total && subjects.length > 0) {
+          const totNum = parseFloat(total) || 0;
+          percNum = Math.round((totNum / (subjects.length * detectedMaxPerSubj)) * 100);
+        }
+
+        const statusLabel = getPerformanceCategory(Math.round(percNum));
+
+        // Smart Database matching for Parent Phone
+        let matchedStudent: any = null;
+        if (allActiveStudents && allActiveStudents.length > 0) {
+          if (candidateId) {
+            matchedStudent = allActiveStudents.find((s: any) => 
+              String(s.rollNumber || '').trim() === candidateId ||
+              String(s.admissionNumber || '').trim() === candidateId ||
+              String(s.id || '').trim() === candidateId ||
+              String(s.uid || '').trim() === candidateId
+            );
+          }
+          if (!matchedStudent && studentName) {
+            const cleanTargetName = studentName.toLowerCase().replace(/[^a-z0-9]/g, '');
+            matchedStudent = allActiveStudents.find((s: any) => {
+              const cleanSName = String(s.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+              return cleanSName === cleanTargetName || cleanSName.includes(cleanTargetName) || cleanTargetName.includes(cleanSName);
+            });
+          }
+        }
+
+        if (!phone && matchedStudent) {
+          phone = extractParentPhone(matchedStudent);
+        }
+
+        return {
+          id: `row_${index + 1}`,
+          index: index + 1,
+          candidateId,
+          studentName: studentName || (matchedStudent ? matchedStudent.name : `Student ${index + 1}`),
+          fatherName: fatherName || (matchedStudent ? (matchedStudent.fatherName || matchedStudent.parentName || '') : ''),
+          group,
+          batch,
+          testName,
+          total,
+          rank,
+          percentage: percNum ? `${Math.round(percNum)}` : percentage,
+          status: statusLabel,
+          phone: phone || '',
+          matchedStudent,
+          subjects,
+          subjectMarksText
+        };
+      });
+
+      setParsedExcelRows(parsed);
+      setPreviewRowIndex(0);
+      const withPhone = parsed.filter(p => !!p.phone).length;
+      toast.success(`Parsed ${parsed.length} student records with ${detectedSubjArray.length} subjects detected (${withPhone} matched with WhatsApp phones)`);
+    } catch (err: any) {
+      console.error("Excel parse error:", err);
+      toast.error("Failed to parse Excel file: " + (err.message || "Invalid format"));
+    } finally {
+      setIsProcessingExcel(false);
+    }
+  };
+
+  const handleUpdateExcelPhone = (rowId: string, newPhone: string) => {
+    setParsedExcelRows(prev => prev.map(row => row.id === rowId ? { ...row, phone: newPhone } : row));
+  };
+
   const handleRunBroadcast = async () => {
+    if (broadcastTarget === 'excel') {
+      if (parsedExcelRows.length === 0) {
+        toast.error("Please upload an Excel marks sheet first.");
+        return;
+      }
+      const readyRows = parsedExcelRows.filter(r => !!r.phone);
+      if (readyRows.length === 0) {
+        toast.error("No valid phone numbers found for the uploaded students. Please verify or input phone numbers.");
+        return;
+      }
+
+      setIsSendingBroadcast(true);
+      try {
+        const payload = readyRows.map(row => {
+          const studentMsg = generateExcelStudentMessage(row, excelTemplate);
+          return {
+            phone: row.phone,
+            text: studentMsg,
+            studentId: row.matchedStudent?.id || row.candidateId || null,
+            classId: row.matchedStudent?.classId || null
+          };
+        });
+
+        toast.loading(`Enqueuing ${payload.length} personalized marks messages with 4 msgs/min rate limiting...`);
+
+        const res = await fetch('/api/whatsapp/broadcast', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            to: payload,
+            text: "Exam Marks Notification",
+            options: { isBroadcast: true, broadcastTarget: 'excel_marks', examName: excelExamTitle }
+          })
+        });
+        const data = await res.json();
+        toast.dismiss();
+        if (data.success) {
+          toast.success(`Successfully queued ${payload.length} marks messages! Paced safely at 4 msgs/min.`);
+        } else {
+          throw new Error(data.error || "Failed to broadcast excel marks");
+        }
+      } catch (err: any) {
+        toast.dismiss();
+        toast.error(err.message || "Excel marks broadcast failed");
+      } finally {
+        setIsSendingBroadcast(false);
+      }
+      return;
+    }
+
     if (broadcastTarget === 'communities') {
       setIsSendingBroadcast(true);
       try {
@@ -1379,26 +1778,438 @@ const Communication: React.FC = () => {
 
                   <div className="space-y-4">
                     <label className="text-[10px] font-black text-neutral-400 px-1">BROADCAST TARGET</label>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                       {[
                         { id: 'students', label: 'Students', icon: Users },
                         { id: 'staff', label: 'Staff', icon: UserCircle },
                         { id: 'communities', label: 'Communities', icon: Globe },
+                        { id: 'excel', label: 'Excel Marks Sheet', icon: FileSpreadsheet, highlight: true },
                         { id: 'all', label: 'Everyone', icon: Globe }
                       ].map(t => (
                         <button
                           key={t.id}
                           onClick={() => setBroadcastTarget(t.id as any)}
-                          className={`p-4 rounded-2xl border-2 flex flex-col items-center gap-2 transition-all ${
-                            broadcastTarget === t.id ? 'bg-primary/5 border-primary text-primary' : 'bg-white border-neutral-100 text-neutral-400'
+                          className={`p-3.5 rounded-2xl border-2 flex flex-col items-center gap-1.5 transition-all relative ${
+                            broadcastTarget === t.id 
+                              ? 'bg-primary/5 border-primary text-primary shadow-sm' 
+                              : 'bg-white border-neutral-100 text-neutral-400 hover:border-neutral-200'
                           }`}
                         >
                           <t.icon className="w-5 h-5" />
-                          <span className="text-[10px] font-black uppercase">{t.label}</span>
+                          <span className="text-[10px] font-black uppercase text-center leading-tight">{t.label}</span>
+                          {t.highlight && (
+                            <span className="absolute -top-1 -right-1 px-1.5 py-0.5 bg-emerald-500 text-white text-[8px] font-black rounded-full shadow-sm">
+                              EXCEL
+                            </span>
+                          )}
                         </button>
                       ))}
                     </div>
                   </div>
+
+                  {broadcastTarget === 'excel' && (
+                    <div className="space-y-6">
+                      {/* Template Download Card */}
+                      <div className="p-5 bg-gradient-to-br from-indigo-50/80 via-blue-50/40 to-white rounded-[2rem] border border-blue-200/80 space-y-4 shadow-sm">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="flex items-center gap-2.5">
+                            <div className="p-2.5 bg-blue-600 text-white rounded-xl shadow-sm">
+                              <Download className="w-5 h-5" />
+                            </div>
+                            <div>
+                              <h4 className="text-sm font-black text-blue-950">Download Marks Excel Template</h4>
+                              <p className="text-xs text-blue-700 font-medium">Pre-formatted templates with auto total/percentage formulas</p>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowTemplateModal(true)}
+                            className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm flex items-center justify-center gap-1.5 self-start sm:self-auto"
+                          >
+                            <Settings className="w-3.5 h-3.5" /> Customize & Class Roster
+                          </button>
+                        </div>
+
+                        {/* Quick 1-Click Template Downloads */}
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => handleQuickDownloadTemplate('highSchool')}
+                            className="p-3 bg-white/90 hover:bg-white border border-blue-200 rounded-xl text-left transition-all hover:shadow-md group flex flex-col justify-between"
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-xs font-black text-blue-950 group-hover:text-blue-600">High School (7 Subjects)</span>
+                              <Download className="w-3.5 h-3.5 text-blue-500" />
+                            </div>
+                            <span className="text-[10px] text-neutral-500 font-medium line-clamp-1">
+                              Telugu, Hindi, English, Maths, PS, BS, Social
+                            </span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleQuickDownloadTemplate('standard6')}
+                            className="p-3 bg-white/90 hover:bg-white border border-blue-200 rounded-xl text-left transition-all hover:shadow-md group flex flex-col justify-between"
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-xs font-black text-blue-950 group-hover:text-blue-600">Standard (6 Subjects)</span>
+                              <Download className="w-3.5 h-3.5 text-blue-500" />
+                            </div>
+                            <span className="text-[10px] text-neutral-500 font-medium line-clamp-1">
+                              Telugu, Hindi, English, Maths, Science, Social
+                            </span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleQuickDownloadTemplate('primary')}
+                            className="p-3 bg-white/90 hover:bg-white border border-blue-200 rounded-xl text-left transition-all hover:shadow-md group flex flex-col justify-between"
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-xs font-black text-blue-950 group-hover:text-blue-600">Primary (4 Subjects)</span>
+                              <Download className="w-3.5 h-3.5 text-blue-500" />
+                            </div>
+                            <span className="text-[10px] text-neutral-500 font-medium line-clamp-1">
+                              Telugu, English, Mathematics, EVS
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Upload Box */}
+                      <div className="p-6 bg-gradient-to-br from-emerald-50/70 via-teal-50/40 to-white rounded-[2rem] border-2 border-dashed border-emerald-200 space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2.5">
+                            <div className="p-2.5 bg-emerald-500 text-white rounded-xl shadow-sm">
+                              <FileSpreadsheet className="w-5 h-5" />
+                            </div>
+                            <div>
+                              <h4 className="text-sm font-black text-emerald-950">Upload Marks Excel / CSV Sheet</h4>
+                              <p className="text-xs text-emerald-700 font-medium">Supports dynamic subjects — any subjects added or removed adjust automatically</p>
+                            </div>
+                          </div>
+                          {excelFileName && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setExcelFile(null);
+                                setExcelFileName('');
+                                setParsedExcelRows([]);
+                                setDetectedExcelSubjects([]);
+                              }}
+                              className="px-3 py-1.5 bg-rose-50 text-rose-600 rounded-xl text-xs font-bold hover:bg-rose-100 transition-colors flex items-center gap-1.5"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" /> Clear Sheet
+                            </button>
+                          )}
+                        </div>
+
+                        {!excelFileName ? (
+                          <label className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-emerald-300/80 rounded-2xl cursor-pointer hover:bg-emerald-50/50 transition-all group bg-white/60">
+                            <FileUp className="w-10 h-10 text-emerald-500 group-hover:scale-110 transition-transform mb-2" />
+                            <span className="text-sm font-bold text-emerald-900 mb-1">Click to browse or drag & drop Excel / CSV marks sheet</span>
+                            <span className="text-xs text-emerald-600 font-medium">Auto-detects Candidate ID, Student Name, Father Name, Subject Marks, Total & Ranks</span>
+                            <input
+                              type="file"
+                              accept=".xlsx, .xls, .csv"
+                              className="hidden"
+                              onChange={(e) => {
+                                if (e.target.files && e.target.files[0]) {
+                                  handleExcelUpload(e.target.files[0]);
+                                }
+                              }}
+                            />
+                          </label>
+                        ) : (
+                          <div className="p-4 bg-white rounded-2xl border border-emerald-200/80 flex items-center justify-between shadow-sm">
+                            <div className="flex items-center gap-3">
+                              <CheckCircle className="w-5 h-5 text-emerald-500 shrink-0" />
+                              <div>
+                                <p className="text-sm font-bold text-neutral-800">{excelFileName}</p>
+                                <p className="text-xs text-neutral-500">
+                                  {parsedExcelRows.length} students • {detectedExcelSubjects.length} subjects detected
+                                </p>
+                              </div>
+                            </div>
+                            <label className="px-3 py-1.5 bg-emerald-100 text-emerald-800 rounded-xl text-xs font-bold cursor-pointer hover:bg-emerald-200 transition-colors flex items-center gap-1">
+                              <RefreshCw className="w-3.5 h-3.5" /> Re-upload
+                              <input
+                                type="file"
+                                accept=".xlsx, .xls, .csv"
+                                className="hidden"
+                                onChange={(e) => {
+                                  if (e.target.files && e.target.files[0]) {
+                                    handleExcelUpload(e.target.files[0]);
+                                  }
+                                }}
+                              />
+                            </label>
+                          </div>
+                        )}
+
+                        <div className="p-3.5 bg-emerald-100/50 rounded-xl text-[11px] text-emerald-900 leading-relaxed font-medium">
+                          💡 <strong>Dynamic Subject Support:</strong> If subjects are increased (e.g. adding Physics, Chemistry, CDF) or decreased (e.g. Primary 4 subjects), the system automatically adjusts all columns and formats the WhatsApp report perfectly.
+                        </div>
+                      </div>
+
+                      {/* Detected Subjects Chip Row */}
+                      {detectedExcelSubjects.length > 0 && (
+                        <div className="p-4 bg-slate-900 text-white rounded-2xl space-y-2.5 shadow-md">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Sparkles className="w-4 h-4 text-emerald-400" />
+                              <span className="text-xs font-black uppercase tracking-wider text-emerald-400">
+                                Detected Subject Columns ({detectedExcelSubjects.length})
+                              </span>
+                            </div>
+                            <span className="text-[10px] font-bold px-2 py-0.5 bg-emerald-500/20 text-emerald-300 rounded-full border border-emerald-500/30">
+                              ✨ Auto-Adjusted
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {detectedExcelSubjects.map((subj, idx) => (
+                              <span
+                                key={subj}
+                                className="px-2.5 py-1 bg-slate-800 border border-slate-700 rounded-lg text-xs font-medium text-slate-200 flex items-center gap-1.5"
+                              >
+                                <span className="text-[10px] text-slate-400">{idx + 1}.</span>
+                                {subj}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Summary Metrics */}
+                      {parsedExcelRows.length > 0 && (
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                          <div className="p-3.5 bg-neutral-50 border border-neutral-200 rounded-2xl">
+                            <p className="text-[10px] font-black uppercase text-neutral-400">Total Records</p>
+                            <p className="text-lg font-black text-neutral-900">{parsedExcelRows.length}</p>
+                          </div>
+                          <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl">
+                            <p className="text-[10px] font-black uppercase text-emerald-600">WhatsApp Ready</p>
+                            <p className="text-lg font-black text-emerald-700">{parsedExcelRows.filter(r => !!r.phone).length}</p>
+                          </div>
+                          <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl">
+                            <p className="text-[10px] font-black uppercase text-amber-600">Missing Phone</p>
+                            <p className="text-lg font-black text-amber-700">{parsedExcelRows.filter(r => !r.phone).length}</p>
+                          </div>
+                          <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-2xl">
+                            <p className="text-[10px] font-black uppercase text-blue-600">Exam Title</p>
+                            <p className="text-xs font-black text-blue-800 truncate" title={excelExamTitle || 'Standard Exam'}>{excelExamTitle || 'Standard Exam'}</p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Template Editor */}
+                      {parsedExcelRows.length > 0 && (
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <label className="text-[10px] font-black text-neutral-400 uppercase tracking-widest px-1">
+                              WhatsApp Message Template
+                            </label>
+                            <span className="text-[10px] text-neutral-400 font-medium">Click tags below to insert</span>
+                          </div>
+
+                          {/* Standard Variable Chips */}
+                          <div className="flex flex-wrap gap-1.5">
+                            {[
+                              { label: 'Student Name', tag: '{studentName}' },
+                              { label: 'Father Name', tag: '{fatherName}' },
+                              { label: 'Exam Name', tag: '{examName}' },
+                              { label: 'Roll No', tag: '{rollNo}' },
+                              { label: 'Total', tag: '{total}' },
+                              { label: 'Percentage', tag: '{percentage}' },
+                              { label: 'Rank', tag: '{rankLine}' },
+                              { label: 'Performance Status', tag: '{status}' },
+                              { label: 'Subject Marks List (All)', tag: '{subjectMarks}' }
+                            ].map(item => (
+                              <button
+                                key={item.tag}
+                                type="button"
+                                onClick={() => setExcelTemplate(prev => prev + ' ' + item.tag)}
+                                className="px-2.5 py-1 bg-neutral-100 hover:bg-primary/10 hover:text-primary rounded-lg text-xs font-semibold text-neutral-600 transition-colors"
+                              >
+                                + {item.label}
+                              </button>
+                            ))}
+                          </div>
+
+                          {/* Individual Subject Variable Chips */}
+                          {detectedExcelSubjects.length > 0 && (
+                            <div className="p-3 bg-neutral-100/70 rounded-xl space-y-1.5 border border-neutral-200/60">
+                              <p className="text-[10px] font-bold uppercase text-neutral-500">Insert Individual Subject Marks:</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {detectedExcelSubjects.map(s => (
+                                  <button
+                                    key={s}
+                                    type="button"
+                                    onClick={() => setExcelTemplate(prev => prev + ` {${s}}`)}
+                                    className="px-2 py-0.5 bg-white hover:bg-blue-50 hover:text-blue-700 border border-neutral-200 rounded-md text-[11px] font-mono text-neutral-700 transition-colors"
+                                  >
+                                    +{`{${s}}`}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          <textarea
+                            value={excelTemplate}
+                            onChange={(e) => setExcelTemplate(e.target.value)}
+                            rows={8}
+                            className="w-full p-4 bg-neutral-50 border border-neutral-200 rounded-2xl text-xs font-mono outline-none focus:border-primary transition-all shadow-inner"
+                          />
+                        </div>
+                      )}
+
+                      {/* Live Preview Card */}
+                      {parsedExcelRows.length > 0 && (
+                        <div className="p-5 bg-neutral-900 text-white rounded-[2rem] space-y-4 shadow-xl">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Eye className="w-4 h-4 text-emerald-400" />
+                              <span className="text-xs font-black uppercase tracking-wider text-emerald-400">Live WhatsApp Message Preview</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={previewRowIndex <= 0}
+                                onClick={() => setPreviewRowIndex(prev => Math.max(0, prev - 1))}
+                                className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-white rounded-lg text-xs font-bold"
+                              >
+                                ◀ Prev
+                              </button>
+                              <span className="text-xs font-bold text-neutral-300">
+                                {previewRowIndex + 1} / {parsedExcelRows.length}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={previewRowIndex >= parsedExcelRows.length - 1}
+                                onClick={() => setPreviewRowIndex(prev => Math.min(parsedExcelRows.length - 1, prev + 1))}
+                                className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-white rounded-lg text-xs font-bold"
+                              >
+                                Next ▶
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Student Info Bar in Preview */}
+                          {parsedExcelRows[previewRowIndex] && (
+                            <div className="p-3 bg-neutral-800 rounded-xl flex items-center justify-between text-xs">
+                              <div>
+                                <span className="font-bold text-white">{parsedExcelRows[previewRowIndex].studentName}</span>
+                                <span className="text-neutral-400 ml-2">(ID: {parsedExcelRows[previewRowIndex].candidateId || '-'})</span>
+                              </div>
+                              <div>
+                                <span className="text-neutral-400">Recipient: </span>
+                                <span className="font-mono font-bold text-emerald-400">
+                                  {parsedExcelRows[previewRowIndex].phone || '⚠️ No phone'}
+                                </span>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Chat Bubble */}
+                          <div className="p-4 bg-[#075E54] text-white rounded-2xl rounded-tl-none text-xs font-mono whitespace-pre-wrap leading-relaxed shadow-md">
+                            {parsedExcelRows[previewRowIndex] 
+                              ? generateExcelStudentMessage(parsedExcelRows[previewRowIndex], excelTemplate)
+                              : 'No data'}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Interactive Student Records Table */}
+                      {parsedExcelRows.length > 0 && (
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <label className="text-[10px] font-black text-neutral-400 uppercase tracking-widest px-1">
+                              Student Marks & Phone Verification ({parsedExcelRows.length})
+                            </label>
+                            <div className="relative w-48">
+                              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+                              <input
+                                type="text"
+                                placeholder="Search student..."
+                                value={excelSearchFilter}
+                                onChange={(e) => setExcelSearchFilter(e.target.value)}
+                                className="w-full pl-8 pr-3 py-1.5 bg-neutral-50 border border-neutral-200 rounded-xl text-xs outline-none focus:border-primary"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="border border-neutral-200 rounded-2xl overflow-hidden bg-white max-h-80 overflow-y-auto">
+                            <table className="w-full text-left text-xs">
+                              <thead className="bg-neutral-50 sticky top-0 z-10 text-[10px] font-black uppercase text-neutral-400 border-b border-neutral-200">
+                                <tr>
+                                  <th className="p-3">#</th>
+                                  <th className="p-3">Candidate ID</th>
+                                  <th className="p-3">Student Name</th>
+                                  <th className="p-3">Father Name</th>
+                                  <th className="p-3">Parent Phone</th>
+                                  <th className="p-3">Total / %</th>
+                                  <th className="p-3">Status</th>
+                                  <th className="p-3 text-right">Preview</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-neutral-100">
+                                {parsedExcelRows
+                                  .filter(r => {
+                                    if (!excelSearchFilter) return true;
+                                    const q = excelSearchFilter.toLowerCase();
+                                    return (
+                                      r.studentName?.toLowerCase().includes(q) ||
+                                      r.candidateId?.toLowerCase().includes(q) ||
+                                      r.fatherName?.toLowerCase().includes(q) ||
+                                      r.phone?.includes(q)
+                                    );
+                                  })
+                                  .map((row) => (
+                                    <tr key={row.id} className="hover:bg-neutral-50/80 transition-colors">
+                                      <td className="p-3 text-neutral-400">{row.index}</td>
+                                      <td className="p-3 font-mono font-bold text-neutral-800">{row.candidateId || '-'}</td>
+                                      <td className="p-3 font-bold text-neutral-900">{row.studentName}</td>
+                                      <td className="p-3 text-neutral-600">{row.fatherName || '-'}</td>
+                                      <td className="p-3">
+                                        <input
+                                          type="text"
+                                          value={row.phone}
+                                          placeholder="Enter phone..."
+                                          onChange={(e) => handleUpdateExcelPhone(row.id, e.target.value)}
+                                          className={`px-2 py-1 rounded-lg border text-xs font-mono outline-none w-32 ${
+                                            row.phone ? 'border-emerald-200 bg-emerald-50/40 text-emerald-900' : 'border-amber-300 bg-amber-50 text-amber-900'
+                                          }`}
+                                        />
+                                      </td>
+                                      <td className="p-3">
+                                        <span className="font-bold">{row.total || '-'}</span>
+                                        {row.percentage && <span className="text-neutral-400 ml-1">({row.percentage}%)</span>}
+                                      </td>
+                                      <td className="p-3">
+                                        <span className="px-2 py-0.5 bg-neutral-100 rounded-md text-[10px] font-bold text-neutral-700">
+                                          {row.status}
+                                        </span>
+                                      </td>
+                                      <td className="p-3 text-right">
+                                        <button
+                                          type="button"
+                                          onClick={() => setPreviewRowIndex(row.index - 1)}
+                                          className="p-1.5 hover:bg-primary/10 text-primary rounded-lg transition-colors"
+                                          title="View WhatsApp Preview"
+                                        >
+                                          <Eye className="w-4 h-4" />
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {broadcastTarget === 'communities' && (
                     <div className="space-y-6">
@@ -1418,7 +2229,7 @@ const Communication: React.FC = () => {
                     </div>
                   )}
 
-                  {broadcastTarget !== 'staff' && broadcastTarget !== 'communities' && (
+                  {broadcastTarget !== 'staff' && broadcastTarget !== 'communities' && broadcastTarget !== 'excel' && (
                     <div className="space-y-6">
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
@@ -1494,65 +2305,82 @@ const Communication: React.FC = () => {
                     </div>
                   )}
 
-                  <div className="p-4 bg-blue-50 border border-blue-100 rounded-2xl flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <Users className="w-5 h-5 text-blue-500" />
-      <p className="text-xs font-bold text-blue-800">
-        Target Recipients: {recipientCount} People
-      </p>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-black text-neutral-400 px-1">BROADCAST CONTENT</label>
-                    <textarea value={broadcastMessage} onChange={(e) => setBroadcastMessage(e.target.value)} placeholder="Send an announcement to all selected students..." rows={6} className="w-full p-6 bg-neutral-50 border border-neutral-100 rounded-[32px] text-sm outline-none transition-all shadow-inner" />
-                  </div>
-
-                  <div className="space-y-4">
-                    <label className="text-[10px] font-black text-neutral-400 uppercase tracking-widest px-1">Broadcast Attachment</label>
-                    <div className="flex gap-4">
-                      {mediaPreviewUrl ? (
-                         <div className="relative w-full h-40 rounded-3xl overflow-hidden border border-neutral-100 bg-neutral-50 flex items-center justify-center">
-                            {selectedFile?.type.startsWith('image/') ? (
-                              <img src={mediaPreviewUrl} className="w-full h-full object-cover" alt="Preview" />
-                            ) : (
-                              <div className="flex flex-col items-center gap-2">
-                                <Video className="w-10 h-10 text-primary" />
-                                <span className="text-xs font-bold">{selectedFile?.name}</span>
-                              </div>
-                            )}
-                            <button 
-                              type="button"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                clearFile();
-                              }}
-                              className="absolute top-2 right-2 p-2 bg-black/50 text-white rounded-full hover:bg-black/70 transition-colors relative z-10"
-                            >
-                              <Trash2 className="w-4 h-4 pointer-events-none" />
-                            </button>
-                         </div>
-                      ) : (
-                        <div className="grid grid-cols-2 gap-4 w-full">
-                          <label className="flex flex-col items-center justify-center gap-2 p-6 bg-neutral-50 border-2 border-dashed border-neutral-200 rounded-3xl cursor-pointer hover:bg-neutral-100 transition-all group">
-                            <ImageIcon className="w-6 h-6 text-neutral-400 group-hover:text-primary transition-colors" />
-                            <span className="text-[10px] font-black text-neutral-400 group-hover:text-primary">ADD PHOTO</span>
-                            <input type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
-                          </label>
-                          <label className="flex flex-col items-center justify-center gap-2 p-6 bg-neutral-50 border-2 border-dashed border-neutral-200 rounded-3xl cursor-pointer hover:bg-neutral-100 transition-all group">
-                            <Video className="w-6 h-6 text-neutral-400 group-hover:text-primary transition-colors" />
-                            <span className="text-[10px] font-black text-neutral-400 group-hover:text-primary">ADD VIDEO</span>
-                            <input type="file" accept="video/*" className="hidden" onChange={handleFileChange} />
-                          </label>
+                  {broadcastTarget !== 'excel' && (
+                    <>
+                      <div className="p-4 bg-blue-50 border border-blue-100 rounded-2xl flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <Users className="w-5 h-5 text-blue-500" />
+                          <p className="text-xs font-bold text-blue-800">
+                            Target Recipients: {recipientCount} People
+                          </p>
                         </div>
-                      )}
-                    </div>
-                  </div>
+                      </div>
 
-                  <button onClick={handleRunBroadcast} disabled={isSendingBroadcast || status !== 'open' || uploadingFile} className="w-full py-5 bg-gradient-to-r from-primary to-indigo-600 text-white rounded-[32px] font-black shadow-xl hover:scale-[1.01] transition-all flex items-center justify-center gap-3 disabled:opacity-50">
-                    <Megaphone className="w-5 h-5" /> Start Broadcast
-                  </button>
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-black text-neutral-400 px-1">BROADCAST CONTENT</label>
+                        <textarea value={broadcastMessage} onChange={(e) => setBroadcastMessage(e.target.value)} placeholder="Send an announcement to all selected students..." rows={6} className="w-full p-6 bg-neutral-50 border border-neutral-100 rounded-[32px] text-sm outline-none transition-all shadow-inner" />
+                      </div>
+
+                      <div className="space-y-4">
+                        <label className="text-[10px] font-black text-neutral-400 uppercase tracking-widest px-1">Broadcast Attachment</label>
+                        <div className="flex gap-4">
+                          {mediaPreviewUrl ? (
+                             <div className="relative w-full h-40 rounded-3xl overflow-hidden border border-neutral-100 bg-neutral-50 flex items-center justify-center">
+                                {selectedFile?.type.startsWith('image/') ? (
+                                  <img src={mediaPreviewUrl} className="w-full h-full object-cover" alt="Preview" />
+                                ) : (
+                                  <div className="flex flex-col items-center gap-2">
+                                    <Video className="w-10 h-10 text-primary" />
+                                    <span className="text-xs font-bold">{selectedFile?.name}</span>
+                                  </div>
+                                )}
+                                <button 
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    clearFile();
+                                  }}
+                                  className="absolute top-2 right-2 p-2 bg-black/50 text-white rounded-full hover:bg-black/70 transition-colors relative z-10"
+                                >
+                                  <Trash2 className="w-4 h-4 pointer-events-none" />
+                                </button>
+                             </div>
+                          ) : (
+                            <div className="grid grid-cols-2 gap-4 w-full">
+                              <label className="flex flex-col items-center justify-center gap-2 p-6 bg-neutral-50 border-2 border-dashed border-neutral-200 rounded-3xl cursor-pointer hover:bg-neutral-100 transition-all group">
+                                <ImageIcon className="w-6 h-6 text-neutral-400 group-hover:text-primary transition-colors" />
+                                <span className="text-[10px] font-black text-neutral-400 group-hover:text-primary">ADD PHOTO</span>
+                                <input type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
+                              </label>
+                              <label className="flex flex-col items-center justify-center gap-2 p-6 bg-neutral-50 border-2 border-dashed border-neutral-200 rounded-3xl cursor-pointer hover:bg-neutral-100 transition-all group">
+                                <Video className="w-6 h-6 text-neutral-400 group-hover:text-primary transition-colors" />
+                                <span className="text-[10px] font-black text-neutral-400 group-hover:text-primary">ADD VIDEO</span>
+                                <input type="file" accept="video/*" className="hidden" onChange={handleFileChange} />
+                              </label>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {broadcastTarget === 'excel' ? (
+                    <button 
+                      onClick={handleRunBroadcast} 
+                      disabled={isSendingBroadcast || status !== 'open' || parsedExcelRows.filter(r => !!r.phone).length === 0} 
+                      className="w-full py-5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-[32px] font-black shadow-xl hover:scale-[1.01] transition-all flex items-center justify-center gap-3 disabled:opacity-50"
+                    >
+                      <FileSpreadsheet className="w-5 h-5" /> 
+                      {isSendingBroadcast 
+                        ? 'Queuing Messages...' 
+                        : `Start Broadcast (Send ${parsedExcelRows.filter(r => !!r.phone).length} WhatsApp Marks Messages)`}
+                    </button>
+                  ) : (
+                    <button onClick={handleRunBroadcast} disabled={isSendingBroadcast || status !== 'open' || uploadingFile} className="w-full py-5 bg-gradient-to-r from-primary to-indigo-600 text-white rounded-[32px] font-black shadow-xl hover:scale-[1.01] transition-all flex items-center justify-center gap-3 disabled:opacity-50">
+                      <Megaphone className="w-5 h-5" /> Start Broadcast
+                    </button>
+                  )}
                 </motion.div>
               )}
 
@@ -1848,6 +2676,7 @@ const Communication: React.FC = () => {
                                       <div className={`px-2 py-1 rounded-lg text-[9px] font-black uppercase w-fit ${
                                         log.status === 'sent' ? 'bg-green-50 text-green-600' :
                                         log.status === 'delivered' ? 'bg-blue-50 text-blue-600 animate-pulse' :
+                                        log.status === 'duplicate' || log.status === 'skipped' ? 'bg-amber-50 text-amber-600' :
                                         'bg-red-50 text-red-600'
                                       }`}>
                                         {log.status === 'delivered' ? '✓ READ' : log.status}
@@ -2724,6 +3553,250 @@ const Communication: React.FC = () => {
                     )}
                   </div>
                 </form>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {/* Excel Marks Template Customizer Modal */}
+        {showTemplateModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-[2.5rem] p-6 sm:p-8 max-w-xl w-full shadow-2xl border border-neutral-100 space-y-6 max-h-[90vh] overflow-y-auto"
+            >
+              <div className="flex items-center justify-between border-b border-neutral-100 pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl">
+                    <FileSpreadsheet className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-black text-neutral-900">Custom Marks Excel Template</h3>
+                    <p className="text-xs text-neutral-500">Generate a tailored Excel template for any class or subject combination</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowTemplateModal(false)}
+                  className="p-2 hover:bg-neutral-100 text-neutral-400 hover:text-neutral-700 rounded-full transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {/* Exam Name */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-neutral-700">Exam / Test Name</label>
+                  <input
+                    type="text"
+                    value={templateModalExam}
+                    onChange={(e) => setTemplateModalExam(e.target.value)}
+                    placeholder="e.g. Unit Test 1, FA-1, SA-1, Quarterly Exam"
+                    className="w-full px-4 py-2.5 bg-neutral-50 border border-neutral-200 focus:border-blue-500 rounded-xl text-xs font-medium outline-none transition-all"
+                  />
+                </div>
+
+                {/* Class Selection for Student Roster */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-neutral-700">Auto-fill Student Roster (Optional)</label>
+                    <span className="text-[10px] text-blue-600 font-semibold">Pre-fills student IDs & parent phones</span>
+                  </div>
+                  <select
+                    value={templateModalClass}
+                    onChange={(e) => setTemplateModalClass(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-neutral-50 border border-neutral-200 focus:border-blue-500 rounded-xl text-xs font-medium outline-none transition-all"
+                  >
+                    <option value="">-- Generic Template (Sample Student Data) --</option>
+                    {classes.map((cls) => (
+                      <option key={cls.id} value={cls.id}>
+                        {cls.name} (Fill real class students)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Max Marks Per Subject */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-neutral-700">Max Marks Per Subject</label>
+                  <div className="grid grid-cols-4 gap-2">
+                    {[25, 50, 80, 100].map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => setTemplateModalMaxMarks(m)}
+                        className={`py-2 rounded-xl text-xs font-bold transition-all border ${
+                          templateModalMaxMarks === m
+                            ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                            : 'bg-neutral-50 text-neutral-700 border-neutral-200 hover:bg-neutral-100'
+                        }`}
+                      >
+                        {m} Marks
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Preset Selector */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-neutral-700">Curriculum Presets</label>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {[
+                      { id: 'highSchool', label: 'High School (7 Subj)' },
+                      { id: 'standard6', label: 'Standard (6 Subj)' },
+                      { id: 'primary', label: 'Primary (4 Subj)' },
+                      { id: 'prePrimary', label: 'Pre-Primary (3 Subj)' },
+                      { id: 'intermediateMPC', label: 'Inter MPC' },
+                      { id: 'intermediateBiPC', label: 'Inter BiPC' }
+                    ].map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => {
+                          setTemplatePresetType(p.id as any);
+                          const subjects = PRESET_SUBJECT_SETS[p.id as keyof typeof PRESET_SUBJECT_SETS] || [];
+                          setTemplateSubjectsList([...subjects]);
+                        }}
+                        className={`p-2.5 rounded-xl text-xs font-bold transition-all border text-left ${
+                          templatePresetType === p.id
+                            ? 'bg-blue-50 border-blue-500 text-blue-700 shadow-xs'
+                            : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Dynamic Subject Management */}
+                <div className="space-y-2 pt-2 border-t border-neutral-100">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-neutral-700">
+                      Configured Subjects ({templateSubjectsList.length})
+                    </label>
+                    <span className="text-[10px] text-neutral-400">Click ✕ to remove</span>
+                  </div>
+
+                  {/* Active Subject Badges */}
+                  <div className="flex flex-wrap gap-2 p-3 bg-neutral-50 border border-neutral-200/80 rounded-2xl min-h-[60px]">
+                    {templateSubjectsList.length === 0 ? (
+                      <span className="text-xs text-neutral-400 italic">No subjects added. Click quick-add below.</span>
+                    ) : (
+                      templateSubjectsList.map((subj, idx) => (
+                        <span
+                          key={subj}
+                          className="px-3 py-1.5 bg-white border border-blue-200 text-blue-900 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs"
+                        >
+                          <span className="text-[10px] text-blue-400 font-medium">{idx + 1}.</span>
+                          {subj}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTemplateSubjectsList(prev => prev.filter(s => s !== subj));
+                            }}
+                            className="text-neutral-400 hover:text-rose-600 ml-1"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </span>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Quick Add Extra Subjects */}
+                  <div className="space-y-1.5">
+                    <p className="text-[10px] font-bold uppercase text-neutral-400">Quick Add Common Subjects:</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        'Telugu', 'Hindi', 'English', 'Mathematics', 'Physical Science', 
+                        'Biological Science', 'Social Studies', 'Physics', 'Chemistry', 
+                        'Biology', 'Computer Science', 'General Knowledge', 'Moral Science', 
+                        'Sanskrit', 'CDF / IIT', 'Drawing'
+                      ].map((s) => {
+                        const isAdded = templateSubjectsList.includes(s);
+                        return (
+                          <button
+                            key={s}
+                            type="button"
+                            disabled={isAdded}
+                            onClick={() => {
+                              setTemplateSubjectsList(prev => [...prev, s].sort(compareSubjectsStandard));
+                            }}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${
+                              isAdded
+                                ? 'bg-neutral-100 text-neutral-400 cursor-not-allowed'
+                                : 'bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200'
+                            }`}
+                          >
+                            + {s}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Add Custom Subject Field */}
+                  <div className="flex gap-2 pt-1">
+                    <input
+                      type="text"
+                      value={newSubjectInput}
+                      onChange={(e) => setNewSubjectInput(e.target.value)}
+                      placeholder="Type custom subject name (e.g. French, Sanskrit)..."
+                      className="flex-1 px-4 py-2 bg-neutral-50 border border-neutral-200 focus:border-blue-500 rounded-xl text-xs outline-none"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          const val = newSubjectInput.trim();
+                          if (val && !templateSubjectsList.includes(val)) {
+                            setTemplateSubjectsList(prev => [...prev, val].sort(compareSubjectsStandard));
+                            setNewSubjectInput('');
+                          }
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const val = newSubjectInput.trim();
+                        if (val && !templateSubjectsList.includes(val)) {
+                          setTemplateSubjectsList(prev => [...prev, val].sort(compareSubjectsStandard));
+                          setNewSubjectInput('');
+                        }
+                      }}
+                      className="px-4 py-2 bg-neutral-900 text-white rounded-xl text-xs font-bold hover:bg-black transition-colors"
+                    >
+                      Add
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex gap-3 pt-2 border-t border-neutral-100">
+                <button
+                  type="button"
+                  onClick={() => setShowTemplateModal(false)}
+                  className="flex-1 py-3 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded-2xl text-xs font-bold transition-all"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadCustomTemplate}
+                  disabled={templateSubjectsList.length === 0}
+                  className="flex-2 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-2xl text-xs font-black shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2"
+                >
+                  <Download className="w-4 h-4" /> Download Customized Excel (.xlsx)
+                </button>
               </div>
             </motion.div>
           </motion.div>

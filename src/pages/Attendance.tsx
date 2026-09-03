@@ -140,12 +140,14 @@ const StudentAttendancePortal: React.FC<StudentAttendancePortalProps> = ({ profi
       return 'holiday';
     }
 
+    const record = personalAttendance.find(a => a.date === dateStr);
+    if (record) return record.status;
+
     if (profile?.status === 'non_attending' || profile?.status === 'non-attending') {
       return 'present';
     }
 
-    const record = personalAttendance.find(a => a.date === dateStr);
-    return record ? record.status : 'absent';
+    return 'absent';
   };
 
   const todayStatus = getStudentStatusForDate(todayStr);
@@ -166,11 +168,13 @@ const StudentAttendancePortal: React.FC<StudentAttendancePortalProps> = ({ profi
     
     return true;
   });
-  const presentDaysCount = (profile?.status === 'non_attending' || profile?.status === 'non-attending')
-    ? currentYearRecords.length
+  const isNonAttendingStudent = (profile?.status === 'non_attending' || profile?.status === 'non-attending');
+  const explicitAbsentCount = currentYearRecords.filter(r => r.status === 'absent').length;
+  const presentDaysCount = isNonAttendingStudent
+    ? Math.max(0, currentYearRecords.length - explicitAbsentCount)
     : currentYearRecords.filter(r => r.status === 'present').length;
-  const absentDaysCount = (profile?.status === 'non_attending' || profile?.status === 'non-attending')
-    ? 0
+  const absentDaysCount = isNonAttendingStudent
+    ? explicitAbsentCount
     : currentYearRecords.filter(r => r.status === 'absent').length;
   
   const totalDays = presentDaysCount + absentDaysCount;
@@ -751,10 +755,13 @@ const Attendance: React.FC = () => {
 
             cleanedUserList = cleanedUserList.map((s: any) => {
               const u = userMap.get(s.uid || s.id) || (s.email ? userMap.get(s.email.toLowerCase().trim()) : null);
+              const staffUid = s.uid || s.id || u?.uid || u?.id;
               if (u) {
                 return {
                   ...u,
                   ...s,
+                  uid: staffUid,
+                  id: staffUid,
                   firstName: s.firstName || u.firstName || '',
                   lastName: s.lastName || u.lastName || u.secondName || '',
                   name: getStaffDisplayName({ ...u, ...s }),
@@ -762,6 +769,8 @@ const Attendance: React.FC = () => {
               }
               return {
                 ...s,
+                uid: staffUid,
+                id: staffUid,
                 name: getStaffDisplayName(s)
               };
             });
@@ -769,10 +778,15 @@ const Attendance: React.FC = () => {
             console.error("Error enriching staff list in attendance:", err);
           }
         } else if (currentProfileCollection === 'students') {
-          cleanedUserList = cleanedUserList.map((st: any) => ({
-            ...st,
-            name: getPersonDisplayName(st, 'Student')
-          }));
+          cleanedUserList = cleanedUserList.map((st: any) => {
+            const studentId = st.uid || st.id;
+            return {
+              ...st,
+              uid: studentId,
+              id: studentId,
+              name: getPersonDisplayName(st, 'Student')
+            };
+          });
         }
 
         const seenId = new Set<string>();
@@ -785,7 +799,7 @@ const Attendance: React.FC = () => {
           seenId.add(id);
           
           if (currentProfileCollection === 'students') {
-            // Exclude inactive, dropped, and non-attending students from daily classroom attendance roll
+            // Exclude inactive and dropped students from daily classroom attendance roll
             const stat = String(u.status || '').toLowerCase().trim().replace(/[- ]/g, '_');
             if (
               stat === 'inactive' || 
@@ -793,10 +807,6 @@ const Attendance: React.FC = () => {
               stat === 'tc_issued' || 
               stat === 'withdrawn' || 
               stat === 'left' || 
-              stat === 'non_attending' || 
-              stat === 'nonattending' ||
-              u.nonAttending === true ||
-              u.isNonAttending === true ||
               u.isActive === false ||
               stat.includes('inactive') ||
               stat.includes('dropped') ||
@@ -871,31 +881,68 @@ const Attendance: React.FC = () => {
 
     const dateStr = format(selectedDate, 'yyyy-MM-dd');
     const collectionName = (activeTab === 'staff' || activeTab === 'staff_auto') ? 'staff_attendance' : 'attendance';
-    const existing = attendance.find(a => (a.studentId === studentId || a.userId === studentId) && a.date === dateStr);
+    const student = people.find(s => s.uid === studentId || s.id === studentId);
+    const sid = student?.uid || student?.id || studentId;
+    const altSid = student?.id || student?.uid || studentId;
+
+    const existing = attendance.find(a => 
+      (a.studentId === sid || a.userId === sid || a.studentId === altSid || a.userId === altSid || a.studentId === studentId || a.userId === studentId) && 
+      a.date === dateStr
+    );
     
     try {
+      let recordId = existing?.id;
       if (existing) {
         // Use set with merge to avoid 'No document to update' error
         await dbService.set(collectionName, existing.id, { 
           status, 
-          ...((activeTab === 'staff' || activeTab === 'staff_auto') ? { userId: studentId } : { studentId }),
+          ...((activeTab === 'staff' || activeTab === 'staff_auto') ? { userId: sid } : { studentId: sid }),
           date: dateStr,
           updatedAt: new Date().toISOString() 
         });
       } else {
-        const student = people.find(s => s.uid === studentId);
         const classId = student?.classId || 'unknown_class';
-        const customId = `${dateStr}_${classId}_${studentId}`;
+        recordId = `${dateStr}_${classId}_${sid}`;
         
         const payload = (activeTab === 'staff' || activeTab === 'staff_auto') 
-          ? { userId: studentId, date: dateStr, status, timestamp: new Date().toISOString() }
-          : { studentId, date: dateStr, status, timestamp: new Date().toISOString() };
-        await dbService.create(collectionName, customId, payload);
+          ? { userId: sid, date: dateStr, status, timestamp: new Date().toISOString() }
+          : { studentId: sid, date: dateStr, status, timestamp: new Date().toISOString() };
+        await dbService.create(collectionName, recordId, payload);
       }
+
+      // Optimistic state update so UI updates immediately
+      const optimisticRecord = {
+        id: recordId,
+        date: dateStr,
+        status,
+        ...((activeTab === 'staff' || activeTab === 'staff_auto') ? { userId: sid } : { studentId: sid }),
+        timestamp: new Date().toISOString()
+      };
+      setAttendance(prev => {
+        const remaining = prev.filter(a => !(
+          (a.studentId === sid || a.userId === sid || a.studentId === altSid || a.userId === altSid || a.studentId === studentId || a.userId === studentId || a.id === recordId) &&
+          a.date === dateStr
+        ));
+        return [...remaining, optimisticRecord];
+      });
+
       toast.success(`Attendance marked as ${status}`);
-      // Refresh local state ONLY for current date
-      const updated = await dbService.list(collectionName, [where('date', '==', dateStr)], true);
-      setAttendance(updated);
+      
+      // Refresh local state for current date in background safely
+      try {
+        const updated = await dbService.list(collectionName, [where('date', '==', dateStr)], true);
+        if (updated && updated.length > 0) {
+          setAttendance(prev => {
+            const remaining = updated.filter((a: any) => !(
+              (a.studentId === sid || a.userId === sid || a.studentId === altSid || a.userId === altSid || a.studentId === studentId || a.userId === studentId || a.id === recordId) &&
+              a.date === dateStr
+            ));
+            return [...remaining, optimisticRecord];
+          });
+        }
+      } catch (refetchErr) {
+        console.warn("Background attendance list refetch warning:", refetchErr);
+      }
     } catch (error) {
       console.error("Attendance Update Error:", error);
       toast.error("Failed to mark attendance");
@@ -920,18 +967,22 @@ const Attendance: React.FC = () => {
 
     try {
       const batchItems = peopleToMark.map(p => {
-        const studentId = p.uid;
-        const existing = attendance.find(a => (a.studentId === studentId || a.userId === p.uid) && a.date === dateStr);
+        const sid = p.uid || p.id;
+        const altSid = p.id || p.uid;
+        const existing = attendance.find(a => 
+          (a.studentId === sid || a.userId === sid || a.studentId === altSid || a.userId === altSid || a.studentId === p.uid || a.userId === p.uid) && 
+          a.date === dateStr
+        );
         
         let customId = existing?.id;
         if (!customId) {
           const classId = p.classId || 'unknown_class';
-          customId = `${dateStr}_${classId}_${studentId}`;
+          customId = `${dateStr}_${classId}_${sid}`;
         }
 
         const payload = (activeTab === 'staff' || activeTab === 'staff_auto')
-          ? { userId: studentId, date: dateStr, status, timestamp: new Date().toISOString() }
-          : { studentId, date: dateStr, status, timestamp: new Date().toISOString() };
+          ? { userId: sid, date: dateStr, status, timestamp: new Date().toISOString() }
+          : { studentId: sid, date: dateStr, status, timestamp: new Date().toISOString() };
 
         return {
           id: customId,
@@ -945,10 +996,40 @@ const Attendance: React.FC = () => {
         await dbService.setBatch(collectionName, chunk);
       }
 
+      // Optimistic state update
+      setAttendance(prev => {
+        const markedIdSet = new Set(batchItems.map(b => b.id));
+        const sidSet = new Set(peopleToMark.flatMap(p => [p.uid, p.id].filter(Boolean)));
+        const kept = prev.filter(a => !(a.date === dateStr && (markedIdSet.has(a.id) || sidSet.has(a.studentId) || sidSet.has(a.userId))));
+        const newRecords = batchItems.map(b => ({
+          id: b.id,
+          ...b.data
+        }));
+        return [...kept, ...newRecords];
+      });
+
       toast.success(`Successfully marked all ${peopleToMark.length} as ${status}!`, { id: 'mark-all-loading' });
       
-      const updated = await dbService.list(collectionName, [where('date', '==', dateStr)], true);
-      setAttendance(updated);
+      try {
+        const updated = await dbService.list(collectionName, [where('date', '==', dateStr)], true);
+        if (updated && updated.length > 0) {
+          setAttendance(prev => {
+            const batchMap = new Map<string, any>();
+            batchItems.forEach((b: any) => {
+              const sid = b.data.studentId || b.data.userId || b.id;
+              batchMap.set(`${dateStr}_${sid}`, { id: b.id, ...b.data });
+            });
+            const merged = updated.map((rec: any) => {
+              const sid = rec.studentId || rec.userId || rec.id;
+              const batchRecord = batchMap.get(`${rec.date}_${sid}`);
+              return batchRecord || rec;
+            });
+            return merged;
+          });
+        }
+      } catch (err) {
+        console.warn("Could not reload attendance after mark all:", err);
+      }
     } catch (e) {
       console.error("Failed to mark all attendance:", e);
       toast.error("Failed to mark all attendance", { id: 'mark-all-loading' });
@@ -988,23 +1069,27 @@ const Attendance: React.FC = () => {
     
     // Ensure all attendance records are synced to server first
     const toSync = filteredPeople.filter(p => {
-      const existingRecord = attendance.find(a => (a.studentId === p.uid || a.userId === p.uid) && a.date === dateStr);
+      const pid = p.uid || p.id;
+      const existingRecord = attendance.find(a => (a.studentId === pid || a.userId === pid) && a.date === dateStr);
       return !existingRecord;
     });
 
     if (toSync.length > 0) {
       toast.loading(`Syncing ${toSync.length} records to server...`, { id: 'sync-records' });
       try {
-        const creates = toSync.map(p => ({
-          id: `${dateStr}_${p.classId}_${p.uid}`,
-          data: {
-            studentId: p.uid,
-            date: dateStr,
-            status: 'absent' as const,
-            timestamp: new Date().toISOString(),
-            method: 'auto_sync'
-          }
-        }));
+        const creates = toSync.map(p => {
+          const pid = p.uid || p.id;
+          return {
+            id: `${dateStr}_${p.classId || 'class'}_${pid}`,
+            data: {
+              studentId: pid,
+              date: dateStr,
+              status: 'absent' as const,
+              timestamp: new Date().toISOString(),
+              method: 'auto_sync'
+            }
+          };
+        });
         await dbService.createBatch('attendance', creates);
         // Refresh local attendance state
         const updated = await dbService.list('attendance', [where('date', '==', dateStr)], true);
@@ -1018,8 +1103,9 @@ const Attendance: React.FC = () => {
     }
 
     const absentees = filteredPeople.filter(p => {
-      const status = getStatus(p.uid);
-      const onLeave = isActuallyOnLeave(p.uid);
+      const pid = p.uid || p.id;
+      const status = getStatus(pid);
+      const onLeave = isActuallyOnLeave(pid);
       return status === 'absent' && (p.role === 'student' || !p.role || p.role === '') && !onLeave;
     });
     
@@ -1132,7 +1218,7 @@ const Attendance: React.FC = () => {
       }
       if (toCreate.length > 0) {
         await dbService.createBatch('attendance', toCreate.map(data => {
-          const student = people.find(p => p.uid === data.studentId);
+          const student = people.find(p => p.uid === data.studentId || p.id === data.studentId);
           const cid = student?.classId || 'unknown_class';
           return { 
             id: `${data.date}_${cid}_${data.studentId}`, 
@@ -1175,18 +1261,31 @@ const Attendance: React.FC = () => {
       }
     }
 
-    // Check if person is a non-attending student
+    // Check if an explicit attendance record exists in database for this date (takes top priority!)
     const student = people.find(p => p.uid === personId || p.id === personId);
-    if (student && (student.status === 'non_attending' || student.status === 'non-attending')) {
-      return 'present';
-    }
+    const sid = student?.uid || student?.id || personId;
+    const altSid = student?.id || student?.uid || personId;
 
-    const record = attendance.find(a => (a.studentId === personId || a.userId === personId) && a.date === dateStr);
+    const record = attendance.find(a => 
+      (a.studentId === sid || a.userId === sid || a.studentId === altSid || a.userId === altSid || a.studentId === personId || a.userId === personId) && 
+      a.date === dateStr
+    );
     
     if (record) return record.status;
+
+    // Check if person is a non-attending student (defaults to present only when no explicit record exists)
+    if (student && (
+      student.status === 'non_attending' || 
+      student.status === 'non-attending' || 
+      student.nonAttending === true || 
+      student.isNonAttending === true ||
+      String(student.status || '').toLowerCase().replace(/[- ]/g, '_') === 'non_attending'
+    )) {
+      return 'present';
+    }
     
     // Check if on approved leave
-    const onLeave = leaves.find(l => l.applicantId === personId);
+    const onLeave = leaves.find(l => l.applicantId === personId || l.applicantId === sid);
     if (onLeave) return 'absent';
     
     return 'absent';
@@ -1564,15 +1663,10 @@ const Attendance: React.FC = () => {
             const record = personAttendance.find(a => a.date === dStr);
 
             let cellVal = '';
-            if (isNonAttending) {
-              if (isSunday) {
-                cellVal = 'S';
-              } else if (isSecondSaturday || isAcadHoliday || isReopenHoliday) {
-                cellVal = 'H';
-              } else {
-                cellVal = 'X';
-                presentCount++;
-              }
+            if (isSunday) {
+              cellVal = 'S';
+            } else if (isSecondSaturday || isAcadHoliday || isReopenHoliday) {
+              cellVal = 'H';
             } else if (record) {
               if (record.status === 'present' || record.status === 'late') {
                 cellVal = 'X';
@@ -1581,15 +1675,12 @@ const Attendance: React.FC = () => {
                 cellVal = 'a';
                 absentCount++;
               }
+            } else if (isNonAttending) {
+              cellVal = 'X';
+              presentCount++;
             } else {
-              if (isSunday) {
-                cellVal = 'S';
-              } else if (isSecondSaturday || isAcadHoliday || isReopenHoliday) {
-                cellVal = 'H';
-              } else {
-                cellVal = 'a';
-                absentCount++;
-              }
+              cellVal = 'a';
+              absentCount++;
             }
             dayStatuses.push(cellVal);
           }
@@ -2267,15 +2358,10 @@ const Attendance: React.FC = () => {
             const record = personAttendance.find(a => a.date === dStr);
 
             let val = '';
-            if (isNonAttending) {
-              if (isSunday) {
-                val = 'S';
-              } else if (isSecondSaturday || isAcadHoliday || isReopenHoliday) {
-                val = 'H';
-              } else {
-                val = 'X';
-                presentCount++;
-              }
+            if (isSunday) {
+              val = 'S';
+            } else if (isSecondSaturday || isAcadHoliday || isReopenHoliday) {
+              val = 'H';
             } else if (record) {
               if (record.status === 'present' || record.status === 'late') {
                 val = 'X';
@@ -2283,14 +2369,11 @@ const Attendance: React.FC = () => {
               } else if (record.status === 'absent') {
                 val = 'a';
               }
+            } else if (isNonAttending) {
+              val = 'X';
+              presentCount++;
             } else {
-              if (isSunday) {
-                val = 'S';
-              } else if (isSecondSaturday || isAcadHoliday || isReopenHoliday) {
-                val = 'H';
-              } else {
-                val = 'a';
-              }
+              val = 'a';
             }
             dayStatuses.push(val);
           }
@@ -2670,9 +2753,8 @@ const Attendance: React.FC = () => {
     const matchesTab = p.role === 'student' || !p.role || p.role === '';
     const isStub = (!resolved.classId || resolved.classId === 'N/A' || resolved.classId === '');
     const pStatusClean = String(p.status || '').toLowerCase().trim().replace(/[- ]/g, '_');
-    const isNonAttending = pStatusClean === 'non_attending' || pStatusClean === 'nonattending';
     const isInactive = pStatusClean === 'inactive' || pStatusClean === 'dropped' || pStatusClean === 'tc_issued' || pStatusClean === 'withdrawn' || pStatusClean === 'left' || pStatusClean === 'archived' || pStatusClean === 'deleted';
-    const matchesStatusActive = !isNonAttending && !isInactive && !isStub;
+    const matchesStatusActive = !isInactive && !isStub;
 
     return matchesClass && matchesBatch && matchesTab && matchesStatusActive && matchesTeacherAccess;
   });
@@ -3022,7 +3104,7 @@ const Attendance: React.FC = () => {
               <CheckCircle2 className="w-5 h-5 text-green-600" />
               <div>
                 <p className="text-[10px] font-bold tracking-wider uppercase text-green-700 leading-none mb-1">Present</p>
-                <p className="text-xl font-black text-green-700 leading-none">{baseFilteredPeople.filter(p => getStatus(p.uid) === 'present').length}</p>
+                <p className="text-xl font-black text-green-700 leading-none">{baseFilteredPeople.filter(p => getStatus(p.uid || p.id) === 'present').length}</p>
               </div>
             </div>
             
@@ -3030,7 +3112,7 @@ const Attendance: React.FC = () => {
               <XCircle className="w-5 h-5 text-red-600" />
               <div>
                 <p className="text-[10px] font-bold tracking-wider uppercase text-red-700 leading-none mb-1">Absent</p>
-                <p className="text-xl font-black text-red-700 leading-none">{baseFilteredPeople.filter(p => getStatus(p.uid) === 'absent').length}</p>
+                <p className="text-xl font-black text-red-700 leading-none">{baseFilteredPeople.filter(p => getStatus(p.uid || p.id) === 'absent').length}</p>
               </div>
             </div>
           </div>
@@ -3256,10 +3338,11 @@ const Attendance: React.FC = () => {
                 ) : paginatedPeople.length === 0 ? (
                   <tr><td colSpan={5} className="px-6 py-12 text-center text-neutral-400">No records found.</td></tr>
                 ) : paginatedPeople.map((person) => {
-                  const status = getStatus(person.uid);
+                  const personId = person.uid || person.id;
+                  const status = getStatus(personId);
                   const personDisplayName = getPersonDisplayName(person);
                   return (
-                    <tr key={person.uid} className="hover:bg-neutral-50/50 transition-colors group">
+                    <tr key={personId} className="hover:bg-neutral-50/50 transition-colors group">
                       {activeTab === 'student' ? (
                         <>
                           <td className="px-6 py-4 text-lg text-neutral-600 font-mono">
@@ -3275,6 +3358,11 @@ const Attendance: React.FC = () => {
                                 </div>
                               )}
                               <span className={`font-bold text-lg ${(person.role === 'student' || !person.role || person.role === '') && (String(person.gender || "")).toLowerCase() === 'female' ? 'text-blue-600' : 'text-sidebar'}`}>{personDisplayName}</span>
+                              {(person.status === 'non_attending' || person.status === 'non-attending' || person.nonAttending === true || person.isNonAttending === true) && (
+                                <span className="px-2 py-0.5 text-[11px] font-bold rounded bg-amber-100 text-amber-800 border border-amber-200 whitespace-nowrap">
+                                  Non-Attending
+                                </span>
+                              )}
                             </div>
                           </td>
                         </>
@@ -3313,7 +3401,7 @@ const Attendance: React.FC = () => {
                           }`}>
                             {status === 'not_started' ? 'Not Started' : status === 'holiday' ? 'Holiday' : status}
                           </span>
-                          {isActuallyOnLeave(person.uid) && (
+                          {isActuallyOnLeave(personId) && (
                             <span className="text-[10px] text-amber-600 font-black uppercase flex items-center gap-1">
                               <Sparkles className="w-3 h-3" /> Approved Leave
                             </span>
@@ -3330,7 +3418,7 @@ const Attendance: React.FC = () => {
                         ) : (hasPermission('attendance_manage') || hasPermission('attendance_manage_my') || isTeacherRole) && !isVicePrincipalRole && (
                           <div className="flex items-center justify-end gap-1.5 border-none">
                             <button 
-                              onClick={() => markAttendance(person.uid, 'present')}
+                              onClick={() => markAttendance(personId, 'present')}
                               className={`p-1.5 rounded-lg transition-all border ${
                                 status === 'present' 
                                   ? 'bg-green-600 text-white border-green-600 shadow-sm' 
@@ -3341,7 +3429,7 @@ const Attendance: React.FC = () => {
                               <CheckCircle2 className="w-5 h-5" />
                             </button>
                             <button 
-                              onClick={() => markAttendance(person.uid, 'absent')}
+                              onClick={() => markAttendance(personId, 'absent')}
                               className={`p-1.5 rounded-lg transition-all border ${
                                 status === 'absent' 
                                   ? 'bg-red-600 text-white border-red-600 shadow-sm' 
@@ -3439,18 +3527,19 @@ const Attendance: React.FC = () => {
                 Frequent Absentees (Last 30 Days)
               </h3>
               <div className="space-y-3 max-h-[300px] overflow-y-auto">
-                {frequentAbsentees.filter(fa => filteredPeople.some(p => p.uid === fa.id)).length === 0 ? (
+                {frequentAbsentees.filter(fa => filteredPeople.some(p => (p.uid || p.id) === fa.id)).length === 0 ? (
                   <div className="text-sm text-neutral-500 text-center py-4 bg-neutral-50 rounded-xl">
                     No frequent absentees found.
                   </div>
                 ) : (
-                  frequentAbsentees.filter(fa => filteredPeople.some(p => p.uid === fa.id)).map(fa => {
-                    const person = filteredPeople.find(p => p.uid === fa.id)!;
+                  frequentAbsentees.filter(fa => filteredPeople.some(p => (p.uid || p.id) === fa.id)).map(fa => {
+                    const person = filteredPeople.find(p => (p.uid || p.id) === fa.id)!;
+                    const personId = person?.uid || person?.id || fa.id;
                     const personDisplayName = getPersonDisplayName(person);
                     return (
-                      <div key={person.uid} className="flex items-center justify-between p-2 hover:bg-neutral-50 rounded-lg transition-colors cursor-pointer group">
+                      <div key={personId} className="flex items-center justify-between p-2 hover:bg-neutral-50 rounded-lg transition-colors cursor-pointer group">
                         <div className="flex items-center gap-3">
-                          {person.photoURL ? (
+                          {person?.photoURL ? (
                             <img src={person.photoURL} alt={personDisplayName} className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
                           ) : (
                             <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center text-amber-600 font-bold text-sm">
@@ -3461,8 +3550,8 @@ const Attendance: React.FC = () => {
                             <span className="text-base font-bold text-sidebar block">{personDisplayName}</span>
                             <span className="text-xs text-neutral-400 font-bold">
                               {activeTab === 'staff' 
-                                ? (person.role ? person.role.replace(/_/g, ' ') : 'Staff') 
-                                : (person.rollNumber || person.classId || 'Student')
+                                ? (person?.role ? person.role.replace(/_/g, ' ') : 'Staff') 
+                                : (person?.rollNumber || person?.classId || 'Student')
                               }
                             </span>
                           </div>
@@ -3481,15 +3570,16 @@ const Attendance: React.FC = () => {
                 {activeTab === 'staff' ? "Today's Staff Absentees" : "Today's Absentees"}
               </h3>
               <div className="space-y-3 max-h-[300px] overflow-y-auto">
-                {filteredPeople.filter(p => getStatus(p.uid) === 'absent').length === 0 ? (
+                {filteredPeople.filter(p => getStatus(p.uid || p.id) === 'absent').length === 0 ? (
                   <div className="text-sm text-neutral-500 text-center py-4 bg-neutral-50 rounded-xl">
                     {activeTab === 'staff' ? "No staff marked absent today" : "No students marked absent today"}
                   </div>
                 ) : (
-                  filteredPeople.filter(p => getStatus(p.uid) === 'absent').map(absentee => {
+                  filteredPeople.filter(p => getStatus(p.uid || p.id) === 'absent').map(absentee => {
+                    const absenteeId = absentee.uid || absentee.id;
                     const absenteeDisplayName = getPersonDisplayName(absentee);
                     return (
-                    <div key={absentee.uid} className="flex items-center justify-between p-2 hover:bg-neutral-50 rounded-lg transition-colors cursor-pointer group">
+                    <div key={absenteeId} className="flex items-center justify-between p-2 hover:bg-neutral-50 rounded-lg transition-colors cursor-pointer group">
                       <div className="flex items-center gap-3">
                         {absentee.photoURL ? (
                           <img src={absentee.photoURL} alt={absenteeDisplayName} className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
@@ -3763,15 +3853,24 @@ const ConsolidatedAttendanceRegister = ({ students, selectedClass, selectedBatch
   ];
 
   const getMonthPresentCount = (studentId: string, monthName: string) => {
-    // If student is non_attending, return 100% of the working days
+    const monthNames = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'];
+    const monthIndex = monthNames.indexOf(monthName);
+
+    // If student is non_attending, return working days minus any explicit absent records
     const student = students.find((s: any) => (s.id || s.uid) === studentId);
     if (student && (student.status === 'non_attending' || student.status === 'non-attending')) {
       const workingDaysCount = workingDays[monthName] || 22;
-      return workingDaysCount;
+      const explicitAbsents = attendance.filter(a => {
+        const sId = a.studentId || a.userId;
+        if (sId !== studentId || a.status !== 'absent') return false;
+        const date = new Date(a.date);
+        const year = date.getFullYear();
+        const month = date.getMonth();
+        if (month !== monthIndex) return false;
+        return month >= 5 ? year === startYear : year === endYear;
+      }).length;
+      return Math.max(0, workingDaysCount - explicitAbsents);
     }
-
-    const monthNames = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'];
-    const monthIndex = monthNames.indexOf(monthName);
     
     return attendance.filter(a => {
       const sId = a.studentId;

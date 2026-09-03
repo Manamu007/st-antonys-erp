@@ -258,6 +258,7 @@ const logger = pino({ level: 'silent' });
 const QUEUE_COLLECTION = 'whatsapp_queue';
 
 let isConnecting = false;
+let cachedBaileysVersion: any = null;
 let lastProcessedGroupRefreshTrigger = '';
 
 const updateStatus = async (status: typeof connectionStatus, localOnly = false) => {
@@ -351,7 +352,7 @@ const acquireLock = async (isConflict = false, isForce = false): Promise<boolean
         
         const acquired = await db.runTransaction(async (transaction) => {
           const doc = await transaction.get(lockRef);
-          if (doc.exists && isOtherInstanceActive(doc.data())) {
+          if (!isForce && doc.exists && isOtherInstanceActive(doc.data())) {
             return false;
           }
 
@@ -462,7 +463,6 @@ async function cleanupStalledMessages() {
   } catch (err: any) {
     const errText = (err?.message || String(err)).toLowerCase();
     if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing') || errText.includes('not_found') || errText.includes('not found') || errText.includes('5 not_found')) {
-      setDatabaseDenied(true);
       console.warn(`[WhatsApp Queue] Database is currently unavailable or requires billing/setup (${err.message}). Skipping cleanup.`);
     } else {
       console.error("[WhatsApp Queue] Cleanup failed:", err.message);
@@ -486,14 +486,14 @@ function checkSocketAlive(): boolean {
   return true;
 }
 
-async function ensureWhatsAppConnected(maxWaitMs = 20000): Promise<boolean> {
+async function ensureWhatsAppConnected(maxWaitMs = 25000): Promise<boolean> {
   if (checkSocketAlive()) {
     return true;
   }
   
   const now = Date.now();
-  if (connectionStatus !== 'qr' && (now - lastConnectionAttempt > 2000)) {
-    connectToWhatsApp(io, true, true).catch(() => {});
+  if (connectionStatus !== 'qr' && !isConnecting && (now - lastConnectionAttempt > 5000)) {
+    connectToWhatsApp(io, true, false).catch(() => {});
   }
 
   const start = Date.now();
@@ -703,9 +703,9 @@ async function processQueue() {
 
         for (let sendAttempt = 1; sendAttempt <= 3; sendAttempt++) {
           try {
-            const isReady = await ensureWhatsAppConnected(12000);
+            const isReady = await ensureWhatsAppConnected(25000);
             if (!isReady || !sock) {
-              throw new Error("Connection Closed");
+              throw new Error("WhatsApp socket is not connected or still handshaking");
             }
 
             // Verify if target recipient is registered on WhatsApp on first send attempt
@@ -735,7 +735,8 @@ async function processQueue() {
                     } else {
                       const notFound = waCheck.find((m: any) => m?.exists === false);
                       if (notFound) {
-                        throw new Error(`Recipient number ${cleanTo} is NOT registered on WhatsApp.`);
+                        console.warn(`[WhatsApp JID Check] onWhatsApp flagged ${cleanTo} as not found. Proceeding with direct send to verify via Meta servers...`);
+                        jid = `${cleanTo}@s.whatsapp.net`;
                       }
                     }
                   }
@@ -905,12 +906,12 @@ async function processQueue() {
             }
 
             if ((isConnErr || isSessionErr) && sendAttempt < 3) {
-              console.warn(`[WhatsApp Queue] Send attempt ${sendAttempt} failed (${errMsg}). Waiting for connection/session recovery...`);
-              if (isConnErr) {
+              console.log(`[WhatsApp Queue] Send attempt ${sendAttempt} notice (${errMsg}). Waiting for connection recovery...`);
+              if (isConnErr && !isConnecting) {
                 updateStatus('connecting');
-                connectToWhatsApp(io, true, true).catch(() => {});
+                connectToWhatsApp(io, true, false).catch(() => {});
               }
-              await ensureWhatsAppConnected(15000);
+              await ensureWhatsAppConnected(25000);
             } else {
               throw lastSendErr;
             }
@@ -927,6 +928,15 @@ async function processQueue() {
           completedAt: new Date().toISOString(),
           waMessageId: result?.key?.id || null 
         });
+
+        if (messageData.idempotencyKey) {
+          await db.collection('whatsapp_idempotency').doc(messageData.idempotencyKey).set({
+            status: 'sent',
+            waMessageId: result?.key?.id || null,
+            completedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          }, { merge: true }).catch(() => {});
+        }
 
         // Save outgoing message for secure retry/decryption handling
         if (result && result.key) {
@@ -972,7 +982,11 @@ async function processQueue() {
           console.error(`[WhatsApp Queue] Error sending message ${messageId} to ${messageData.to}: ${errorReason}`);
         }
 
-        if (currentAttempts < 5 && !errorReason.includes('not on WhatsApp')) {
+        const isNotRegistered = errMsgLower.includes('not on whatsapp') || 
+                                errMsgLower.includes('not registered') ||
+                                errMsgLower.includes('item-not-found');
+
+        if (currentAttempts < 5 && !isNotRegistered) {
           // Calculate retry schedule
           // For transient connection or session negotiation errors, retry quickly (2 seconds) without wasting attempt quota
           const effectiveAttempts = isTransient ? Math.max(0, currentAttempts - 1) : currentAttempts;
@@ -987,13 +1001,22 @@ async function processQueue() {
             updatedAt: new Date().toISOString() 
           });
 
+          if (messageData.idempotencyKey) {
+            await db.collection('whatsapp_idempotency').doc(messageData.idempotencyKey).set({
+              status: 'retrying',
+              attempts: effectiveAttempts,
+              lastError: errorReason,
+              updatedAt: new Date().toISOString()
+            }, { merge: true }).catch(() => {});
+          }
+
           console.log(`[WhatsApp Queue] Attempt ${currentAttempts} failed (${errorReason}). Rescheduling message ${messageId} to retry at ${nextAttemptAt}`);
           safeLogWhatsappEvent('message_scheduled_retry', { messageId, attempt: currentAttempts, nextAttemptAt });
 
-          if (isConnError) {
-            console.warn(`[WhatsApp Queue] Triggering instant connection auto-recovery due to transient send error...`);
+          if (isConnError && !isConnecting) {
+            console.log(`[WhatsApp Queue] Triggering connection auto-recovery due to transient socket issue...`);
             updateStatus('connecting');
-            connectToWhatsApp(io, true, true).catch(() => {});
+            connectToWhatsApp(io, true, false).catch(() => {});
           }
 
           await delay(1500);
@@ -1019,6 +1042,15 @@ async function processQueue() {
             lastError: errorReason,
             completedAt: new Date().toISOString() 
           });
+
+          if (messageData.idempotencyKey) {
+            await db.collection('whatsapp_idempotency').doc(messageData.idempotencyKey).set({
+              status: 'failed',
+              lastError: errorReason,
+              failedAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            }, { merge: true }).catch(() => {});
+          }
 
           await logWhatsAppMessage(messageData.to, messageData.text, messageData.type, 'failed', undefined, errorReason, messageData.options);
           console.error(`[WhatsApp Queue] Message ${messageId} hard failed after ${currentAttempts} attempts. Moved to whatsapp_failed_queue.`);
@@ -1210,9 +1242,7 @@ export async function reconcileWhatsAppStats() {
     return summaryPayload;
   } catch (err: any) {
     const errText = (err?.message || String(err)).toLowerCase();
-    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing') || errText.includes('not_found') || errText.includes('not found') || errText.includes('5 not_found')) {
-      setDatabaseDenied(true);
-    } else {
+    if (!errText.includes('billing') && !errText.includes('permission_denied') && !errText.includes('requires billing') && !errText.includes('not_found') && !errText.includes('not found') && !errText.includes('5 not_found')) {
       console.warn(`[WhatsApp Stats Reconcile] Sync note:`, err.message);
     }
     return null;
@@ -1284,7 +1314,7 @@ function replaceMenuVariables(text: string, user: any, context: any) {
     .replace(/\{slug\}/gi, slug);
 }
 
-async function logWhatsAppMessage(recipient: string, text: string, type: 'single' | 'broadcast' | 'birthday' | 'bot' | 'incoming', status: 'sent' | 'failed' | 'delivered', messageId?: string, error?: string, options?: any) {
+async function logWhatsAppMessage(recipient: string, text: string, type: 'single' | 'broadcast' | 'birthday' | 'bot' | 'incoming', status: 'sent' | 'failed' | 'delivered' | 'duplicate' | 'skipped', messageId?: string, error?: string, options?: any) {
   try {
     const data: any = {
       recipient,
@@ -2116,6 +2146,11 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
 
   const now = Date.now();
   
+  if (isConnecting && (now - lastConnectionAttempt < 12000)) {
+    console.log(`[WhatsApp ${process.pid}] Connection attempt already in progress (${now - lastConnectionAttempt}ms ago). Allowing it to complete.`);
+    return;
+  }
+
   if (isForce) {
     isConnecting = false;
     isCooldownActive = false;
@@ -2162,7 +2197,7 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
       } catch (_) {}
       sock = null;
     }
-    await updateStatus('open', true); // localOnly = true
+    await updateStatus('close', true); // localOnly = true
     return;
   }
 
@@ -2218,17 +2253,20 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
     await initializationPromise;
     const { state, saveCreds, clearState, clearKeys } = await useFirestoreAuthState(getSessionId());
     
-    console.log(`[WhatsApp ${process.pid}] Fetching latest Baileys version with 6s timeout...`);
-    const versionPromise = fetchLatestBaileysVersion();
-    const timeoutPromise = new Promise<{ version: any }>((_, reject) => setTimeout(() => reject(new Error("Timeout (6s)")), 6000));
-    
-    let version: any;
-    try {
-      const versionResult: any = await Promise.race([versionPromise, timeoutPromise]);
-      version = versionResult.version;
-    } catch (e: any) {
-      console.warn(`[WhatsApp ${process.pid}] Failed or timed out fetching Baileys version: ${e.message || e}. Using fallback [2, 3000, 1035194821].`);
-      version = [2, 3000, 1035194821];
+    let version: any = cachedBaileysVersion;
+    if (!version) {
+      console.log(`[WhatsApp ${process.pid}] Fetching latest Baileys version with 4s timeout...`);
+      const versionPromise = fetchLatestBaileysVersion();
+      const timeoutPromise = new Promise<{ version: any }>((_, reject) => setTimeout(() => reject(new Error("Timeout (4s)")), 4000));
+      try {
+        const versionResult: any = await Promise.race([versionPromise, timeoutPromise]);
+        version = versionResult.version;
+        cachedBaileysVersion = version;
+      } catch (e: any) {
+        console.warn(`[WhatsApp ${process.pid}] Failed or timed out fetching Baileys version: ${e.message || e}. Using fallback [2, 3000, 1043857760].`);
+        version = [2, 3000, 1043857760];
+        cachedBaileysVersion = version;
+      }
     }
     console.log(`[WhatsApp ${process.pid}] Using Baileys version: ${version.join('.')}`);
 
@@ -2354,8 +2392,22 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
           }
         } catch(e) {}
 
+        const errData = (lastDisconnect?.error as any)?.data;
+        const errReason = errData?.reason ? String(errData.reason) : '';
         const isConflict = statusCode === 440 || errorMsg.includes('conflict') || statusCode === DisconnectReason.connectionReplaced;
-        const isLoggedOut = (statusCode === DisconnectReason.loggedOut || errorMsg.includes('logged out')) && !isConflict;
+        const isLoggedOut = (
+          statusCode === DisconnectReason.loggedOut ||
+          statusCode === 401 ||
+          statusCode === 403 ||
+          statusCode === 405 ||
+          statusCode === 411 ||
+          errReason === '401' ||
+          errReason === '403' ||
+          errReason === '405' ||
+          errReason === '411' ||
+          errorMsg.includes('logged out') ||
+          (errorMsg.includes('connection failure') && (statusCode === 405 || errReason === '405'))
+        ) && !isConflict;
         const isBadSession = (statusCode === DisconnectReason.badSession || errorMsg.includes('bad-session')) && !isConflict;
 
         const isNetworkOrTimeout = 
@@ -2382,15 +2434,19 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
         if (isLoggedOut) {
           await updateStatus('close');
           qrCode = null;
-          console.log(`[WhatsApp ${process.pid}] Logged Out. Code: ${statusCode}, Msg: ${errorMsg}. Clearing session...`);
+          console.log(`[WhatsApp ${process.pid}] Logged Out or Session Revoked. Code: ${statusCode}, Msg: ${errorMsg}, Reason: ${errReason}. Clearing session...`);
           
           await initializationPromise;
           const { clearState } = await useFirestoreAuthState(getSessionId());
           await clearState();
+
+          try {
+            if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
+          } catch (_) {}
           
-          io.emit('wa:error', 'WhatsApp Logged Out. Please re-scan QR.');
-          // Auto-reconnect to get new QR
-          setTimeout(() => connectToWhatsApp(io, true, true), 3000);
+          io.emit('wa:error', 'WhatsApp Session Expired or Logged Out. Generating fresh QR code...');
+          // Auto-reconnect to get new QR with force flag
+          setTimeout(() => connectToWhatsApp(io, true, true), 2000);
           return;
         }
 
@@ -3312,6 +3368,26 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
     io.emit('wa:status', 'close');
     
     const initErrorMsg = (error?.message || error?.toString() || '').toLowerCase();
+    const isRevokedSession = 
+      initErrorMsg.includes('405') || 
+      initErrorMsg.includes('401') || 
+      initErrorMsg.includes('403') || 
+      initErrorMsg.includes('logged out') ||
+      (initErrorMsg.includes('connection failure') && initErrorMsg.includes('405'));
+
+    if (isRevokedSession) {
+      console.warn(`[WhatsApp ${process.pid}] Detected revoked or invalid session during init (${initErrorMsg}). Clearing stored session and requesting fresh QR...`);
+      try {
+        await initializationPromise;
+        const { clearState } = await useFirestoreAuthState(getSessionId());
+        await clearState();
+        if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
+      } catch (_) {}
+      io.emit('wa:error', 'WhatsApp session has expired. Generating fresh QR code...');
+      setTimeout(() => connectToWhatsApp(io, true, true), 2000);
+      return sock;
+    }
+
     const isNetworkOrTimeout = 
       initErrorMsg.includes('timed out') || 
       initErrorMsg.includes('timeout') || 
@@ -3399,12 +3475,11 @@ export async function startWhatsAppWatchdog(io: Server) {
         }, (err) => {
           const errText = (err?.message || String(err)).toLowerCase();
           if (errText.includes('retries') || errText.includes('billing') || errText.includes('permission_denied') || errText.includes('quota') || errText.includes('exceeded')) {
-            setDatabaseDenied(true);
             if (unsubscribeStatusListener) {
               try { unsubscribeStatusListener(); } catch {}
               unsubscribeStatusListener = null;
             }
-            console.warn(`[WhatsApp Sync] Firestore multi-instance listener deactivated (database requires billing or permissions).`);
+            console.warn(`[WhatsApp Sync] Firestore multi-instance listener deactivated.`);
           } else {
             console.error(`[WhatsApp Sync] Firestore listener error: ${err.message}`);
           }
@@ -3460,12 +3535,11 @@ export async function startWhatsAppWatchdog(io: Server) {
           }, (err) => {
             const errText = (err?.message || String(err)).toLowerCase();
             if (errText.includes('retries') || errText.includes('billing') || errText.includes('permission_denied') || errText.includes('quota') || errText.includes('exceeded')) {
-              setDatabaseDenied(true);
               if (unsubscribeCommandsListener) {
                 try { unsubscribeCommandsListener(); } catch {}
                 unsubscribeCommandsListener = null;
               }
-              console.warn(`[WhatsApp Command] Firestore commands listener deactivated (database requires billing or permissions).`);
+              console.warn(`[WhatsApp Command] Firestore commands listener deactivated.`);
             } else {
               console.error(`[WhatsApp Command] Firestore commands listener error:`, err.message);
             }
@@ -3629,9 +3703,7 @@ setInterval(async () => {
     
   } catch (e: any) {
     const errText = (e?.message || String(e)).toLowerCase();
-    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
-      setDatabaseDenied(true);
-    } else {
+    if (!errText.includes('billing') && !errText.includes('permission_denied') && !errText.includes('requires billing')) {
       console.warn(`[WhatsApp & Storage Cleanup] Error during periodic cleanup: ${e.message}`);
     }
   }
@@ -3770,7 +3842,6 @@ export async function checkAndSendAutomatedBirthdays() {
   } catch (error: any) {
     const errText = (error?.message || String(error)).toLowerCase();
     if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing') || errText.includes('not_found') || errText.includes('not found') || errText.includes('5 not_found')) {
-      setDatabaseDenied(true);
       console.warn(`[Automated Birthdays] Database requires Google Cloud billing or creation on project. Background automated birthdays skipped.`);
     } else {
       console.error(`[Automated Birthdays] Error in automated birthday checker:`, error);
@@ -3897,7 +3968,6 @@ export async function checkAndRunStaffAutoAttendance() {
   } catch (error: any) {
     const errText = (error?.message || String(error)).toLowerCase();
     if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing') || errText.includes('not_found') || errText.includes('not found') || errText.includes('5 not_found')) {
-      setDatabaseDenied(true);
       console.warn(`[Staff Auto Attendance] Database requires Google Cloud billing or creation on project. Background automated attendance skipped.`);
     } else {
       console.error(`[Staff Auto Attendance] Error in automated staff attendance:`, error);
@@ -3924,16 +3994,17 @@ export const getWAStatus = () => {
 };
 
 export const sendMessage = async (to: string, text: string, options: any = {}, type: 'single' | 'broadcast' | 'birthday' | 'bot' = 'single') => {
-  if (isDatabaseDenied()) {
-    const db = getDbAdmin();
-    const dbId = db ? (db as any).databaseId || '(default)' : 'unknown';
-    const projId = db ? (db as any).projectId || 'unknown' : 'unknown';
-    console.error(`[WhatsApp Queue] Cannot send message: Database access is denied to ${projId}/${dbId}.`);
+  let db: any = null;
+  try {
+    db = getDbAdmin();
+  } catch (err: any) {
+    const dbId = 'antony-database1';
+    const projId = 'antonyserp-cc9df';
+    console.error(`[WhatsApp Queue] Cannot send message: Database access is unavailable to ${projId}/${dbId}:`, err?.message || err);
     throw new Error(`WhatsApp Service: Database access is denied to ${projId}/${dbId}. Check Firebase configuration and permissions.`);
   }
 
   try {
-    const db = getDbAdmin();
 
     const isStudentPermission = options.templateType === 'student_permission' || options.messageType === 'permission_notice' || options.eventType === 'student_permission';
     const isHostelOuting = options.templateType === 'hostel_outing_permission' || options.messageType === 'outing_notice' || options.eventType === 'hostel_outing_permission' || options.templateType === 'hostel_outing';
@@ -4152,7 +4223,10 @@ export const sendMessage = async (to: string, text: string, options: any = {}, t
       if (idSnapshot.exists) {
         const idData = idSnapshot.data()!;
         const blockedStatuses = ['pending', 'processing', 'sent', 'retrying'];
-        if (blockedStatuses.includes(idData.status)) {
+        const isStalePending = (idData.status === 'pending' || idData.status === 'processing') && 
+          idData.updatedAt && 
+          (Date.now() - new Date(idData.updatedAt).getTime() > 15 * 60 * 1000);
+        if (blockedStatuses.includes(idData.status) && !isStalePending) {
           console.warn(`[WhatsApp Queue] Duplicate automated notice blocked by idempotency key: ${idempotencyKey}`);
           safeLogWhatsappEvent('duplicate_message_blocked', { key: idempotencyKey, recipient: normalizedPhone });
           if (isFeeReceipt) {
@@ -4202,7 +4276,7 @@ export const sendMessage = async (to: string, text: string, options: any = {}, t
             normalizedPhone,
             text,
             type,
-            'failed',
+            'duplicate',
             undefined,
             `Skipped: Duplicate notice already sent today (${idData.status})`,
             options
@@ -4342,14 +4416,15 @@ export const broadcastMessage = async (to: any[], text: string, options: any = {
         console.error(`Broadcast item failed for ${item}:`, err);
       });
     } else if (item && typeof item === 'object') {
-      const { phone, studentId, classId } = item;
+      const { phone, studentId, classId, text: itemText, options: individualOptions } = item;
       if (!phone) continue;
       const itemOptions = {
         ...options,
+        ...(individualOptions || {}),
         studentId: studentId || options.studentId,
         classId: classId || options.classId
       };
-      sendMessage(phone, text, itemOptions, 'broadcast').catch(err => {
+      sendMessage(phone, itemText || text, itemOptions, 'broadcast').catch(err => {
         console.error(`Broadcast item failed for ${phone}:`, err);
       });
     }

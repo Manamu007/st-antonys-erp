@@ -52,9 +52,42 @@ interface FirestoreErrorInfo {
   }
 }
 
-// Quota tracking logic
+// Quota & Billing tracking logic
 const QUOTA_ERROR_KEY = 'firestore_quota_exceeded_timestamp';
 const QUOTA_COOLOFF_PERIOD = 1000 * 60 * 60; // 1 hour cooloff
+
+let isCloudBillingRestricted = false;
+
+export const isCloudBillingFallbackActive = () => {
+  if (isCloudBillingRestricted) return true;
+  if (typeof window !== 'undefined') {
+    try {
+      if (sessionStorage.getItem('fs_billing_fallback_active') === 'true' || localStorage.getItem('fs_billing_fallback_active') === 'true') {
+        isCloudBillingRestricted = true;
+        return true;
+      }
+    } catch (_) {}
+  }
+  return false;
+};
+
+export const enableBillingFallbackMode = () => {
+  if (!isCloudBillingRestricted) {
+    isCloudBillingRestricted = true;
+    if (typeof window !== 'undefined') {
+      try {
+        sessionStorage.setItem('fs_billing_fallback_active', 'true');
+        localStorage.setItem('fs_billing_fallback_active', 'true');
+      } catch (_) {}
+      window.dispatchEvent(new CustomEvent('firestore-billing-required', {
+        detail: {
+          projectId: 'antonyserp-cc9df',
+          billingUrl: 'https://console.developers.google.com/billing/enable?project=antonyserp-cc9df'
+        }
+      }));
+    }
+  }
+};
 
 export const checkQuotaStatus = () => {
   return false;
@@ -117,6 +150,16 @@ export const handleFirestoreError = (error: unknown, operationType: OperationTyp
 
   const isPermissionError = errorMessage.includes('PERMISSION_DENIED') || 
                              errorMessage.includes('insufficient permissions');
+
+  const isBillingError = errorMessage.toLowerCase().includes('billing') || 
+                         errorMessage.toLowerCase().includes('requires billing') ||
+                         errorMessage.toLowerCase().includes('billing to be enabled');
+
+  if (isBillingError) {
+    enableBillingFallbackMode();
+    console.info(`[dbService] Switched path '${path}' to high-availability proxy due to billing requirement.`);
+    return;
+  }
 
   const isInternalAssertion = errorMessage.includes('INTERNAL ASSERTION FAILED');
 
@@ -694,7 +737,7 @@ export async function parseResponseJson<T = any>(res: Response | null | undefine
 
 const isBypassActive = (): boolean => {
   if (typeof window === 'undefined') return false;
-  return !!localStorage.getItem('bypass_user_email') || isBackendUnreachable;
+  return isCloudBillingFallbackActive() || !!localStorage.getItem('bypass_user_email') || isBackendUnreachable;
 };
 
 const deduplicateArrayByID = (arr: any[]): any[] => {
@@ -1241,6 +1284,14 @@ export const dbService = {
       
       return securedData;
     } catch (error) {
+      const errMessage = error instanceof Error ? error.message : String(error);
+      const isBillingErr = errMessage.includes('billing to be enabled') || 
+                           errMessage.includes('requires billing') || 
+                           errMessage.includes('PERMISSION_DENIED');
+      if (isBillingErr) {
+        enableBillingFallbackMode();
+      }
+
       // Try proxy fallback
       try {
         const proxyRes = await proxyRequest('get', path, { id });
@@ -1858,12 +1909,33 @@ export const dbService = {
           return performRequest(attempt + 1);
         }
         
-        console.warn(`Firestore list Error on ${path}: `, error instanceof Error ? error.message : String(error));
+        const errMessage = error instanceof Error ? error.message : String(error);
+        const isBillingErr = errMessage.includes('billing to be enabled') || 
+                             errMessage.includes('requires billing') || 
+                             errMessage.includes('PERMISSION_DENIED');
+
+        if (isBillingErr) {
+          enableBillingFallbackMode();
+        } else {
+          console.warn(`Firestore list Error on ${path}: `, errMessage);
+        }
 
         // Try proxy fallback
         try {
           const proxyRes = await proxyRequest('list', path, { constraints });
-          return proxyRes.data;
+          if (proxyRes && Array.isArray(proxyRes.data)) {
+            const rawData = proxyRes.data.map((item: any) => {
+              const cleanItem = { ...item };
+              if (path === 'students') {
+                cleanItem.uniqueStudentId = cleanItem.uniqueStudentId || generateUniqueStudentId(cleanItem);
+              }
+              return cleanItem;
+            });
+            const secured = rawData.map((i: any) => enforceSecuredAccess(path, i)).filter(Boolean);
+            listCache.set(cacheKey, { data: secured, timestamp: Date.now() });
+            return deduplicateArrayByID(secured);
+          }
+          return proxyRes?.data || [];
         } catch (proxyError) {
           console.error(`Both client list and proxy list failed for ${path}:`, proxyError);
         }
@@ -2205,7 +2277,15 @@ export const dbService = {
         const data = rawData.map((item: any) => enforceSecuredAccess(path, item)).filter(Boolean);
         callback(deduplicateArrayByID(data));
       }, (error: any) => {
-        console.warn(`[dbService] Realtime subscription error for path "${path}" (${error.code || error.message || error}). Activating self-healing fallback to secure backup proxy...`);
+        const errMessage = error?.message || String(error);
+        const isBillingErr = errMessage.includes('billing to be enabled') || 
+                             errMessage.includes('requires billing') || 
+                             errMessage.includes('PERMISSION_DENIED');
+        if (isBillingErr) {
+          enableBillingFallbackMode();
+        } else {
+          console.warn(`[dbService] Realtime subscription error for path "${path}" (${error.code || error.message || error}). Activating self-healing fallback to secure backup proxy...`);
+        }
         try { handleFirestoreError(error, OperationType.LIST, path); } catch(e) {}
         
         // Setup proxy fallback

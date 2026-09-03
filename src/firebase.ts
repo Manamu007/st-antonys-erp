@@ -27,7 +27,11 @@ if (typeof window !== 'undefined') {
       str.includes('Connection failed') ||
       str.includes('Failed to get document from server') ||
       str.includes('Firestore (11.10.0)') ||
-      str.includes('code=unavailable')
+      str.includes('code=unavailable') ||
+      str.includes('requires billing to be enabled') ||
+      str.includes('requires billing') ||
+      str.includes('Firestore list Error') ||
+      str.includes('Firestore get Error')
     );
   };
 

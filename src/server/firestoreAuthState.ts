@@ -9,7 +9,7 @@ import {
 } from '@whiskeysockets/baileys';
 import path from 'path';
 import fs from 'fs';
-import { getDbAdmin, isDatabaseDenied } from './firebaseAdmin.js';
+import { getDbAdmin, isDatabaseDenied, setDatabaseDenied } from './firebaseAdmin.js';
 
 // Global in-memory cache for ultra-fast, non-blocking Baileys authentication handshake
 const keysCache: { [sessionId: string]: { [key: string]: any } } = {};
@@ -69,24 +69,12 @@ export const useFirestoreAuthState = async (sessionId: string): Promise<{ state:
     const collection = db.collection('whatsapp_sessions').doc(sessionId);
     const keysCollection = collection.collection('keys');
 
-    // Pre-initialize in-memory cache with all existing keys from Firestore in ONE single query
+    // Initialize in-memory cache on demand; avoid loading tens of thousands of device-list keys
+    // at boot to prevent memory exhaustion, slow start, and Firestore deadline timeouts.
     if (!cacheInitialized[sessionId]) {
-      try {
-        keysCache[sessionId] = {};
-        const keys = await keysCollection.get();
-        keys.forEach((doc: any) => {
-          try {
-            const rawData = doc.data()?.data;
-            if (rawData) {
-              keysCache[sessionId][doc.id] = JSON.parse(rawData, BufferJSON.reviver);
-            }
-          } catch (_) {}
-        });
-        cacheInitialized[sessionId] = true;
-        console.log(`[FirestoreAuthState] Pre-populated in-memory cache for session ${sessionId} with ${keys.size} keys.`);
-      } catch (err: any) {
-        console.warn(`[FirestoreAuthState] Note on pre-populating cache: ${err.message}.`);
-      }
+      keysCache[sessionId] = {};
+      cacheInitialized[sessionId] = true;
+      console.log(`[FirestoreAuthState] Initialized in-memory on-demand key cache for session ${sessionId}.`);
     }
 
     // Load creds directly from Firestore to prevent multi-instance stale credentials
@@ -94,18 +82,37 @@ export const useFirestoreAuthState = async (sessionId: string): Promise<{ state:
     const credsDoc = await collection.get();
     if (credsDoc.exists && credsDoc.data()?.creds) {
       creds = JSON.parse(credsDoc.data()?.creds, BufferJSON.reviver);
+      if (creds && creds.me && !creds.registered) {
+        creds.registered = true;
+      }
     } else {
       creds = initAuthCreds();
     }
 
     const saveCreds = async () => {
       try {
+        const authFolder = path.join(process.cwd(), 'wa_auth', sessionId);
+        if (!fs.existsSync(authFolder)) {
+          fs.mkdirSync(authFolder, { recursive: true });
+        }
+        fs.writeFileSync(path.join(authFolder, 'creds.json'), JSON.stringify(creds, BufferJSON.replacer));
+      } catch (_) {}
+
+      if (isDatabaseDenied()) return;
+
+      try {
         await collection.set({ 
           creds: JSON.stringify(creds, BufferJSON.replacer),
           updatedAt: new Date().toISOString()
         }, { merge: true });
       } catch (err: any) {
-        console.error(`[FirestoreAuthState] Creds write error:`, err);
+        const msg = String(err?.message || err);
+        if (msg.includes('billing') || msg.includes('PERMISSION_DENIED') || msg.includes('requires billing')) {
+          setDatabaseDenied(true);
+          console.warn(`[FirestoreAuthState] Cloud billing required on project. WhatsApp credentials preserved locally in wa_auth.`);
+        } else {
+          console.error(`[FirestoreAuthState] Creds write error:`, err);
+        }
       }
     };
 
@@ -123,16 +130,37 @@ export const useFirestoreAuthState = async (sessionId: string): Promise<{ state:
     keysCache[sessionId] = {};
     delete credsCache[sessionId];
     cacheInitialized[sessionId] = false;
-    const keys = await keysCollection.get();
-    await deleteDocsInChunks(keys.docs);
+    try {
+      if (typeof (db as any).recursiveDelete === 'function') {
+        console.log(`[FirestoreAuthState] Rapidly wiping session keys via recursiveDelete...`);
+        await (db as any).recursiveDelete(keysCollection);
+      } else {
+        const keys = await keysCollection.get();
+        await deleteDocsInChunks(keys.docs);
+      }
+    } catch (err: any) {
+      console.warn(`[FirestoreAuthState] Error during keys wipe: ${err.message}. Falling back to batch chunking.`);
+      try {
+        const keys = await keysCollection.limit(500).get();
+        await deleteDocsInChunks(keys.docs);
+      } catch (_) {}
+    }
     await collection.delete().catch(() => {});
   };
 
   const clearKeys = async () => {
     keysCache[sessionId] = {};
     cacheInitialized[sessionId] = false;
-    const keys = await keysCollection.get();
-    await deleteDocsInChunks(keys.docs);
+    try {
+      if (typeof (db as any).recursiveDelete === 'function') {
+        await (db as any).recursiveDelete(keysCollection);
+      } else {
+        const keys = await keysCollection.get();
+        await deleteDocsInChunks(keys.docs);
+      }
+    } catch (err: any) {
+      console.warn(`[FirestoreAuthState] Error clearing keys: ${err.message}`);
+    }
     console.log(`[FirestoreAuthState] Successfully cleared keys subcollection for session ${sessionId} in Firestore.`);
   };
 
@@ -209,23 +237,37 @@ export const useFirestoreAuthState = async (sessionId: string): Promise<{ state:
                 keysCache[sessionId][key] = value;
                 
                 // Add write promise to array
-                promises.push(
-                  keysCollection.doc(key).set({ 
-                    data: JSON.stringify(value, BufferJSON.replacer), 
-                    updatedAt: new Date().toISOString() 
-                  }).catch((err: any) => {
-                    console.error(`[FirestoreAuthState] Write error for ${key}:`, err);
-                  })
-                );
+                if (!isDatabaseDenied()) {
+                  promises.push(
+                    keysCollection.doc(key).set({ 
+                      data: JSON.stringify(value, BufferJSON.replacer), 
+                      updatedAt: new Date().toISOString() 
+                    }).catch((err: any) => {
+                      const msg = String(err?.message || err);
+                      if (msg.includes('billing') || msg.includes('PERMISSION_DENIED') || msg.includes('requires billing')) {
+                        setDatabaseDenied(true);
+                      } else {
+                        console.error(`[FirestoreAuthState] Write error for ${key}:`, err);
+                      }
+                    })
+                  );
+                }
               } else {
                 delete keysCache[sessionId][key];
                 
                 // Add delete promise to array
-                promises.push(
-                  keysCollection.doc(key).delete().catch((err: any) => {
-                    console.error(`[FirestoreAuthState] Delete error for ${key}:`, err);
-                  })
-                );
+                if (!isDatabaseDenied()) {
+                  promises.push(
+                    keysCollection.doc(key).delete().catch((err: any) => {
+                      const msg = String(err?.message || err);
+                      if (msg.includes('billing') || msg.includes('PERMISSION_DENIED') || msg.includes('requires billing')) {
+                        setDatabaseDenied(true);
+                      } else {
+                        console.error(`[FirestoreAuthState] Delete error for ${key}:`, err);
+                      }
+                    })
+                  );
+                }
               }
             }
           }
