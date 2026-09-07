@@ -9,7 +9,7 @@ import {
 } from '@whiskeysockets/baileys';
 import path from 'path';
 import fs from 'fs';
-import { getDbAdmin, isDatabaseDenied, setDatabaseDenied } from './firebaseAdmin.js';
+import { getDbAdmin, getDbAdminInstance, isDatabaseDenied, setDatabaseDenied } from './firebaseAdmin.js';
 
 // Global in-memory cache for ultra-fast, non-blocking Baileys authentication handshake
 const keysCache: { [sessionId: string]: { [key: string]: any } } = {};
@@ -25,10 +25,14 @@ export const useFirestoreAuthState = async (sessionId: string): Promise<{ state:
       console.warn("[FirestoreAuthState] Database is marked as denied. Falling back to local multi-file auth state.");
       useFallback = true;
     } else {
-      db = getDbAdmin();
+      db = getDbAdminInstance();
+      if (!db) {
+        console.warn("[FirestoreAuthState] Firestore Admin not initialized. Falling back to local multi-file auth state.");
+        useFallback = true;
+      }
     }
   } catch (err: any) {
-    console.warn(`[FirestoreAuthState] Failed to get database: ${err.message}. Falling back to local multi-file auth state.`);
+    console.warn(`[FirestoreAuthState] Notice: ${err.message}. Falling back to local multi-file auth state.`);
     useFallback = true;
   }
 

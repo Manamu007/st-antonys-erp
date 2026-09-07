@@ -13,7 +13,7 @@ import { Server } from 'socket.io';
 import path from 'path';
 import fs from 'fs';
 import { getSmartBotResponse } from './aiBotService.js';
-import { getDbAdmin, initializationPromise, isDatabaseDenied, setDatabaseDenied } from './firebaseAdmin.js';
+import { getDbAdmin, getDbAdminInstance, initializationPromise, isDatabaseDenied, setDatabaseDenied } from './firebaseAdmin.js';
 import admin from './firebaseAdmin.js';
 import { useFirestoreAuthState } from './firestoreAuthState.js';
 import {
@@ -32,7 +32,7 @@ export const storeMessageForRetry = async (key: baileys.WAMessageKey, message: a
   if (!key || !key.id || !message) return;
   try {
     recentMessagesCache.set(key.id, message);
-    const db = getDbAdmin();
+    const db = getDbAdminInstance();
     if (db && !isDatabaseDenied()) {
       await db.collection('whatsapp_messages_store').doc(key.id).set({
         key,
@@ -81,8 +81,9 @@ export function resolveMediaPayload(options: any, textVal: string) {
 export async function markMessageAsDelivered(msgId: string, targetStatus: 'delivered' | 'read' = 'delivered') {
   if (!msgId) return;
   try {
-    const db = getDbAdmin();
-    if (!db || isDatabaseDenied()) return;
+    if (isDatabaseDenied()) return;
+    const db = getDbAdminInstance();
+    if (!db) return;
 
     const nowIso = new Date().toISOString();
 
@@ -270,8 +271,9 @@ const updateStatus = async (status: typeof connectionStatus, localOnly = false) 
     if (localOnly) return;
     
     try {
-      const db = getDbAdmin();
-      if (db && !isDatabaseDenied()) {
+      if (isDatabaseDenied()) return;
+      const db = getDbAdminInstance();
+      if (db) {
         const fsAdmin = db as any;
         console.log(`[WhatsApp Status] Syncing to Firestore: ${status} [Project: ${fsAdmin._projectId || fsAdmin.projectId}, DB: ${fsAdmin._databaseId || fsAdmin.databaseId || '(default)'}]`);
         
@@ -347,7 +349,8 @@ const acquireLock = async (isConflict = false, isForce = false): Promise<boolean
     try {
       await initializationPromise;
       if (!isDatabaseDenied()) {
-        const db = getDbAdmin();
+        const db = getDbAdminInstance();
+        if (!db) return true;
         const lockRef = db.collection(LOCK_COLLECTION).doc(LOCK_DOC);
         
         const acquired = await db.runTransaction(async (transaction) => {
@@ -389,7 +392,8 @@ const releaseLock = async () => {
     // Also clear global lock if it's ours, but keep the cooldown if we had one
     await initializationPromise;
     if (!isDatabaseDenied()) {
-      const db = getDbAdmin();
+      const db = getDbAdminInstance();
+      if (!db) return;
       const lockRef = db.collection(LOCK_COLLECTION).doc(LOCK_DOC);
       const doc = await lockRef.get();
       if (doc.exists && doc.data()?.instanceId === instanceId) {
@@ -4025,8 +4029,9 @@ export const getWAStatus = () => {
 export const getRemoteWAStatus = async (): Promise<{ status: string; qr: string | null } | null> => {
   try {
     await initializationPromise;
-    const db = getDbAdmin();
-    if (db && !isDatabaseDenied()) {
+    if (isDatabaseDenied()) return null;
+    const db = getDbAdminInstance();
+    if (db) {
       const doc = await db.collection(LOCK_COLLECTION).doc(STATUS_DOC).get();
       if (doc.exists) {
         const data = doc.data();

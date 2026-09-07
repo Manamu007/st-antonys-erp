@@ -156,14 +156,8 @@ export const getDbAdminInstance = () => dbAdmin;
 export const setDatabaseDenied = (denied = true) => {
   isNamedDatabaseDenied = denied;
 };
-export const getDbAdmin = () => {
-  if (!dbAdmin) {
-    if (isNamedDatabaseDenied) {
-      throw new Error("Google Cloud Billing Account is required to use Firestore Database for project antonyserp-cc9df. Please enable billing or upgrade to Blaze plan on Google Cloud Console.");
-    }
-    throw new Error(`Firestore Admin Database is unavailable: ${lastInitError || 'Initialization failed'}`);
-  }
-  return dbAdmin;
+export const getDbAdmin = (): admin.firestore.Firestore => {
+  return (dbAdmin || null) as any;
 };
 export const isDatabaseDenied = () => {
   return !dbAdmin || isNamedDatabaseDenied;

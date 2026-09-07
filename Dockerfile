@@ -15,7 +15,7 @@ RUN npm ci
 COPY . .
 
 # Build Vite frontend and compile backend bundle into dist/server.cjs
-RUN npm run build
+RUN touch /app/serviceAccountKey.dummy.json && npm run build
 
 # ==========================================
 # Stage 2: Production Runner (Scale-to-Zero Cloud Run)
@@ -36,6 +36,8 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/firebase-applet-config.json ./firebase-applet-config.json
 COPY --from=builder /app/index.html ./index.html
+COPY --from=builder /app/*serviceAccountKey*.json ./
+RUN rm -f ./serviceAccountKey.dummy.json
 
 # Create directories for runtime uploads and assign permissions to standard 'node' user
 RUN mkdir -p /app/uploads /app/comm /app/wa_auth && \
