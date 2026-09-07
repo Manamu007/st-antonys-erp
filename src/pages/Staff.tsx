@@ -70,6 +70,16 @@ const formatNameInput = (val: string): string => {
     .join('');
 };
 
+export const formatStaffRole = (role?: string) => {
+  if (!role) return 'Staff';
+  const r = role.toLowerCase().trim();
+  if (r === 'teacher_class') return 'Class Teacher';
+  if (r === 'teacher_subject' || r === 'teacher') return 'Subject Teacher';
+  if (r === 'vice_principal') return 'Vice Principal';
+  if (r === 'front_office') return 'Front Office';
+  return r.charAt(0).toUpperCase() + r.slice(1).replace(/_/g, ' ');
+};
+
 const Staff: FC = () => {
   const { hasPermission, profile, isAdmin, isVicePrincipal } = useAuth();
   const isTeacherRole = profile?.role === 'teacher' || profile?.role === 'teacher_class' || profile?.role === 'teacher_subject';
@@ -171,7 +181,7 @@ const Staff: FC = () => {
     name: '',
     email: '',
     phone: '',
-    role: 'teacher' as any,
+    role: 'teacher_subject' as any,
     staffType: 'teaching' as 'teaching' | 'non-teaching',
     department: '',
     dateOfJoining: new Date().toISOString().split('T')[0],
@@ -774,7 +784,7 @@ const Staff: FC = () => {
     setIsScanning(true);
     toast.info(`Activating ${repairableList.length} invisible records...`);
     try {
-      const staffRoles = ['teacher', 'accountant', 'clerk', 'admin', 'principal', 'vice_principal', 'staff', 'driver', 'attendant', 'helper', 'aya', 'coordinator', 'front_office', 'receptionist'];
+      const staffRoles = ['teacher', 'teacher_class', 'teacher_subject', 'accountant', 'clerk', 'admin', 'principal', 'vice_principal', 'staff', 'driver', 'attendant', 'helper', 'aya', 'coordinator', 'front_office', 'receptionist', 'doctor', 'warden'];
       
       const batchSize = 100;
       for (let i = 0; i < repairableList.length; i += batchSize) {
@@ -782,7 +792,8 @@ const Staff: FC = () => {
         await Promise.all(chunk.map(async s => {
           const rawRole = (s.role || 'staff').toLowerCase().trim();
           const normalizedRole = rawRole.replace(/\s+/g, '_');
-          const finalRole = staffRoles.includes(normalizedRole) ? normalizedRole : 'staff';
+          let finalRole = staffRoles.includes(normalizedRole) ? normalizedRole : 'staff';
+          if (finalRole === 'teacher') finalRole = 'teacher_subject';
           
           const uid = s.uid || s.id;
           
@@ -856,7 +867,7 @@ const Staff: FC = () => {
       const phoneMap = new Map<string, any[]>();
       const aadharMap = new Map<string, any[]>();
 
-      const staffRoles = ['teacher', 'accountant', 'clerk', 'admin', 'principal', 'vice_principal', 'staff', 'driver', 'attendant', 'helper', 'aya', 'coordinator', 'front_office', 'receptionist'];
+      const staffRoles = ['teacher', 'teacher_class', 'teacher_subject', 'accountant', 'clerk', 'admin', 'principal', 'vice_principal', 'staff', 'driver', 'attendant', 'helper', 'aya', 'coordinator', 'front_office', 'receptionist', 'doctor', 'warden'];
 
       allUsers.forEach((s: any) => {
         const rawRole = (s.role || '').toLowerCase().trim().replace(/\s+/g, '_');
@@ -966,13 +977,17 @@ const Staff: FC = () => {
       const resolvedBatchId = matchingBatch?.id || member.classTeacherBatchId || member.batchId || '';
       const resolvedClassId = matchingBatch?.classId || member.classTeacherClassId || member.classId || '';
 
+      const resolvedRole = member.role === 'teacher' ? 'teacher_subject' : (member.role || 'teacher_subject');
+      const isNonTeachingRole = ['accountant', 'clerk', 'staff', 'driver', 'attendant', 'helper', 'aya', 'front_office', 'receptionist', 'doctor', 'warden', 'admin', 'principal', 'vice_principal'].includes((member.role || '').toLowerCase());
+      const resolvedStaffType = member.staffType || (isNonTeachingRole ? 'non-teaching' : 'teaching');
+
       setFormData({
         name: member.name || getStaffDisplayName(member) || '',
         email: member.email || '',
         phone: member.phone || '',
         status: (member.status as "active" | "inactive") || 'active',
-        role: member.role || 'teacher',
-        staffType: member.staffType || 'teaching',
+        role: resolvedRole,
+        staffType: resolvedStaffType,
         department: member.department || '',
         dateOfJoining: member.dateOfJoining || new Date().toISOString().split('T')[0],
         gender: member.gender || 'male',
@@ -2667,14 +2682,14 @@ const Staff: FC = () => {
                                   </span>
                                 )}
                               </div>
-                              <p className="text-[12px] text-neutral-400 uppercase font-bold tracking-wider">{member.role}</p>
+                              <p className="text-[12px] text-neutral-400 uppercase font-bold tracking-wider">{formatStaffRole(member.role)}</p>
                             </div>
                           </div>
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex flex-col gap-1">
                             <div className="flex flex-wrap items-center gap-1.5">
-                              <p className="text-[15px] font-medium text-neutral-700 uppercase">{member.role}</p>
+                              <p className="text-[15px] font-semibold text-neutral-800">{formatStaffRole(member.role)}</p>
                               {assignedClassTeacherBatch && (
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-50 text-amber-800 border border-amber-200 text-[10px] font-black uppercase rounded tracking-wider shadow-xs" title={`Class Teacher of ${ctClassName} (${assignedClassTeacherBatch.name})`}>
                                   <GraduationCap className="w-3 h-3 text-amber-600 shrink-0" />
@@ -3187,50 +3202,58 @@ const Staff: FC = () => {
                   <div className="space-y-2">
                     <label className="text-xs font-bold text-neutral-700">Staff Type</label>
                     <select
-                      className="w-full px-4 py-2.5 rounded-xl border border-neutral-200 focus:border-primary outline-none transition-all text-sm"
+                      className="w-full px-4 py-2.5 rounded-xl border border-neutral-200 focus:border-primary outline-none transition-all text-sm font-semibold"
                       value={formData.staffType}
-                      onChange={(e) => setFormData({ ...formData, staffType: e.target.value as any })}
+                      onChange={(e) => {
+                        const newType = e.target.value as any;
+                        setFormData({ 
+                          ...formData, 
+                          staffType: newType,
+                          role: newType === 'teaching' ? 'teacher_subject' : 'accountant'
+                        });
+                      }}
                     >
-                      <option value="teaching">Teaching</option>
-                      <option value="non-teaching">Non-Teaching</option>
+                      <option value="teaching">Teaching Staff</option>
+                      <option value="non-teaching">Non-Teaching Staff</option>
                     </select>
                   </div>
                   <div className="space-y-2">
-                    <label className="text-xs font-bold text-neutral-700">System Role</label>
+                    <label className="text-xs font-bold text-neutral-700">Staff Role</label>
                     <select
                       className="w-full px-4 py-2.5 rounded-xl border border-neutral-200 focus:border-primary outline-none transition-all text-sm font-bold"
                       value={formData.role}
                       onChange={(e) => {
                         const role = e.target.value as any;
-                        const nonTeachingRoles = ['accountant', 'clerk', 'staff', 'driver', 'attendant', 'helper', 'aya', 'front_office', 'receptionist'];
-                        const isNonTeaching = nonTeachingRoles.includes(role) || (customRoles || []).find(r => r && r.id === role)?.category === 'Staff';
+                        const isTeaching = role === 'teacher_subject' || role === 'teacher_class';
                         setFormData({ 
                           ...formData, 
                           role, 
-                          staffType: isNonTeaching ? 'non-teaching' : 'teaching'
+                          staffType: isTeaching ? 'teaching' : 'non-teaching'
                         });
                       }}
                     >
-                      <optgroup label="Default Roles">
-                        <option value="teacher">Teacher</option>
-                        <option value="play_school_incharge">Play School Incharge</option>
-                        <option value="principal">Principal</option>
-                        <option value="vice_principal">Vice Principal</option>
-                        <option value="accountant">Accountant</option>
-                        <option value="clerk">Clerk</option>
-                        <option value="staff">Staff Member</option>
-                        <option value="admin">Admin</option>
-                        <option value="driver">Driver</option>
-                        <option value="attendant">Attendant</option>
-                        <option value="helper">Helper</option>
-                        <option value="front_office">Front Office</option>
-                        <option value="receptionist">Receptionist</option>
-                        <option value="aya">Aya</option>
-                        <option value="coordinator">Coordinator</option>
-                      </optgroup>
-                      {customRoles.length > 0 && (
-                        <optgroup label="Custom Roles">
-                          {customRoles.map(role => (
+                      {formData.staffType === 'teaching' ? (
+                        <optgroup label="Teaching Staff Roles (Teachers Only)">
+                          <option value="teacher_subject">Subject Teacher</option>
+                          <option value="teacher_class">Class Teacher</option>
+                        </optgroup>
+                      ) : (
+                        <optgroup label="Non-Teaching & Administrative Roles">
+                          <option value="accountant">Accountant</option>
+                          <option value="clerk">Clerk</option>
+                          <option value="receptionist">Receptionist</option>
+                          <option value="front_office">Front Office</option>
+                          <option value="principal">Principal</option>
+                          <option value="vice_principal">Vice Principal</option>
+                          <option value="admin">Admin</option>
+                          <option value="driver">Driver</option>
+                          <option value="attendant">Attendant</option>
+                          <option value="helper">Helper</option>
+                          <option value="aya">Aya</option>
+                          <option value="doctor">Doctor / Medical Officer</option>
+                          <option value="warden">Hostel Warden</option>
+                          <option value="staff">Other Staff</option>
+                          {customRoles.length > 0 && customRoles.map(role => (
                             <option key={role.id} value={role.id}>{role.label || role.name || role.id}</option>
                           ))}
                         </optgroup>

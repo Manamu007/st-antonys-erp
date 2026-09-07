@@ -2256,7 +2256,7 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
     let version: any = cachedBaileysVersion;
     if (!version) {
       console.log(`[WhatsApp ${process.pid}] Fetching latest Baileys version with 4s timeout...`);
-      const versionPromise = fetchLatestBaileysVersion();
+      const versionPromise = fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1043857760] }));
       const timeoutPromise = new Promise<{ version: any }>((_, reject) => setTimeout(() => reject(new Error("Timeout (4s)")), 4000));
       try {
         const versionResult: any = await Promise.race([versionPromise, timeoutPromise]);
@@ -2561,12 +2561,22 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
         await acquireLock();
         try {
           const db = getDbAdmin();
-          await db.collection('whatsapp_logs').add({
-            type: 'heartbeat',
-            instanceId,
-            timestamp: new Date().toISOString(),
-            expiresAt: new Date(Date.now() + 24 * 3600000).toISOString() // 24h expiration
-          });
+          if (db && !isDatabaseDenied()) {
+            await db.collection(LOCK_COLLECTION).doc(STATUS_DOC).set({
+              status: 'open',
+              qr: null,
+              instanceId,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              expiresAt: new Date(Date.now() + 3600000).toISOString()
+            }, { merge: true });
+
+            await db.collection('whatsapp_logs').add({
+              type: 'heartbeat',
+              instanceId,
+              timestamp: new Date().toISOString(),
+              expiresAt: new Date(Date.now() + 24 * 3600000).toISOString() // 24h expiration
+            });
+          }
         } catch(e) {}
       } else {
         clearInterval(lockInterval);
@@ -3364,8 +3374,12 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
     isConnecting = false;
     consecutiveErrors++;
     console.error(`[WhatsApp ${process.pid}] connection failed to initialize (Attempt ${consecutiveErrors}):`, error);
-    io.emit('wa:error', `WhatsApp initialization failed: ${error.message || 'Unknown error'}`);
-    io.emit('wa:status', 'close');
+    const rawErrMsg = error?.message || 'Unknown error';
+    const lowerRaw = rawErrMsg.toLowerCase();
+    if (!lowerRaw.includes('conflict') && !lowerRaw.includes('denied') && !lowerRaw.includes('permission')) {
+      io?.emit('wa:error', `WhatsApp engine notice: ${rawErrMsg}`);
+    }
+    io?.emit('wa:status', 'close');
     
     const initErrorMsg = (error?.message || error?.toString() || '').toLowerCase();
     const isRevokedSession = 
@@ -3457,7 +3471,7 @@ export async function startWhatsAppWatchdog(io: Server) {
                   else if (updatedAt instanceof Date) docTime = updatedAt.getTime();
                   else docTime = new Date(updatedAt).getTime() || 0;
                 }
-                const isRecent = docTime === 0 || (Date.now() - docTime < 35000);
+                const isRecent = docTime === 0 || (Date.now() - docTime < 60000);
 
                 if (isRecent && data.status && data.status !== connectionStatus) {
                   console.log(`[WhatsApp Sync] Status synchronized from Firestore: ${connectionStatus} -> ${data.status}`);
@@ -3991,6 +4005,38 @@ setTimeout(async () => {
 export const getWASocket = () => sock;
 export const getWAStatus = () => {
   return { status: connectionStatus, qr: qrCode };
+};
+
+export const getRemoteWAStatus = async (): Promise<{ status: string; qr: string | null } | null> => {
+  try {
+    await initializationPromise;
+    const db = getDbAdmin();
+    if (db && !isDatabaseDenied()) {
+      const doc = await db.collection(LOCK_COLLECTION).doc(STATUS_DOC).get();
+      if (doc.exists) {
+        const data = doc.data();
+        if (data) {
+          const updatedAt = data.updatedAt;
+          let docTime = 0;
+          if (updatedAt) {
+            if (typeof updatedAt.toMillis === 'function') docTime = updatedAt.toMillis();
+            else if (updatedAt instanceof Date) docTime = updatedAt.getTime();
+            else docTime = new Date(updatedAt).getTime() || 0;
+          }
+          const isRecent = docTime === 0 || (Date.now() - docTime < 60000);
+          if (isRecent && data.status) {
+            return {
+              status: data.status,
+              qr: data.status === 'qr' ? (data.qr || null) : null
+            };
+          }
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn('[WhatsApp] Failed to fetch remote status:', err?.message);
+  }
+  return null;
 };
 
 export const sendMessage = async (to: string, text: string, options: any = {}, type: 'single' | 'broadcast' | 'birthday' | 'bot' = 'single') => {

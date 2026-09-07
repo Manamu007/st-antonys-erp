@@ -31,7 +31,7 @@ steps:
       - '--max-instances'
       - '2'
       - '--memory'
-      - '512Mi'
+      - '1Gi'
       - '--cpu'
       - '1'
 

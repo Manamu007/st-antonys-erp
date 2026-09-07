@@ -548,7 +548,13 @@ This is an automated message.`
     });
     newSocket.on('wa:qr', (q) => setQr(q));
     newSocket.on('wa:error', (err) => {
-      toast.error(err, { duration: 10000 });
+      const errStr = typeof err === 'string' ? err : err?.message || String(err || '');
+      // Do not display transient auto-reconnection or conflict notices as loud red toasts
+      if (errStr.includes('restarting') || errStr.includes('sync issue detected') || errStr.includes('Re-establishing') || errStr.includes('stepped down')) {
+        console.log('[WhatsApp Notice]', errStr);
+        return;
+      }
+      toast.error(errStr, { duration: 8000 });
     });
     newSocket.on('wa:message', (msg) => {
       setMessages(prev => [msg, ...(prev || [])].slice(0, 50));

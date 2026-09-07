@@ -38,7 +38,7 @@ COPY --from=builder /app/firebase-applet-config.json ./firebase-applet-config.js
 COPY --from=builder /app/index.html ./index.html
 
 # Create directories for runtime uploads and assign permissions to standard 'node' user
-RUN mkdir -p /app/uploads /app/comm && \
+RUN mkdir -p /app/uploads /app/comm /app/wa_auth && \
     chown -R node:node /app
 
 # Switch to non-root execution for secure container runtime

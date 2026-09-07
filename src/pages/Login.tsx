@@ -607,15 +607,15 @@ const Login: React.FC = () => {
         }
 
         const normalizedRoleName = (profile.role || '').toLowerCase();
-        const isTeacher = normalizedRoleName.includes('teacher') || profile.role === 'teacher' || profile.role === 'teacher_class' || profile.role === 'teacher_subject' || isTeacherAccountOrEmail(user.email);
         const isAccountant = normalizedRoleName === 'accountant' || (user.email || '').toLowerCase().includes('accountant');
         const isClerk = normalizedRoleName === 'clerk' || (user.email || '').toLowerCase().includes('clerk');
         const isReceptionist = normalizedRoleName === 'receptionist' || (user.email || '').toLowerCase().includes('reception');
+        const isExplicitNonTeacher = isAccountant || isClerk || isReceptionist || ['admin', 'super_admin', 'driver', 'doctor', 'attendant', 'helper', 'aya', 'student', 'parent'].includes(normalizedRoleName);
+        const isTeacher = !isExplicitNonTeacher && (normalizedRoleName.includes('teacher') || profile.role === 'teacher_class' || profile.role === 'teacher_subject' || isTeacherAccountOrEmail(user.email));
 
         if (isTeacher) {
           const sysTeacher = isTeacherAccountOrEmail(user.email) ? getSystemTeacherProfile(user.email) : null;
           const isExplicitClassTeacher = profile.role === 'teacher_class' || 
-                                       roleFromSelection === 'teacher_class' || 
                                        isTeacherAccountOrEmail(user.email) ||
                                        (profile.designation || '').toLowerCase().includes('class teacher');
 
@@ -648,25 +648,31 @@ const Login: React.FC = () => {
             }
           }
 
-          const resolvedRole = isExplicitClassTeacher ? 'teacher_class' : (profile.role || 'teacher');
-          profile.role = resolvedRole;
-          try {
-            await dbService.update('users', user.uid, { role: resolvedRole });
-            await dbService.update('staff', user.uid, { role: resolvedRole });
-          } catch (e) {}
-        } else if (isAccountant) {
+          // If role is legacy 'teacher', normalize to 'teacher_class' or 'teacher_subject'
+          let resolvedRole = profile.role;
+          if (!resolvedRole || resolvedRole === 'teacher') {
+            resolvedRole = isExplicitClassTeacher ? 'teacher_class' : 'teacher_subject';
+          }
+          if (resolvedRole !== profile.role) {
+            profile.role = resolvedRole;
+            try {
+              await dbService.update('users', user.uid, { role: resolvedRole });
+              await dbService.update('staff', user.uid, { role: resolvedRole });
+            } catch (e) {}
+          }
+        } else if (isAccountant && profile.role !== 'accountant') {
           profile.role = 'accountant';
           try {
             await dbService.update('users', user.uid, { role: 'accountant' });
             await dbService.update('staff', user.uid, { role: 'accountant' });
           } catch (e) {}
-        } else if (isClerk) {
+        } else if (isClerk && profile.role !== 'clerk') {
           profile.role = 'clerk';
           try {
             await dbService.update('users', user.uid, { role: 'clerk' });
             await dbService.update('staff', user.uid, { role: 'clerk' });
           } catch (e) {}
-        } else if (isReceptionist) {
+        } else if (isReceptionist && profile.role !== 'receptionist') {
           profile.role = 'receptionist';
           try {
             await dbService.update('users', user.uid, { role: 'receptionist' });

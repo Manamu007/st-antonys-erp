@@ -715,11 +715,12 @@ const Academics: React.FC = () => {
 
       const teacherMap = new Map<string, any>();
 
+      const nonTeachingRoles = ['student', 'parent', 'accountant', 'clerk', 'driver', 'attendant', 'helper', 'aya', 'receptionist', 'doctor', 'warden'];
       const isPotentialTeacher = (record: any) => {
         if (!record) return false;
         const role = String(record.role || '').toLowerCase().trim();
-        // Exclude students and parents explicitly
-        if (role === 'student' || role === 'parent') return false;
+        // Exclude non-teaching roles, students, and parents
+        if (nonTeachingRoles.includes(role)) return false;
         return true;
       };
 
@@ -1212,8 +1213,9 @@ const Academics: React.FC = () => {
                   oldTeacherPayload.classTeacherBatchName = '';
                   oldTeacherPayload.classTeacherClassId = '';
                   oldTeacherPayload.classTeacherClassName = '';
-                  if (oldTeacher?.role === 'teacher_class' || !oldTeacher?.role || oldTeacher?.role === 'teacher') {
-                    oldTeacherPayload.role = 'teacher';
+                  if (oldTeacher?.role === 'teacher_class' || oldTeacher?.role === 'teacher') {
+                    oldTeacherPayload.role = 'teacher_subject';
+                    oldTeacherPayload.designation = 'Subject Teacher';
                   }
                 }
                 await dbService.update('users', docId, oldTeacherPayload).catch(() => {});
@@ -1237,6 +1239,9 @@ const Academics: React.FC = () => {
               const currentBatchIds = Array.isArray(newTeacher?.batchIds) ? newTeacher.batchIds : [];
               const updatedBatchIds = Array.from(new Set([...currentBatchIds, editingItem.id]));
 
+              const existingTeacherRole = (newTeacher?.role || '').toLowerCase().trim();
+              const isNonTeachingRole = ['accountant', 'clerk', 'driver', 'attendant', 'helper', 'aya', 'receptionist', 'doctor', 'warden', 'admin', 'superadmin', 'principal', 'vice_principal'].includes(existingTeacherRole);
+
               for (const docId of uniqueNewDocIds) {
                 const newTeacherPayload: any = {
                   batchIds: updatedBatchIds,
@@ -1248,8 +1253,8 @@ const Academics: React.FC = () => {
                   classTeacherClassName: className,
                   classId: formData.classId,
                   className: className,
-                  role: (newTeacher?.role === 'admin' || newTeacher?.role === 'superadmin' || newTeacher?.role === 'principal' || newTeacher?.role === 'vice_principal') ? newTeacher.role : 'teacher_class',
-                  designation: 'Class Teacher',
+                  role: isNonTeachingRole ? (newTeacher?.role || 'staff') : 'teacher_class',
+                  designation: isNonTeachingRole ? (newTeacher?.designation || 'Staff') : 'Class Teacher',
                   isEditedByUser: true,
                   isUserModified: true,
                   updatedAt: new Date().toISOString()
@@ -1328,6 +1333,9 @@ const Academics: React.FC = () => {
             const currentBatchIds = Array.isArray(newTeacher?.batchIds) ? newTeacher.batchIds : [];
             const updatedBatchIds = Array.from(new Set([...currentBatchIds, customId]));
 
+            const existingTeacherRole = (newTeacher?.role || '').toLowerCase().trim();
+            const isNonTeachingRole = ['accountant', 'clerk', 'driver', 'attendant', 'helper', 'aya', 'receptionist', 'doctor', 'warden', 'admin', 'superadmin', 'principal', 'vice_principal'].includes(existingTeacherRole);
+
             for (const docId of uniqueNewDocIds) {
               const newTeacherPayload: any = {
                 batchIds: updatedBatchIds,
@@ -1339,8 +1347,8 @@ const Academics: React.FC = () => {
                 classTeacherClassName: className,
                 classId: formData.classId,
                 className: className,
-                role: (newTeacher?.role === 'admin' || newTeacher?.role === 'superadmin' || newTeacher?.role === 'principal' || newTeacher?.role === 'vice_principal') ? newTeacher.role : 'teacher_class',
-                designation: 'Class Teacher',
+                role: isNonTeachingRole ? (newTeacher?.role || 'staff') : 'teacher_class',
+                designation: isNonTeachingRole ? (newTeacher?.designation || 'Staff') : 'Class Teacher',
                 isEditedByUser: true,
                 isUserModified: true,
                 updatedAt: new Date().toISOString()

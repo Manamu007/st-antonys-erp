@@ -238,8 +238,23 @@ async function startServer() {
     }
   });
 
-  app.get("/api/whatsapp/status", (req, res) => {
-    res.json(getWAStatus());
+  app.get("/api/whatsapp/status", async (req, res) => {
+    try {
+      const { getWAStatus, getRemoteWAStatus } = await import("./src/server/whatsapp.js");
+      const local = getWAStatus();
+      if (local.status === 'open') {
+        res.json(local);
+        return;
+      }
+      const remote = await getRemoteWAStatus();
+      if (remote && (remote.status === 'open' || (remote.status === 'qr' && remote.qr))) {
+        res.json(remote);
+        return;
+      }
+      res.json(local);
+    } catch {
+      res.json(getWAStatus());
+    }
   });
 
   app.get("/api/whatsapp/stats", async (req, res) => {
@@ -371,10 +386,15 @@ async function startServer() {
 
   app.post("/api/whatsapp/restart", async (req, res) => {
     try {
-      const { getWAStatus, connectToWhatsApp } = await import("./src/server/whatsapp.js");
+      const { getWAStatus, getRemoteWAStatus, connectToWhatsApp } = await import("./src/server/whatsapp.js");
       const status = getWAStatus();
       if (status.status === 'open') {
         res.json({ success: true, message: "WhatsApp is already connected." });
+        return;
+      }
+      const remote = await getRemoteWAStatus();
+      if (remote?.status === 'open') {
+        res.json({ success: true, message: "WhatsApp is already connected on the active engine." });
         return;
       }
       await connectToWhatsApp(io, true, true);

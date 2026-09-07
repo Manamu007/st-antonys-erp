@@ -265,39 +265,53 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         let unique = Array.from(usersMap.values()) as UserProfile[];
 
-        const bypassRole = (localStorage.getItem('bypass_user_role') || '').toLowerCase().trim();
-        const isExplicitNonTeacher = ['receptionist', 'accountant', 'clerk', 'driver', 'doctor', 'admin', 'super_admin', 'principal', 'vice_principal', 'student', 'parent', 'warden'].includes(bypassRole) ||
-          email.includes('reception') || (user.displayName || '').toLowerCase().includes('reception') ||
-          email.includes('accountant') || (user.displayName || '').toLowerCase().includes('accountant') ||
-          email.includes('clerk') || (user.displayName || '').toLowerCase().includes('clerk');
-
-        // Self-Healing for class teacher accounts (e.g. stantonys3m@gmail.com, antonys3m@gmail.com, stantonys9m@gmail.com, etc.)
-        const isTeacherAcc = !isExplicitNonTeacher && (
-                             isTeacherAccountOrEmail(email) || 
-                             isTeacherAccountOrEmail(user.displayName) || 
-                             isTeacherAccountOrEmail(localStorage.getItem('bypass_user_role')) ||
-                             isTeacherAccountOrEmail(localStorage.getItem('bypass_user_name')) ||
-                             isTeacherAccountOrEmail(localStorage.getItem('bypass_user_email')) ||
-                             isTeacherRole('', email, user.displayName));
-        const systemTeacherInfo = isTeacherAcc ? getSystemTeacherProfile(email) : null;
         const isSystem = isSystemAccount(email);
         const sysRole = isSystem ? getSystemAccountRole(email) : '';
-        const isAccountantAcc = bypassRole === 'accountant' || email.includes('accountant') || (user.displayName || '').toLowerCase().includes('accountant') || sysRole === 'accountant';
-        const isClerkAcc = bypassRole === 'clerk' || email.includes('clerk') || (user.displayName || '').toLowerCase().includes('clerk') || sysRole === 'clerk';
-        const isReceptionistAcc = bypassRole === 'receptionist' || email.includes('reception') || (user.displayName || '').toLowerCase().includes('reception') || sysRole === 'receptionist';
-        const isDriverAcc = bypassRole === 'driver' || email.includes('driver') || (user.displayName || '').toLowerCase().includes('driver') || sysRole === 'driver';
-        const isDoctorAcc = bypassRole === 'doctor' || email.includes('doctor') || (user.displayName || '').toLowerCase().includes('doctor') || sysRole === 'doctor';
+
+        // Check for existing profile in local state
+        let staffProf = unique.find(p => p.email?.toLowerCase().trim() === email || p.uid === user.uid || p.id === user.uid);
+        
+        let foundDoc: any = null;
+        if (!staffProf) {
+          try {
+            const staffDocs = await dbService.list('staff', [where('email', '==', email)]);
+            const userDocs = await dbService.list('users', [where('email', '==', email)]);
+            foundDoc = staffDocs?.[0] || userDocs?.[0];
+          } catch (e) {}
+        }
+
+        const existingDbRole = staffProf?.role || foundDoc?.role || '';
+        const normalizedDbRole = (existingDbRole || '').toLowerCase().trim();
+
+        const isAccountantAcc = normalizedDbRole === 'accountant' || sysRole === 'accountant' || email.includes('accountant') || (user.displayName || '').toLowerCase().includes('accountant');
+        const isClerkAcc = normalizedDbRole === 'clerk' || sysRole === 'clerk' || email.includes('clerk') || (user.displayName || '').toLowerCase().includes('clerk');
+        const isReceptionistAcc = normalizedDbRole === 'receptionist' || sysRole === 'receptionist' || email.includes('reception') || (user.displayName || '').toLowerCase().includes('reception');
+        const isDriverAcc = normalizedDbRole === 'driver' || sysRole === 'driver' || email.includes('driver') || (user.displayName || '').toLowerCase().includes('driver');
+        const isDoctorAcc = normalizedDbRole === 'doctor' || sysRole === 'doctor' || email.includes('doctor') || (user.displayName || '').toLowerCase().includes('doctor');
+        
+        const isExplicitNonTeacher = isAccountantAcc || isClerkAcc || isReceptionistAcc || isDriverAcc || isDoctorAcc ||
+          ['accountant', 'clerk', 'receptionist', 'driver', 'doctor', 'admin', 'super_admin', 'principal', 'vice_principal', 'student', 'parent', 'warden', 'hostel_warden', 'attendant', 'helper', 'aya'].includes(normalizedDbRole);
+
+        // Self-Healing only for designated system teacher email accounts (e.g. stantonys3m@gmail.com)
+        const isTeacherAcc = !isExplicitNonTeacher && (
+                             isTeacherAccountOrEmail(email) || 
+                             normalizedDbRole === 'teacher_class' || 
+                             normalizedDbRole === 'teacher_subject' || 
+                             normalizedDbRole === 'teacher');
+        const systemTeacherInfo = isTeacherAcc ? getSystemTeacherProfile(email) : null;
         
         const isStaffAcc = isTeacherAcc || isAccountantAcc || isClerkAcc || isReceptionistAcc || isDriverAcc || isDoctorAcc || 
-                           isStaffRole(bypassRole) || isStaffRole(sysRole) || isStaffAccountOrEmail(email, bypassRole || sysRole, user.displayName);
+                           isStaffRole(normalizedDbRole) || isStaffRole(sysRole) || isStaffAccountOrEmail(email, normalizedDbRole || sysRole, user.displayName);
 
-        let targetStaffRole = isTeacherAcc ? 'teacher_class' :
-                             isAccountantAcc ? 'accountant' :
-                             isClerkAcc ? 'clerk' :
-                             isReceptionistAcc ? 'receptionist' :
-                             isDriverAcc ? 'driver' :
-                             isDoctorAcc ? 'doctor' :
-                             (isStaffRole(bypassRole) ? bypassRole : (isStaffRole(sysRole) ? sysRole : (isSystem ? sysRole : 'staff')));
+        // CRITICAL: If user ALREADY has a role in Firestore, NEVER overwrite it!
+        let targetStaffRole = (existingDbRole && existingDbRole !== 'staff') ? existingDbRole :
+                              isTeacherAcc ? (normalizedDbRole === 'teacher_subject' ? 'teacher_subject' : 'teacher_class') :
+                              isAccountantAcc ? 'accountant' :
+                              isClerkAcc ? 'clerk' :
+                              isReceptionistAcc ? 'receptionist' :
+                              isDriverAcc ? 'driver' :
+                              isDoctorAcc ? 'doctor' :
+                              (isStaffRole(sysRole) ? sysRole : (isSystem ? sysRole : (existingDbRole || 'staff')));
 
         if (isStaffAcc) {
           // Purge any accidental student profile for this email or uid
@@ -311,23 +325,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             return true;
           });
 
-          let staffProf = unique.find(p => p.email?.toLowerCase().trim() === email || p.uid === user.uid || p.id === user.uid);
-          if (!staffProf) {
-            try {
-              const staffDocs = await dbService.list('staff', [where('email', '==', email)]);
-              const userDocs = await dbService.list('users', [where('email', '==', email)]);
-              const foundDoc = staffDocs?.[0] || userDocs?.[0];
-              if (foundDoc) {
-                staffProf = {
-                  ...foundDoc,
-                  uid: user.uid,
-                  id: user.uid,
-                  email: email,
-                  role: targetStaffRole as any,
-                  status: 'active'
-                };
-              }
-            } catch (e) {}
+          if (!staffProf && foundDoc) {
+            staffProf = {
+              ...foundDoc,
+              uid: user.uid,
+              id: user.uid,
+              email: email,
+              role: (foundDoc.role && foundDoc.role !== 'staff' ? foundDoc.role : targetStaffRole) as any,
+              status: 'active'
+            };
           }
 
           if (!staffProf) {
@@ -358,7 +364,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             };
             unique = [staffProf];
           } else {
-            staffProf.role = targetStaffRole as any;
+            // Preserve existing role if set!
+            const preservedRole = (staffProf.role && staffProf.role !== 'staff') ? staffProf.role : targetStaffRole;
+            staffProf.role = preservedRole as any;
+            targetStaffRole = preservedRole;
+
             if (isTeacherAcc && systemTeacherInfo) {
               // Only fallback to systemTeacherInfo if name is completely missing or generic placeholder
               const currentName = staffProf.name || (staffProf as any).displayName || '';
