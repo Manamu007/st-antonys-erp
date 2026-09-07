@@ -3376,7 +3376,22 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
     console.error(`[WhatsApp ${process.pid}] connection failed to initialize (Attempt ${consecutiveErrors}):`, error);
     const rawErrMsg = error?.message || 'Unknown error';
     const lowerRaw = rawErrMsg.toLowerCase();
-    if (!lowerRaw.includes('conflict') && !lowerRaw.includes('denied') && !lowerRaw.includes('permission')) {
+
+    const isCredentialOrDbError = 
+      lowerRaw.includes('credential') || 
+      lowerRaw.includes('could not load') || 
+      lowerRaw.includes('permission') || 
+      lowerRaw.includes('denied') || 
+      lowerRaw.includes('billing');
+
+    if (isCredentialOrDbError) {
+      console.warn(`[WhatsApp ${process.pid}] Database/credential issue during init: ${rawErrMsg}. Falling back to local storage and retrying...`);
+      setDatabaseDenied(true);
+      setTimeout(() => connectToWhatsApp(io, false, false), 1500);
+      return sock;
+    }
+
+    if (!lowerRaw.includes('conflict') && !lowerRaw.includes('denied') && !lowerRaw.includes('permission') && !lowerRaw.includes('credential') && !lowerRaw.includes('could not load')) {
       io?.emit('wa:error', `WhatsApp engine notice: ${rawErrMsg}`);
     }
     io?.emit('wa:status', 'close');

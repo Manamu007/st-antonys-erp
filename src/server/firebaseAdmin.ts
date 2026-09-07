@@ -2,6 +2,8 @@ import './env.js';
 import firebaseConfig from '../../firebase-applet-config.json' with { type: 'json' };
 import admin from 'firebase-admin';
 import { getFirestore, DocumentReference, FieldPath } from 'firebase-admin/firestore';
+import fs from 'fs';
+import path from 'path';
 
 // Monkey-patch DocumentReference.prototype.get to seamlessly fall back to RunQuery (where documentId == id)
 // if GCP Firestore restricts BatchGetDocuments due to named database billing flags.
@@ -55,10 +57,42 @@ export const initializationPromise = (async () => {
         await Promise.all(admin.apps.map(app => app.delete().catch(() => {})));
       }
 
-      admin.initializeApp({
+      let credential: any;
+      if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+        try {
+          const parsed = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+          credential = admin.credential.cert(parsed);
+          console.log('[FirebaseAdmin] Loaded credentials from FIREBASE_SERVICE_ACCOUNT environment variable.');
+        } catch (e: any) {
+          console.warn('[FirebaseAdmin] Could not parse FIREBASE_SERVICE_ACCOUNT JSON:', e.message);
+        }
+      } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, 'utf8'));
+          credential = admin.credential.cert(parsed);
+          console.log(`[FirebaseAdmin] Loaded credentials from ${process.env.GOOGLE_APPLICATION_CREDENTIALS}`);
+        } catch (e: any) {
+          console.warn('[FirebaseAdmin] Failed to load GOOGLE_APPLICATION_CREDENTIALS file:', e.message);
+        }
+      } else if (fs.existsSync(path.join(process.cwd(), 'serviceAccountKey.json'))) {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'serviceAccountKey.json'), 'utf8'));
+          credential = admin.credential.cert(parsed);
+          console.log('[FirebaseAdmin] Loaded credentials from ./serviceAccountKey.json');
+        } catch (e: any) {
+          console.warn('[FirebaseAdmin] Failed to load ./serviceAccountKey.json:', e.message);
+        }
+      }
+
+      const initOptions: admin.AppOptions = {
         projectId,
         storageBucket: firebaseConfig.storageBucket
-      });
+      };
+      if (credential) {
+        initOptions.credential = credential;
+      }
+
+      admin.initializeApp(initOptions);
 
       const tempDb = dbId && dbId !== '(default)' 
         ? getFirestore(admin.app(), dbId)
@@ -71,23 +105,25 @@ export const initializationPromise = (async () => {
         await Promise.race([probe, timeout]);
         console.log(`[FirebaseAdmin] Connectivity check verified.`);
         isNamedDatabaseDenied = false;
+        return tempDb;
       } catch (err: any) {
         const errText = (err.message || '').toLowerCase();
-        if (errText !== 'probe_timeout') {
-          if (errText.includes('permission_denied') || errText.includes('quota') || errText.includes('disabled') || errText.includes('not_found') || errText.includes('not found') || errText.includes('5 not_found')) {
-            isNamedDatabaseDenied = true;
-            lastInitError = err.message;
-            console.warn(`[FirebaseAdmin] Database is unavailable on project ${projectId}: ${err.message}. Background operations will use fallback.`);
-          } else {
-            console.warn(`[FirebaseAdmin] Background health check info: ${err.message}`);
-          }
+        lastInitError = err.message;
+        if (errText === 'probe_timeout') {
+          console.log(`[FirebaseAdmin] Connectivity probe timed out; assuming ambient database connection.`);
+          isNamedDatabaseDenied = false;
+          return tempDb;
         }
-      }
 
-      return tempDb;
+        // Catch default credentials missing, permission denied, quota, disabled, billing issues
+        console.warn(`[FirebaseAdmin] Database is unavailable or credentials missing on project ${projectId}: ${err.message}. System will run smoothly in local-storage mode.`);
+        isNamedDatabaseDenied = true;
+        return null;
+      }
     } catch (err: any) {
       console.warn(`[FirebaseAdmin] Init error (project=${projectId}, db=${dbId || '(default)'}): ${err.message}`);
       lastInitError = err.message;
+      isNamedDatabaseDenied = true;
       return null;
     }
   };
@@ -118,9 +154,7 @@ export const initializationPromise = (async () => {
 export const isDbInitialized = () => !!dbAdmin;
 export const getDbAdminInstance = () => dbAdmin;
 export const setDatabaseDenied = (denied = true) => {
-  if (!dbAdmin) {
-    isNamedDatabaseDenied = denied;
-  }
+  isNamedDatabaseDenied = denied;
 };
 export const getDbAdmin = () => {
   if (!dbAdmin) {

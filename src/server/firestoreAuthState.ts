@@ -282,6 +282,7 @@ export const useFirestoreAuthState = async (sessionId: string): Promise<{ state:
   };
   } catch (err: any) {
     console.warn(`[FirestoreAuthState] Firestore connection failed: ${err?.message}. Falling back to multi-file local storage.`);
+    setDatabaseDenied(true);
     return await getLocalAuth();
   }
 };

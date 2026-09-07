@@ -549,8 +549,9 @@ This is an automated message.`
     newSocket.on('wa:qr', (q) => setQr(q));
     newSocket.on('wa:error', (err) => {
       const errStr = typeof err === 'string' ? err : err?.message || String(err || '');
-      // Do not display transient auto-reconnection or conflict notices as loud red toasts
-      if (errStr.includes('restarting') || errStr.includes('sync issue detected') || errStr.includes('Re-establishing') || errStr.includes('stepped down')) {
+      // Do not display transient auto-reconnection, credential notices, or conflict notices as loud red toasts
+      const lowerErr = errStr.toLowerCase();
+      if (lowerErr.includes('restarting') || lowerErr.includes('sync issue detected') || lowerErr.includes('re-establishing') || lowerErr.includes('stepped down') || lowerErr.includes('credentials') || lowerErr.includes('could not load') || lowerErr.includes('cloud.google.com')) {
         console.log('[WhatsApp Notice]', errStr);
         return;
       }
