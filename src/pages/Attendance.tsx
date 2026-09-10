@@ -483,6 +483,7 @@ const Attendance: React.FC = () => {
   useEffect(() => {
     let active = true;
     const fetchStatus = async () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
       try {
         const res = await fetch('/api/whatsapp/status');
         const data = await res.json();
@@ -494,7 +495,7 @@ const Attendance: React.FC = () => {
       }
     };
     fetchStatus();
-    const interval = setInterval(fetchStatus, 15000); // Check every 15s
+    const interval = setInterval(fetchStatus, 45000); // Check every 45s, pause when hidden
     return () => {
       active = false;
       clearInterval(interval);

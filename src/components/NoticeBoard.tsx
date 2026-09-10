@@ -1,6 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { orderBy, limit } from 'firebase/firestore';
-import { dbService } from '../services/dbService';
 import { useAuth } from '../context/AuthContext';
 import { Bell, Calendar, ChevronRight, Info, AlertTriangle, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -27,43 +25,50 @@ const NoticeBoard: React.FC<NoticeBoardProps> = ({ isPublic = false }) => {
   const navigate = useNavigate();
 
   useEffect(() => {
+    let isMounted = true;
     setLoading(true);
-    const unsubscribe = dbService.subscribe('notices', [
-      orderBy('createdAt', 'desc'),
-      limit(20)
-    ], (res) => {
-      let filteredNotices = (res || []) as Notice[];
-      if (!filteredNotices.length) {
-        setNotices([]);
-        setLoading(false);
-        return;
-      }
 
-      if (isPublic) {
-        filteredNotices = filteredNotices.filter((n: any) => n.isPublic);
-      } else if (user) {
-        filteredNotices = filteredNotices.filter((n: any) => 
-          n.targetRoles.includes('all') || n.targetRoles.includes((user as any).role)
-        );
-      }
+    const fetchNotices = async () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      try {
+        const response = await fetch('/api/dashboard/notices');
+        if (!response.ok) throw new Error('Failed to load notices');
+        const data = await response.json();
+        let list: Notice[] = data.notices || [];
 
-      // Sort by priority and date
-      const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
-      filteredNotices.sort((a, b) => {
-        if (priorityOrder[a.priority] !== priorityOrder[b.priority]) {
-          return priorityOrder[a.priority] - priorityOrder[b.priority];
+        if (isPublic) {
+          list = list.filter((n: any) => n.isPublic);
+        } else if (user) {
+          const userRole = (user as any).role;
+          list = list.filter((n: any) => 
+            !n.targetRoles || n.targetRoles.includes('all') || (userRole && n.targetRoles.includes(userRole))
+          );
         }
-        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-      });
 
-      setNotices(filteredNotices);
-      setLoading(false);
-    }, (error) => {
-      console.error("Failed to subscribe notices:", error);
-      setLoading(false);
-    });
+        const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+        list.sort((a, b) => {
+          if (priorityOrder[a.priority] !== priorityOrder[b.priority]) {
+            return (priorityOrder[a.priority] ?? 3) - (priorityOrder[b.priority] ?? 3);
+          }
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        });
 
-    return () => unsubscribe();
+        if (isMounted) {
+          setNotices(list);
+          setLoading(false);
+        }
+      } catch (err) {
+        console.warn('Failed to fetch dashboard notices:', err);
+        if (isMounted) setLoading(false);
+      }
+    };
+
+    fetchNotices();
+    const interval = setInterval(fetchNotices, 60000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
   }, [user, isPublic]);
 
   const getPriorityStyles = (priority: string) => {

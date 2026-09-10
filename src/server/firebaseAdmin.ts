@@ -43,14 +43,13 @@ export let lastInitError: string | null = null;
 export const initializationPromise = (async () => {
   console.log(`[FirebaseAdmin Init] Starting... PID=${process.pid}`);
   const configProjectId = firebaseConfig.projectId;
-  const configDatabaseId = firebaseConfig.firestoreDatabaseId;
+  databaseId = '(default)';
   const configProjectIsPlaceholder = isPlaceholder(configProjectId);
-  databaseId = configDatabaseId;
 
-  const tryInit = async (projectId: string, dbId?: string) => {
+  const tryInit = async (projectId: string) => {
     if (isPlaceholder(projectId)) return null;
     try {
-      console.log(`[FirebaseAdmin] Initializing: project=${projectId}, database=${dbId || '(default)'}`);
+      console.log(`[FirebaseAdmin] Initializing: project=${projectId}, database=(default)`);
       
       if (admin.apps.length > 0) {
         console.log(`[FirebaseAdmin] Deleting ${admin.apps.length} existing apps...`);
@@ -94,9 +93,7 @@ export const initializationPromise = (async () => {
 
       admin.initializeApp(initOptions);
 
-      const tempDb = dbId && dbId !== '(default)' 
-        ? getFirestore(admin.app(), dbId)
-        : getFirestore(admin.app());
+      const tempDb = getFirestore(admin.app());
 
       // Quick connectivity verification (with timeout) to detect database availability
       try {
@@ -121,7 +118,7 @@ export const initializationPromise = (async () => {
         return null;
       }
     } catch (err: any) {
-      console.warn(`[FirebaseAdmin] Init error (project=${projectId}, db=${dbId || '(default)'}): ${err.message}`);
+      console.warn(`[FirebaseAdmin] Init error (project=${projectId}, db=(default)): ${err.message}`);
       lastInitError = err.message;
       isNamedDatabaseDenied = true;
       return null;
@@ -129,12 +126,12 @@ export const initializationPromise = (async () => {
   };
 
   if (configProjectId && !configProjectIsPlaceholder) {
-    dbAdmin = await tryInit(configProjectId, configDatabaseId) as any;
+    dbAdmin = await tryInit(configProjectId) as any;
     console.log(`[FirebaseAdmin Init] Finished. dbAdmin initialized? ${!!dbAdmin}`);
   }
 
   if (!dbAdmin) {
-    const dbString = `${configProjectId} / ${configDatabaseId || '(default)'}`;
+    const dbString = `${configProjectId} / (default)`;
     console.error(`[FirebaseAdmin] FAILED to connect to specified database: ${dbString}`);
     const ambient = process.env.GOOGLE_CLOUD_PROJECT || 'none';
     console.error(`[FirebaseAdmin] Ambient Project: ${ambient}`);
@@ -150,6 +147,51 @@ export const initializationPromise = (async () => {
     console.log(`[FirebaseAdmin] Initialized Firebase Admin for ${admin.app().options.projectId} / ${dbAdmin.databaseId || '(default)'}`);
   }
 })();
+
+let quotaCooldownTimer: NodeJS.Timeout | null = null;
+
+export function isQuotaOrPermissionError(err: any): boolean {
+  if (!err) return false;
+  const msg = (err?.message || String(err)).toLowerCase();
+  return (
+    msg.includes('quota') ||
+    msg.includes('resource_exhausted') ||
+    msg.includes('resource exhausted') ||
+    msg.includes('8 resource_exhausted') ||
+    msg.includes('billing') ||
+    msg.includes('permission_denied') ||
+    msg.includes('permission denied') ||
+    msg.includes('requires billing') ||
+    msg.includes('deadline_exceeded') ||
+    msg.includes('not_found') ||
+    msg.includes('5 not_found')
+  );
+}
+
+export function handleFirestoreError(err: any, contextTag: string): boolean {
+  if (!isQuotaOrPermissionError(err)) {
+    return false;
+  }
+  const msg = (err?.message || String(err)).toLowerCase();
+  const isQuota = msg.includes('quota') || msg.includes('resource_exhausted') || msg.includes('resource exhausted');
+  
+  setDatabaseDenied(true);
+
+  if (isQuota) {
+    console.warn(`[${contextTag}] Firestore free-tier quota reached or resource exhausted: ${err?.message || err}. Database operations gracefully paused to prevent failures and allow quota recovery.`);
+    if (!quotaCooldownTimer) {
+      // Gentle cooldown: after 5 minutes, allow retrying in case quota has reset
+      quotaCooldownTimer = setTimeout(() => {
+        quotaCooldownTimer = null;
+        console.log('[FirebaseAdmin] Quota cooldown elapsed; re-enabling database operations check...');
+        setDatabaseDenied(false);
+      }, 5 * 60 * 1000);
+    }
+  } else {
+    console.warn(`[${contextTag}] Firestore database notice: ${err?.message || err}. Database operations paused.`);
+  }
+  return true;
+}
 
 export const isDbInitialized = () => !!dbAdmin;
 export const getDbAdminInstance = () => dbAdmin;

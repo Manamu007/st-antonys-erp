@@ -89,12 +89,26 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onItemClick }) => {
   }, [settings.logoUrl]);
 
   const handleLogout = async () => {
+    const token = localStorage.getItem('auth_jwt_token');
+    if (token) {
+      try {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+      } catch (e) {}
+    }
+    localStorage.removeItem('auth_jwt_token');
     localStorage.removeItem('preferred_profile_id');
     localStorage.removeItem('bypass_user_email');
     localStorage.removeItem('bypass_user_uid');
     localStorage.removeItem('bypass_user_name');
     localStorage.removeItem('bypass_user_photo');
-    await auth.signOut();
+    localStorage.removeItem('bypass_user_role');
+    localStorage.removeItem('bypass_user_profile');
+    try {
+      await auth.signOut();
+    } catch (e) {}
     navigate('/login');
   };
 

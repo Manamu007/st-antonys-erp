@@ -1,0 +1,20 @@
+[
+  {
+    "_id": "6a9fcdb4fda9b31477a690c2",
+    "recipient": "919876543210",
+    "message": "Hello from MongoDB WhatsApp Queue!",
+    "status": "failed",
+    "attempts": 9,
+    "createdAt": "2026-09-08T08:56:20.638Z",
+    "error": "Cannot read properties of undefined (reading 'id')"
+  },
+  {
+    "_id": "6aa0fa379ee43a924f85af7b",
+    "recipient": "919876543210",
+    "message": "Checking queue operation",
+    "status": "failed",
+    "attempts": 5,
+    "createdAt": "2026-09-09T06:18:31.320Z",
+    "error": "Dispatch error"
+  }
+]

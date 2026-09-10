@@ -3,6 +3,8 @@ import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
 import { getDbAdmin, isDatabaseDenied, setDatabaseDenied } from "./firebaseAdmin.js";
+import { getMongoDb } from "./mongoSession.js";
+import crypto from "crypto";
 
 const router = Router();
 const BACKUPS_DIR = path.join(process.cwd(), "backups");
@@ -317,6 +319,256 @@ const invalidateProxyCache = (colPath: string) => {
   }
 };
 
+// Local collections persistent storage directory
+const localCollectionsDir = path.join(process.cwd(), ".local_db", "collections");
+if (!fs.existsSync(localCollectionsDir)) {
+  try {
+    fs.mkdirSync(localCollectionsDir, { recursive: true });
+  } catch (_) {}
+}
+
+function readLocalCollection(colName: string): any[] {
+  const filePath = path.join(localCollectionsDir, `${colName}.json`);
+  if (!fs.existsSync(filePath)) return [];
+  try {
+    const raw = fs.readFileSync(filePath, "utf-8");
+    return JSON.parse(raw) || [];
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalCollection(colName: string, items: any[]): void {
+  const filePath = path.join(localCollectionsDir, `${colName}.json`);
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(items, null, 2), "utf-8");
+  } catch (e) {
+    console.warn(`[LocalDB] Could not write ${colName}:`, e);
+  }
+}
+
+async function handleWithMongoOrLocal(operation: string, colPath: string, id: any, data: any, constraints: any, body: any): Promise<{ status?: number; json: any }> {
+  const mongo = await getMongoDb().catch(() => null);
+
+  if (mongo) {
+    const col = mongo.collection(colPath);
+
+    if (operation === "list") {
+      let filter: any = {};
+      let sort: any = null;
+      let limitNum = 500;
+
+      if (constraints && Array.isArray(constraints)) {
+        for (const c of constraints) {
+          if (!c) continue;
+          if (c.type === "where") {
+            let op = c.op;
+            if (op === "equal" || op === "==") filter[c.field] = c.value;
+            else if (op === ">") filter[c.field] = { $gt: c.value };
+            else if (op === ">=") filter[c.field] = { $gte: c.value };
+            else if (op === "<") filter[c.field] = { $lt: c.value };
+            else if (op === "<=") filter[c.field] = { $lte: c.value };
+            else if (op === "!=") filter[c.field] = { $ne: c.value };
+            else if (op === "in" && Array.isArray(c.value)) filter[c.field] = { $in: c.value };
+            else if (op === "array-contains") filter[c.field] = c.value;
+          } else if (c.type === "limit") {
+            limitNum = Number(c.value) || 500;
+          } else if (c.type === "orderBy") {
+            if (!sort) sort = {};
+            sort[c.field] = c.direction === "desc" ? -1 : 1;
+          }
+        }
+      }
+
+      let cursor = col.find(filter);
+      if (sort) cursor = cursor.sort(sort);
+      if (limitNum) cursor = cursor.limit(limitNum);
+      const docs = await cursor.toArray();
+      const result = docs.map(d => {
+        const { _id, ...rest } = d;
+        return { id: rest.id || String(_id), uid: rest.uid || rest.id || String(_id), ...rest };
+      });
+      return { json: { success: true, data: result } };
+    }
+
+    if (operation === "count") {
+      let filter: any = {};
+      if (constraints && Array.isArray(constraints)) {
+        for (const c of constraints) {
+          if (!c) continue;
+          if (c.type === "where") {
+            let op = c.op;
+            if (op === "equal" || op === "==") filter[c.field] = c.value;
+          }
+        }
+      }
+      const count = await col.countDocuments(filter);
+      return { json: { success: true, count } };
+    }
+
+    if (operation === "get") {
+      if (!id || typeof id !== "string" || !id.trim() || id === "undefined" || id === "null") {
+        return { json: { success: true, data: null } };
+      }
+      const doc = await col.findOne({ $or: [{ id: id }, { uid: id }] });
+      if (!doc) return { json: { success: true, data: null } };
+      const { _id, ...rest } = doc;
+      return { json: { success: true, data: { id: rest.id || id, uid: rest.uid || id, ...rest } } };
+    }
+
+    if (operation === "add") {
+      const docId = id || crypto.randomUUID();
+      const newDoc = { ...data, id: docId, uid: docId, createdAt: new Date().toISOString() };
+      await col.insertOne(newDoc);
+      return { json: { success: true, id: docId } };
+    }
+
+    if (operation === "set") {
+      const docId = id || data?.id || data?.uid || crypto.randomUUID();
+      const cleaned = { ...data, id: docId, uid: docId, updatedAt: new Date().toISOString() };
+      await col.updateOne({ $or: [{ id: docId }, { uid: docId }] }, { $set: cleaned }, { upsert: true });
+      return { json: { success: true, id: docId } };
+    }
+
+    if (operation === "update") {
+      const docId = id || data?.id || data?.uid;
+      if (!docId) return { status: 400, json: { error: "Missing document id" } };
+      await col.updateOne({ $or: [{ id: docId }, { uid: docId }] }, { $set: { ...data, updatedAt: new Date().toISOString() } }, { upsert: true });
+      return { json: { success: true, id: docId } };
+    }
+
+    if (operation === "delete") {
+      if (!id) return { status: 400, json: { error: "Missing document id" } };
+      await col.deleteOne({ $or: [{ id: id }, { uid: id }] });
+      return { json: { success: true } };
+    }
+
+    if (operation === "deleteBatch") {
+      const ids = body.ids || [];
+      await col.deleteMany({ $or: [{ id: { $in: ids } }, { uid: { $in: ids } }] });
+      return { json: { success: true } };
+    }
+
+    if (operation === "setBatch" || operation === "updateBatch") {
+      const items = body.items || [];
+      for (const item of items) {
+        if (item && item.id && item.data) {
+          const itemId = item.id;
+          await col.updateOne(
+            { $or: [{ id: itemId }, { uid: itemId }] },
+            { $set: { ...item.data, id: itemId, uid: itemId, updatedAt: new Date().toISOString() } },
+            { upsert: true }
+          );
+        }
+      }
+      return { json: { success: true } };
+    }
+  }
+
+  // Fallback to local persistent JSON file storage
+  const items = readLocalCollection(colPath);
+
+  if (operation === "list") {
+    let result = [...items];
+    if (constraints && Array.isArray(constraints)) {
+      for (const c of constraints) {
+        if (!c) continue;
+        if (c.type === "where") {
+          let op = c.op;
+          if (op === "equal" || op === "==") result = result.filter(x => x[c.field] === c.value);
+          else if (op === ">") result = result.filter(x => x[c.field] > c.value);
+          else if (op === ">=") result = result.filter(x => x[c.field] >= c.value);
+          else if (op === "<") result = result.filter(x => x[c.field] < c.value);
+          else if (op === "<=") result = result.filter(x => x[c.field] <= c.value);
+          else if (op === "!=") result = result.filter(x => x[c.field] !== c.value);
+          else if (op === "in" && Array.isArray(c.value)) result = result.filter(x => c.value.includes(x[c.field]));
+        } else if (c.type === "limit") {
+          result = result.slice(0, Number(c.value) || 500);
+        }
+      }
+    }
+    return { json: { success: true, data: result } };
+  }
+
+  if (operation === "count") {
+    let result = [...items];
+    if (constraints && Array.isArray(constraints)) {
+      for (const c of constraints) {
+        if (c && c.type === "where") {
+          let op = c.op;
+          if (op === "equal" || op === "==") result = result.filter(x => x[c.field] === c.value);
+        }
+      }
+    }
+    return { json: { success: true, count: result.length } };
+  }
+
+  if (operation === "get") {
+    const found = items.find(x => x.id === id || x.uid === id);
+    return { json: { success: true, data: found || null } };
+  }
+
+  if (operation === "add") {
+    const docId = id || crypto.randomUUID();
+    const newDoc = { ...data, id: docId, uid: docId, createdAt: new Date().toISOString() };
+    items.push(newDoc);
+    writeLocalCollection(colPath, items);
+    return { json: { success: true, id: docId } };
+  }
+
+  if (operation === "set") {
+    const docId = id || data?.id || data?.uid || crypto.randomUUID();
+    const idx = items.findIndex(x => x.id === docId || x.uid === docId);
+    const updated = { ...(idx >= 0 ? items[idx] : {}), ...data, id: docId, uid: docId, updatedAt: new Date().toISOString() };
+    if (idx >= 0) items[idx] = updated;
+    else items.push(updated);
+    writeLocalCollection(colPath, items);
+    return { json: { success: true, id: docId } };
+  }
+
+  if (operation === "update") {
+    const docId = id || data?.id || data?.uid;
+    if (!docId) return { status: 400, json: { error: "Missing document id" } };
+    const idx = items.findIndex(x => x.id === docId || x.uid === docId);
+    const updated = { ...(idx >= 0 ? items[idx] : {}), ...data, id: docId, uid: docId, updatedAt: new Date().toISOString() };
+    if (idx >= 0) items[idx] = updated;
+    else items.push(updated);
+    writeLocalCollection(colPath, items);
+    return { json: { success: true, id: docId } };
+  }
+
+  if (operation === "delete") {
+    const filtered = items.filter(x => x.id !== id && x.uid !== id);
+    writeLocalCollection(colPath, filtered);
+    return { json: { success: true } };
+  }
+
+  if (operation === "deleteBatch") {
+    const ids = body.ids || [];
+    const idSet = new Set(ids);
+    const filtered = items.filter(x => !idSet.has(x.id) && !idSet.has(x.uid));
+    writeLocalCollection(colPath, filtered);
+    return { json: { success: true } };
+  }
+
+  if (operation === "setBatch" || operation === "updateBatch") {
+    const newItems = body.items || [];
+    for (const item of newItems) {
+      if (item && item.id && item.data) {
+        const itemId = item.id;
+        const idx = items.findIndex(x => x.id === itemId || x.uid === itemId);
+        const updated = { ...(idx >= 0 ? items[idx] : {}), ...item.data, id: itemId, uid: itemId, updatedAt: new Date().toISOString() };
+        if (idx >= 0) items[idx] = updated;
+        else items.push(updated);
+      }
+    }
+    writeLocalCollection(colPath, items);
+    return { json: { success: true } };
+  }
+
+  return { status: 400, json: { error: "Unsupported operation: " + operation } };
+}
+
 // Generic collection secure proxy endpoint
 router.post("/db-proxy", async (req, res) => {
   const { operation, path: colPath, id, data, constraints } = req.body;
@@ -340,10 +592,11 @@ router.post("/db-proxy", async (req, res) => {
   }
 
   if (isDatabaseDenied()) {
-    if (isReadOp) {
-      return res.json({ success: false, denied: true, requiresBilling: true, data: operation === 'list' ? [] : null });
+    const mongoResult = await handleWithMongoOrLocal(operation, colPath, id, data, constraints, req.body);
+    if (isReadOp && mongoResult.json) {
+      dbProxyCache.set(cacheKey, { data: mongoResult.json, timestamp: Date.now() });
     }
-    return res.status(403).json({ success: false, error: "Database requires Google Cloud billing to be enabled.", requiresBilling: true });
+    return res.status(mongoResult.status || 200).json(mongoResult.json);
   }
 
   try {
@@ -521,16 +774,13 @@ router.post("/db-proxy", async (req, res) => {
     return res.status(400).json({ error: "Unsupported operation: " + operation });
   } catch (err: any) {
     const errText = (err?.message || String(err)).toLowerCase();
-    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing') || errText.includes('quota') || errText.includes('not_found') || errText.includes('not found') || errText.includes('5 not_found') || errText.includes('unavailable')) {
-      setDatabaseDenied(true);
-      console.warn(`[db-proxy] Database is unavailable or requires creation/billing on project (${err.message}). Returning fallback response for ${operation} on ${colPath}.`);
-      if (isReadOp) {
-        return res.json({ success: false, denied: true, notFound: errText.includes('not_found') || errText.includes('not found'), requiresBilling: errText.includes('billing'), data: operation === 'list' ? [] : null });
-      }
-      return res.status(403).json({ success: false, error: err.message, denied: true, notFound: true });
+    console.warn(`[db-proxy] Firestore error on ${colPath} (${errText}). Seamlessly falling back to local backend database.`);
+    setDatabaseDenied(true);
+    const mongoResult = await handleWithMongoOrLocal(operation, colPath, id, data, constraints, req.body);
+    if (isReadOp && mongoResult.json) {
+      dbProxyCache.set(cacheKey, { data: mongoResult.json, timestamp: Date.now() });
     }
-    console.error(`[db-proxy] Operation ${operation} failed on ${colPath}:`, err);
-    return res.status(500).json({ error: err.message });
+    return res.status(mongoResult.status || 200).json(mongoResult.json);
   }
 });
 

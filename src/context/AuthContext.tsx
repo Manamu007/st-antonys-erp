@@ -1,8 +1,8 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { onAuthStateChanged, User, setPersistence, inMemoryPersistence } from 'firebase/auth';
-import { where, doc, getDoc, collection, query, onSnapshot } from 'firebase/firestore';
-import { auth, db } from '../firebase';
-import { dbService } from '../services/dbService';
+import { auth, db, onAuthStateChanged, setPersistence, inMemoryPersistence, triggerAuthStateChanged } from '../firebase';
+import { dbService, where } from '../services/dbService';
+
+type User = any;
 import { normalizeRole, fetchAndMergeProfile, isStaffRole, isStaffAccountOrEmail } from '../lib/profileUtils';
 import { UserProfile } from '../types';
 import { isSystemAccount, isDeveloperAccount, getSystemAccountRole, SYSTEM_TEACHER_PROFILES, isTeacherAccountOrEmail, getSystemTeacherProfile, isKnownDemoName } from '../constants/systemAccounts';
@@ -10,6 +10,37 @@ import { isTeacherRole } from '../utils/teacherFilter';
 import { hasPermission as checkPermission, canEditField } from '../lib/authUtils';
 import { Permission, Role, ROLE_PERMISSIONS } from '../constants/permissions';
 import { safeStorage as localStorage, safeSessionStorage as sessionStorage } from '../lib/safeStorage';
+
+export const getInitialStoredUser = (): any => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem('auth_user') || localStorage.getItem('bypass_user_profile');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && (parsed.id || parsed.uid || parsed.email || parsed.role || parsed._id)) {
+        const id = parsed.id || parsed.uid || parsed._id || 'user_default';
+        const role = (parsed.role || localStorage.getItem('bypass_user_role') || 'admin').toLowerCase().trim();
+        const name = parsed.name || parsed.displayName || localStorage.getItem('bypass_user_name') || 'User';
+        const email = parsed.email || localStorage.getItem('bypass_user_email') || `${id}@stantonys.edu`;
+        return {
+          ...parsed,
+          uid: id,
+          id: id,
+          _id: parsed._id || id,
+          role,
+          name,
+          displayName: name,
+          email,
+          token: parsed.token || localStorage.getItem('auth_jwt_token') || '',
+          photoURL: parsed.photoURL || localStorage.getItem('bypass_user_photo') || '',
+          emailVerified: true,
+          status: parsed.status || 'active'
+        };
+      }
+    }
+  } catch (e) {}
+  return null;
+};
 
 interface AuthContextType {
   user: User | null;
@@ -33,21 +64,33 @@ interface AuthContextType {
   } | null;
   availableProfiles: UserProfile[];
   switchProfile: (profileId: string) => Promise<void>;
+  login: (userData: any, token?: string) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null);
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [availableProfiles, setAvailableProfiles] = useState<UserProfile[]>([]);
+  const [user, setUser] = useState<User | null>(() => getInitialStoredUser() as any);
+  const [profile, setProfile] = useState<UserProfile | null>(() => {
+    const u = getInitialStoredUser();
+    return u ? (u as unknown as UserProfile) : null;
+  });
+  const [availableProfiles, setAvailableProfiles] = useState<UserProfile[]>(() => {
+    const u = getInitialStoredUser();
+    return u ? [u as unknown as UserProfile] : [];
+  });
   const availableProfilesRef = React.useRef(availableProfiles);
   useEffect(() => {
     availableProfilesRef.current = availableProfiles;
   }, [availableProfiles]);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
-  const [rolePermissions, setRolePermissions] = useState<Permission[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [rolePermissions, setRolePermissions] = useState<Permission[]>(() => {
+    const u = getInitialStoredUser();
+    if (!u) return [];
+    const roleKey = normalizeRole(u.role);
+    return ROLE_PERMISSIONS[roleKey as Role] || ROLE_PERMISSIONS.student || [];
+  });
+  const [loading, setLoading] = useState<boolean>(() => !getInitialStoredUser());
 
   // Stabilize permissions state
   const setStablePermissions = React.useCallback((newPerms: Permission[]) => {
@@ -87,6 +130,67 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
   }, []);
 
+  // Login method to instantly store user and navigate to dashboard without Firebase auth dependence
+  const login = React.useCallback((userData: any, explicitToken?: string) => {
+    if (!userData) return;
+    const token = explicitToken || userData.token || localStorage.getItem('auth_jwt_token') || '';
+    const id = userData.id || userData.uid || userData._id || 'user_' + Date.now();
+    const role = (userData.role || 'admin').toLowerCase().trim();
+    const name = userData.name || userData.displayName || 'School Member';
+    const email = userData.email || `${id}@stantonys.edu`;
+    const photoURL = userData.photoURL || '';
+
+    const sanitizedObj = {
+      ...userData,
+      id,
+      uid: id,
+      _id: userData._id || id,
+      role,
+      name,
+      displayName: name,
+      email,
+      token,
+      photoURL,
+      status: userData.status || 'active'
+    };
+
+    try {
+      localStorage.setItem('auth_user', JSON.stringify(sanitizedObj));
+      localStorage.setItem('bypass_user_profile', JSON.stringify(sanitizedObj));
+      localStorage.setItem('bypass_user_uid', id);
+      localStorage.setItem('bypass_user_name', name);
+      localStorage.setItem('bypass_user_email', email);
+      localStorage.setItem('bypass_user_role', role);
+      localStorage.setItem('bypass_user_photo', photoURL);
+      localStorage.setItem('auth_current_user_role', role);
+      if (token) {
+        localStorage.setItem('auth_jwt_token', token);
+      }
+      localStorage.setItem('last_app_activity', Date.now().toString());
+    } catch (e) {
+      console.warn('[AuthContext] storage error:', e);
+    }
+
+    const roleKey = normalizeRole(role);
+    const perms = ROLE_PERMISSIONS[roleKey as Role] || ROLE_PERMISSIONS.student || [];
+
+    setUser(sanitizedObj as any);
+    setStableProfile(sanitizedObj as any);
+    setStableAvailableProfiles([sanitizedObj as any]);
+    setStablePermissions(perms);
+    setLoading(false);
+
+    try {
+      if (typeof triggerAuthStateChanged === 'function') {
+        triggerAuthStateChanged();
+      }
+    } catch (e) {}
+
+    if (typeof window !== 'undefined') {
+      window.location.href = '/dashboard';
+    }
+  }, [setStableProfile, setStableAvailableProfiles, setStablePermissions]);
+
   useEffect(() => {
     // Strictly use in-memory persistence to avoid browser disk/cookies
     setPersistence(auth, inMemoryPersistence).catch(err => {
@@ -95,55 +199,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     let hasFired = false;
     const checkBypassAndSetUser = (firebaseUser: User | null, fromSubscription = false) => {
-      const bypassEmail = localStorage.getItem('bypass_user_email');
-      if (bypassEmail) {
-        const mockUser = {
-          uid: localStorage.getItem('bypass_user_uid') || 'system_vp_saikumari',
-          email: bypassEmail,
-          displayName: localStorage.getItem('bypass_user_name') || 'User',
-          photoURL: localStorage.getItem('bypass_user_photo') || '',
-          emailVerified: true
-        } as any;
-        setUser(mockUser);
+      const stored = getInitialStoredUser();
+      if (stored) {
+        setUser(stored as any);
+        setStableProfile(stored as any);
+        setStableAvailableProfiles([stored as any]);
+        const roleKey = normalizeRole(stored.role);
+        setStablePermissions(ROLE_PERMISSIONS[roleKey as Role] || ROLE_PERMISSIONS.student || []);
+        setLoading(false);
+        return;
+      }
 
-        // Instantly hydrate stored bypass profile so route guards do not bounce to login
-        const savedProfileStr = localStorage.getItem('bypass_user_profile');
-        if (savedProfileStr) {
-          try {
-            const parsedProfile = JSON.parse(savedProfileStr);
-            if (parsedProfile && (parsedProfile.email || parsedProfile.id || parsedProfile.uid)) {
-              setStableProfile(parsedProfile);
-              setStableAvailableProfiles([parsedProfile]);
-            }
-          } catch (e) {}
-        }
-
-        setLoading(true);
+      if (firebaseUser) {
+        const fUser = {
+          ...firebaseUser,
+          id: firebaseUser.uid || 'user',
+          uid: firebaseUser.uid || 'user'
+        };
+        setUser(fUser as any);
         const lastUid = localStorage.getItem('last_auth_uid');
-        if (lastUid && lastUid !== mockUser.uid) {
+        if (lastUid && lastUid !== firebaseUser.uid) {
           localStorage.removeItem('preferred_profile_id');
           setActiveProfileId(null);
         }
-        localStorage.setItem('last_auth_uid', mockUser.uid);
+        localStorage.setItem('last_auth_uid', firebaseUser.uid);
       } else {
-        setUser(firebaseUser);
-        if (!firebaseUser) {
-          setStableProfile(null);
-          setStableAvailableProfiles([]);
-          setStablePermissions([]);
-          setActiveProfileId(null);
-          if (fromSubscription || hasFired) {
-            setLoading(false);
-          }
-        } else {
-          setLoading(true);
-          const lastUid = localStorage.getItem('last_auth_uid');
-          if (lastUid && lastUid !== firebaseUser.uid) {
-            localStorage.removeItem('preferred_profile_id');
-            setActiveProfileId(null);
-          }
-          localStorage.setItem('last_auth_uid', firebaseUser.uid);
-        }
+        setUser(null);
+        setStableProfile(null);
+        setStableAvailableProfiles([]);
+        setStablePermissions([]);
+        setActiveProfileId(null);
+        setLoading(false);
       }
     };
 
@@ -167,6 +253,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
+    // If active stored user or bypass profile exists, hydrate immediately without waiting for remote timeouts
+    const stored = getInitialStoredUser();
+    if (stored) {
+      setStableProfile(stored as any);
+      setStableAvailableProfiles([stored as any]);
+      const roleKey = normalizeRole(stored.role);
+      setStablePermissions(ROLE_PERMISSIONS[roleKey as Role] || ROLE_PERMISSIONS.student || []);
+      setLoading(false);
+      return;
+    }
+
     const email = user.email ? user.email.toLowerCase().trim() : '';
     if (email) {
       // 1. Fetch user records matching email or parentEmail
@@ -178,7 +275,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const q4 = dbService.list('students', [where('email', '==', email)]);
       const q5 = dbService.list('staff', [where('email', '==', email)]);
 
-      Promise.all([q1, q2, q3, q4, q5]).then(async (results) => {
+      const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('firestore_timeout')), 2500));
+      Promise.race([Promise.all([q1, q2, q3, q4, q5]), timeoutPromise]).then(async (results: any) => {
         const usersAll = [...results[0], ...results[1]] as any[];
         const studentsAll = [...results[2], ...results[3]] as any[];
         const staffAll = (results[4] || []) as any[];
@@ -659,12 +757,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (resolved.length > 0) {
             setStableProfile(resolved[0]);
           }
+          setLoading(false);
         } catch (error) {
           console.error("Error matching student credentials:", error);
           setStableAvailableProfiles(unique);
           if (unique.length > 0) {
             setStableProfile(unique[0]);
           }
+          setLoading(false);
         }
       }).catch((error) => {
         console.error("Fatal error loading user profiles during auth setup:", error);
@@ -713,6 +813,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           };
           setStableAvailableProfiles([fallbackProfile]);
           setStableProfile(fallbackProfile);
+        }
+        setLoading(false);
+      }).catch((err) => {
+        console.warn("[AuthContext] Profile synchronization notice (using fallback):", err);
+        const savedProfileStr = localStorage.getItem('bypass_user_profile');
+        if (savedProfileStr) {
+          try {
+            const p = JSON.parse(savedProfileStr);
+            if (p) {
+              setStableProfile(p);
+              setStableAvailableProfiles([p]);
+            }
+          } catch (e) {}
         }
         setLoading(false);
       });
@@ -1530,7 +1643,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const isSuper = (rKey === 'super_admin' || isDevOrSys) && !forceTeacher && !isActuallyTeacher;
     
     return {
-      user, profile, loading,
+      user, profile, loading, login,
       isAdmin: (rKey === 'admin' || isSuper || isDevOrSys) && !forceTeacher && !isActuallyTeacher,
       isSuperAdmin: (isSuper || isDevOrSys) && !forceTeacher && !isActuallyTeacher,
       isTeacher: isActuallyTeacher,
@@ -1544,7 +1657,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       availableProfiles, switchProfile, hasPermission,
       teacherAssignments: isActuallyTeacher ? { classId: profile?.classId, batchId: profile?.batchId, subjects: profile?.subjects || [] } : null
     };
-  }, [user, profile, loading, availableProfiles, hasPermission]);
+  }, [user, profile, loading, login, availableProfiles, hasPermission]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

@@ -869,26 +869,43 @@ async function processNode(session: BotSession, node: any): Promise<void> {
  */
 async function queueBotMessage(phoneNumber: string, text: string, options: any = {}): Promise<void> {
   try {
-    const dbAdmin = getDbAdmin();
     let to = phoneNumber;
     if (!to.includes('@')) {
       to = `${to.replace(/\D/g, '')}@s.whatsapp.net`;
     }
 
-    const payload = {
+    const { createQueueItem } = await import('../../server/models/WhatsAppQueue.js');
+    await createQueueItem({
+      recipient: to,
       to,
+      message: text,
       text,
-      status: 'pending',
-      priority: 1, // High priority
-      type: 'bot',
       options,
-      attempts: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
+      type: 'bot',
+      priority: 0,
+      status: 'pending'
+    });
 
-    await dbAdmin.collection('whatsapp_queue').add(payload);
-    console.log(`[Bot Router] Message successfully queued in whatsapp_queue for: ${to}`);
+    const { isDatabaseDenied, getDbAdmin } = await import('../../server/firebaseAdmin.js');
+    if (!isDatabaseDenied()) {
+      const dbAdmin = getDbAdmin();
+      if (dbAdmin) {
+        const payload = {
+          to,
+          text,
+          status: 'pending',
+          priority: 0,
+          type: 'bot',
+          options,
+          attempts: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        await dbAdmin.collection('whatsapp_queue').add(payload).catch(() => {});
+      }
+    }
+
+    console.log(`[Bot Router] Message successfully queued for: ${to}`);
   } catch (err) {
     console.error("[Bot Router] Error writing to queue collection:", err);
   }

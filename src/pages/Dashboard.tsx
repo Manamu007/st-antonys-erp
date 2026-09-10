@@ -33,7 +33,7 @@ import {
   Search
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { dbService, checkQuotaStatus, handleFirestoreError, OperationType } from '../services/dbService';
+import { dbService } from '../services/dbService';
 import { whatsappService } from '../services/whatsappService';
 import { generateAIContent, getStrategicAnalysis } from '../services/aiService';
 import { uploadService } from '../services/uploadService';
@@ -54,8 +54,6 @@ import {
   Pie, 
   Cell 
 } from 'recharts';
-import { where, orderBy, limit, query, collection, onSnapshot } from 'firebase/firestore';
-import { db, auth } from '../firebase';
 
 import NoticeBoard from '../components/NoticeBoard';
 import UserActivityPanel from '../components/UserActivityPanel';
@@ -96,17 +94,14 @@ const VerifiedTodayList: React.FC = () => {
         const today = new Date().toISOString().split('T')[0];
         
         // Fetch Today's Staff Attendance
-        const staffAttendance = await dbService.list('staff_attendance', [
-          where('date', '==', today),
-          where('status', '==', 'present')
-        ]);
+        const allStaffAtt = await dbService.list('staff_attendance').catch(() => []);
+        const staffAttendance = allStaffAtt.filter((a: any) => a.date === today && a.status === 'present');
         
         // Fetch Today's Student Permissions if authorized to prevent permission-denied logs
         let studentPermissions: any[] = [];
         if (isAdmin || isPrincipal || isVicePrincipal || hasPermission('attendance_manage')) {
-          studentPermissions = await dbService.list('student_permissions', [
-            where('date', '==', today)
-          ]).catch(() => []);
+          const allPerms = await dbService.list('student_permissions').catch(() => []);
+          studentPermissions = allPerms.filter((p: any) => p.date === today);
         }
 
         // Get Users to display names/photos
@@ -309,6 +304,7 @@ const Dashboard: React.FC = () => {
 
   useEffect(() => {
     const checkWaStatus = async () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
       try {
         const res = await fetch('/api/whatsapp/status');
         if (res.ok) {
@@ -320,7 +316,7 @@ const Dashboard: React.FC = () => {
       }
     };
     checkWaStatus();
-    const interval = setInterval(checkWaStatus, 5000);
+    const interval = setInterval(checkWaStatus, 30000);
     return () => clearInterval(interval);
   }, []);
 
@@ -378,15 +374,15 @@ const Dashboard: React.FC = () => {
     setSelectedConcessionId('');
     setCustomConcessionAmount('');
     try {
-      const [classesData, concessionsData, studentsData, batchesData] = await Promise.all([
-        dbService.list('classes', [limit(200)]),
-        dbService.list('concessions', [limit(200)]),
-        dbService.list('students', [limit(3000)]),
-        dbService.list('batches', [limit(200)])
+      const [classesData, concessionsData, studentsRes, batchesData] = await Promise.all([
+        dbService.list('classes'),
+        dbService.list('concessions'),
+        fetch('/api/students?limit=500').then(r => r.ok ? r.json() : []).catch(() => []),
+        dbService.list('batches')
       ]);
       setConcessionClasses(classesData || []);
       setAllConcessions(concessionsData || []);
-      setStudentsForSearch(studentsData || []);
+      setStudentsForSearch(Array.isArray(studentsRes) ? studentsRes : []);
       setConcessionBatches(batchesData || []);
     } catch (e) {
       console.error("Error loading concession metadata:", e);
@@ -407,11 +403,13 @@ const Dashboard: React.FC = () => {
     
     const fetchClassStudents = async () => {
       try {
-        const studentsData = await dbService.list('students', [
-          where('classId', '==', selectedConcessionClass),
-          limit(200)
-        ]);
-        setConcessionClassStudents(studentsData || []);
+        const res = await fetch(`/api/students?classId=${encodeURIComponent(selectedConcessionClass)}`);
+        if (res.ok) {
+          const studentsData = await res.json();
+          setConcessionClassStudents(Array.isArray(studentsData) ? studentsData : []);
+        } else {
+          setConcessionClassStudents([]);
+        }
       } catch (e) {
         console.error("Error loading class students:", e);
         toast.error("Failed to load class students");
@@ -496,23 +494,9 @@ const Dashboard: React.FC = () => {
     
     if (!hasLogPerm && !isManagement) return;
 
-    whatsappService.getStats().then(data => {
-      if (data) {
-        const dVal = Math.max(0, Number(data.delivered) || 0);
-        const pVal = Math.max(0, Number(data.processing) || 0);
-        const fVal = Math.max(0, Number(data.failed) || 0);
-        const sVal = Math.max(0, Number(data.sent) || 0);
-        setWaStats({
-          total: dVal + pVal + fVal + sVal,
-          delivered: dVal,
-          processing: pVal,
-          failed: fVal
-        });
-      }
-    }).catch(() => {});
-
-    if (dbService.isPoisoned()) {
-      dbService.get('whatsapp_stats', 'summary').then(data => {
+    const fetchWaStats = async () => {
+      try {
+        const data = await whatsappService.getStats();
         if (data) {
           const dVal = Math.max(0, Number(data.delivered) || 0);
           const pVal = Math.max(0, Number(data.processing) || 0);
@@ -525,33 +509,17 @@ const Dashboard: React.FC = () => {
             failed: fVal
           });
         }
-      });
-      return;
-    }
+      } catch (err) {
+        console.warn("Could not fetch WA stats:", err);
+      }
+    };
 
-    try {
-      const unsubscribe = dbService.subscribeDoc(
-        'whatsapp_stats',
-        'summary',
-        (data) => {
-          if (data) {
-            const dVal = Math.max(0, Number(data.delivered) || 0);
-            const pVal = Math.max(0, Number(data.processing) || 0);
-            const fVal = Math.max(0, Number(data.failed) || 0);
-            const sVal = Math.max(0, Number(data.sent) || 0);
-            setWaStats({
-              total: dVal + pVal + fVal + sVal,
-              delivered: dVal,
-              processing: pVal,
-              failed: fVal
-            });
-          }
-        }
-      );
-      return () => unsubscribe();
-    } catch (e) {
-      console.error("Dashboard Stats Subscription restricted or failed:", e);
-    }
+    fetchWaStats();
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      fetchWaStats();
+    }, 45000);
+    return () => clearInterval(interval);
   }, [profile?.uid, isAdmin, isPrincipal, isVicePrincipal, isSuperAdmin, hasPermission]);
 
   const [loading, setLoading] = useState(true);
@@ -574,8 +542,8 @@ const Dashboard: React.FC = () => {
 
     const fetchSavedInsights = async () => {
       try {
-        const insights = await dbService.list('insights', [orderBy('createdAt', 'desc'), limit(3)]);
-        setSavedInsights(insights);
+        const insights = await dbService.list('insights');
+        setSavedInsights((insights || []).slice(0, 3));
       } catch (error) {
         console.error("Error fetching saved insights:", error);
       }
@@ -639,793 +607,146 @@ const Dashboard: React.FC = () => {
   };
 
   useEffect(() => {
-    let unsubStudents: (() => void) | undefined;
-    let unsubStaff: (() => void) | undefined;
-    let unsubUsersStaff: (() => void) | undefined;
+    let isMounted = true;
 
     const fetchStats = async () => {
-      // Early exit if quota already known to be exceeded to prevent browser hanging on timed out requests
-      if (checkQuotaStatus()) {
-        setLoading(false);
-        return;
-      }
-
       try {
         setLoading(true);
         setIndexError(null);
-        let myStudentIds: string[] = [];
-        let localTimetableSlots: any[] | null = null;
-        let playSchoolTotalCount = 0;
-        const getTimetableSlots = async () => {
-          if (localTimetableSlots) return localTimetableSlots;
-          localTimetableSlots = await dbService.list('timetableSlots', [limit(100)]);
-          return localTimetableSlots;
-        };
 
-        const activeYear = settings?.currentAcademicYear || '2026-27';
-        const assignedClassIds = new Set<string>();
-        const assignedBatchIds = new Set<string>();
+        // 1. Fetch dashboard stats via local Express / MongoDB REST API
+        const roleParam = encodeURIComponent(profile?.role || (user as any)?.role || '');
+        const userParam = encodeURIComponent(profile?.uid || profile?.id || (user as any)?.uid || (user as any)?.id || '');
+        const res = await fetch(`/api/dashboard/stats?role=${roleParam}&userId=${userParam}`);
+        if (res.ok) {
+          const payload = await res.json();
+          const s = payload.stats || payload;
+          if (isMounted) {
+            setStats((prev: any) => ({
+              ...prev,
+              students: s.students || 0,
+              teachers: s.teachers || 0,
+              attendance: s.attendance ?? 100,
+              recentPayments: s.recentPayments || [],
+              pendingLeaves: s.pendingLeaves || 0,
+              presentCount: s.presentCount || 0,
+              absentCount: s.absentCount || 0,
+              fees: s.fees || 0,
+              feesCollected: s.feesCollected || 0,
+              feesPending: s.feesPending || 0,
+              todayCollection: s.todayCollection || 0,
+              totalExpenses: s.totalExpenses || 0
+            }));
 
-        if (profile?.role === 'play_school_incharge') {
-          const [classesList, batchList] = await Promise.all([
+            if (s.revenueDetails) {
+              setRevenueDetails(s.revenueDetails);
+            }
+            if (s.waStats) {
+              setWaStats(s.waStats);
+            }
+          }
+        }
+
+        // 2. Fetch Timetable & Subjects & Batches data for dashboard
+        try {
+          const [ttData, subjectsData, batchesData, classesList, timetableSettings] = await Promise.all([
+            dbService.list('timetableSlots').catch(() => []),
+            dbService.list('subjects').catch(() => []),
+            dbService.list('batches').catch(() => []),
             dbService.list('classes').catch(() => []),
-            dbService.list('batches').catch(() => [])
+            dbService.get('settings', 'timetable').catch(() => null)
           ]);
 
-          const initialClassIds = [
-            profile?.classId,
-            ...(profile as any)?.classIds || []
-          ].filter(Boolean);
-          const initialBatchIds = [
-            profile?.batchId,
-            ...(profile as any)?.batchIds || []
-          ].filter(Boolean);
+          if (isMounted) {
+            setSubjects(subjectsData || []);
+            setBatches(batchesData || []);
 
-          initialClassIds.forEach(id => assignedClassIds.add(id));
-          initialBatchIds.forEach(id => assignedBatchIds.add(id));
+            const rawSlots = (timetableSettings as any)?.slots || [
+              { label: 'P1', start: '08:00', end: '09:00' },
+              { label: 'P2', start: '09:00', end: '10:00' },
+              { label: 'Short Break', start: '10:00', end: '10:15', isBreak: true },
+              { label: 'P3', start: '10:15', end: '11:15' },
+              { label: 'P4', start: '11:15', end: '12:15' },
+              { label: 'Lunch', start: '12:15', end: '01:00', isBreak: true },
+              { label: 'P5', start: '01:00', end: '02:00' },
+              { label: 'P6', start: '02:00', end: '03:00' },
+              { label: 'P7', start: '03:00', end: '04:00' },
+            ];
 
-          if (Array.isArray(profile?.subjectAssignments)) {
-            profile.subjectAssignments.forEach((assignment: any) => {
-              if (assignment?.classId) assignedClassIds.add(assignment.classId);
-              if (assignment?.batchId) assignedBatchIds.add(assignment.batchId);
-            });
-          }
-
-          batchList.forEach((b: any) => {
-            if (b.classTeacherId === profile?.uid) {
-              if (b.id) assignedBatchIds.add(b.id);
-              if (b.classId) assignedClassIds.add(b.classId);
-            }
-          });
-
-          // Fallback to nursery/lkg/ukg check if no classes or batches are explicitly assigned
-          if (assignedClassIds.size === 0 && assignedBatchIds.size === 0) {
-            classesList
-              .filter((c: any) => c.name && (
-                c.name.toLowerCase().includes('nursery') ||
-                c.name.toLowerCase().includes('lkg') ||
-                c.name.toLowerCase().includes('ukg')
-              ))
-              .forEach((c: any) => assignedClassIds.add(c.id));
-
-            batchList
-              .filter((b: any) => b.classId && assignedClassIds.has(b.classId))
-              .forEach((b: any) => assignedBatchIds.add(b.id));
-          } else {
-            // Ensure any batch's classId is also in assignedClassIds
-            batchList.forEach((b: any) => {
-              if (b.id && assignedBatchIds.has(b.id) && b.classId) {
-                assignedClassIds.add(b.classId);
-              }
-            });
-          }
-        }
-
-        // Get student count efficiently and subscribe to updates for the current academic year
-        let studentCount = 0;
-
-        if (isStudent || isParent) {
-          // Students and parents are zero-trust roles and do not load or subscribe to general student stats
-          studentCount = 0;
-        } else if (profile?.role === 'play_school_incharge') {
-          const playSchoolStudents = await dbService.list('students', []).catch(() => []);
-
-          const filteredStudents = playSchoolStudents.filter((s: any) => {
-            if (!s) return false;
-            const status = (s.status || 'active').toLowerCase().trim();
-            if (status === 'inactive' || status === 'deleted' || status === 'transferred' || status === 'archived') return false;
-            return assignedClassIds.has(s.classId) || assignedBatchIds.has(s.batchId);
-          });
-
-          studentCount = filteredStudents.length;
-          playSchoolTotalCount = studentCount;
-          myStudentIds = filteredStudents.map((s: any) => s.id || s.uid).filter(Boolean);
-        } else if (isTeacher && profile?.uid) {
-          const [ttData, bData] = await Promise.all([
-            getTimetableSlots(),
-            dbService.list('batches').catch(() => [])
-          ]);
-          
-          const matchIds = [
-            profile?.uid,
-            profile?.id,
-            (profile as any)?.staffId,
-            user?.uid,
-            profile?.email,
-            user?.email
-          ].filter(Boolean).map(id => String(id).toLowerCase().trim());
-
-          const matchNames = [
-            profile?.name,
-            (profile as any)?.displayName,
-            user?.displayName
-          ].filter(Boolean).map(n => String(n).toLowerCase().trim());
-
-          const assignedBatchIds = new Set<string>();
-          const assignedClassIds = new Set<string>();
-
-          // Check profile direct assignments
-          if (profile?.batchId) assignedBatchIds.add(String(profile.batchId));
-          if (Array.isArray(profile?.batchIds)) {
-            profile.batchIds.forEach((id: string) => { if (id) assignedBatchIds.add(String(id)); });
-          }
-          if ((profile as any)?.classTeacherBatchId) assignedBatchIds.add(String((profile as any).classTeacherBatchId));
-          if (profile?.classId) assignedClassIds.add(String(profile.classId));
-          if (Array.isArray(profile?.classIds)) {
-            profile.classIds.forEach((id: string) => { if (id) assignedClassIds.add(String(id)); });
-          }
-          if (Array.isArray(profile?.subjectAssignments)) {
-            profile.subjectAssignments.forEach((sa: any) => {
-              if (sa?.batchId) assignedBatchIds.add(String(sa.batchId));
-              if (sa?.classId) assignedClassIds.add(String(sa.classId));
-            });
-          }
-
-          // Check batches from Academics module
-          bData.forEach((b: any) => {
-            if (!b) return;
-            const bId = String(b.id || '');
-            const bClassId = String(b.classId || '');
-            const bCTId = b.classTeacherId ? String(b.classTeacherId).toLowerCase().trim() : '';
-            const bCT = b.classTeacher ? String(b.classTeacher).toLowerCase().trim() : '';
-            const bCTN = b.classTeacherName ? String(b.classTeacherName).toLowerCase().trim() : '';
-            const bTId = b.teacherId ? String(b.teacherId).toLowerCase().trim() : '';
-            const bT = b.teacher ? String(b.teacher).toLowerCase().trim() : '';
-            const bTN = b.teacherName ? String(b.teacherName).toLowerCase().trim() : '';
-
-            let isAssigned = false;
-            if (bCTId && matchIds.includes(bCTId)) isAssigned = true;
-            if (bCT && matchNames.includes(bCT)) isAssigned = true;
-            if (bCTN && matchNames.includes(bCTN)) isAssigned = true;
-            if (bTId && matchIds.includes(bTId)) isAssigned = true;
-            if (bT && matchNames.includes(bT)) isAssigned = true;
-            if (bTN && matchNames.includes(bTN)) isAssigned = true;
-
-            if (isAssigned && bId) {
-              assignedBatchIds.add(bId);
-              if (bClassId) assignedClassIds.add(bClassId);
-            }
-          });
-
-          // Check timetable slots
-          ttData.forEach((tt: any) => {
-            if (!tt) return;
-            const ttBatchId = tt.batchId ? String(tt.batchId) : '';
-            const ttClassId = tt.classId ? String(tt.classId) : '';
-            const hasTeacher = (tt.periods || []).some((p: any) => {
-              const pTId = p.teacherId ? String(p.teacherId).toLowerCase().trim() : '';
-              const pTN = p.teacherName ? String(p.teacherName).toLowerCase().trim() : '';
-              return (pTId && matchIds.includes(pTId)) || (pTN && matchNames.includes(pTN));
-            });
-            if (hasTeacher) {
-              if (ttBatchId) assignedBatchIds.add(ttBatchId);
-              if (ttClassId) assignedClassIds.add(ttClassId);
-            }
-          });
-
-          // Link any batch whose classId is assigned
-          bData.forEach((b: any) => {
-            if (!b) return;
-            const bId = String(b.id || '');
-            const bClassId = String(b.classId || '');
-            if (bId && assignedBatchIds.has(bId) && bClassId) {
-              assignedClassIds.add(bClassId);
-            }
-            if (bClassId && assignedClassIds.has(bClassId) && bId) {
-              assignedBatchIds.add(bId);
-            }
-          });
-
-          const myStudentsList = await dbService.list('students', []).catch(() => []);
-          
-          const targetYearNorm = normalizeYear(activeYear);
-          const filteredMyStudents = myStudentsList.filter((s: any) => {
-            if (!s) return false;
-            const status = (s.status || 'active').toLowerCase().trim();
-            if (status === 'inactive' || status === 'deleted' || status === 'transferred' || status === 'archived') return false;
-            const sBatch = s.batchId ? String(s.batchId) : '';
-            const sClass = s.classId ? String(s.classId) : '';
-            const matchesAssignment = (sBatch && assignedBatchIds.has(sBatch)) || (sClass && assignedClassIds.has(sClass));
-            if (!matchesAssignment) return false;
-            return !s.academicYear || normalizeYear(s.academicYear) === targetYearNorm;
-          });
-          
-          studentCount = filteredMyStudents.length;
-          myStudentIds = filteredMyStudents.map((s: any) => s.id || s.uid).filter(Boolean);
-        } else {
-          const allStudents = await dbService.list('students', []).catch(() => []);
-          const activeStudents = (allStudents || []).filter((s: any) => {
-            if (!s) return false;
-            const status = (s.status || 'active').toLowerCase().trim();
-            return status !== 'inactive' && status !== 'deleted' && status !== 'transferred' && status !== 'archived';
-          });
-          const targetYearNorm = normalizeYear(activeYear);
-          const yearMatched = activeStudents.filter((s: any) => !s.academicYear || normalizeYear(s.academicYear) === targetYearNorm);
-          studentCount = yearMatched.length > 0 ? yearMatched.length : activeStudents.length;
-        }
-
-        // Get staff counts efficiently
-        let teacherCount = 0;
-        if (!isTeacher && !isStudent && !isParent) {
-          const batchesForStaff = profile?.role === 'play_school_incharge'
-            ? await dbService.list('batches').catch(() => [])
-            : [];
-
-          const [latestUsers, latestStaff] = await Promise.all([
-            dbService.list('users', []).catch(() => []),
-            dbService.list('staff', []).catch(() => [])
-          ]);
-          
-          const initialUnifiedMap = new Map<string, any>();
-          latestStaff.forEach((s: any) => {
-            if (s && (s.uid || s.id)) {
-              initialUnifiedMap.set(s.uid || s.id, { ...s, status: s.status || 'active' });
-            }
-          });
-          latestUsers.forEach((u: any) => {
-            if (u && (u.uid || u.id)) {
-              const role = (u.role || '').toLowerCase().trim();
-              if (role !== 'student' && role !== 'parent') {
-                const sId = u.uid || u.id;
-                const existing = initialUnifiedMap.get(sId);
-                if (existing) {
-                  initialUnifiedMap.set(sId, { ...u, ...existing, uid: sId });
-                } else {
-                  initialUnifiedMap.set(sId, { ...u, uid: sId, status: u.status || 'active' });
+            const uniqueSlots: any[] = [];
+            const seenLabels = new Set();
+            rawSlots.forEach((slot: any) => {
+              if (slot && slot.label) {
+                const trimmedLabel = slot.label.trim();
+                if (!seenLabels.has(trimmedLabel)) {
+                  seenLabels.add(trimmedLabel);
+                  uniqueSlots.push({ ...slot, label: trimmedLabel });
                 }
               }
-            }
-          });
-          let initialStaff = Array.from(initialUnifiedMap.values())
-            .filter((s: any) => (s.status || 'active') === 'active');
-          if (profile?.role === 'play_school_incharge') {
-            initialStaff = initialStaff.filter((t: any) => {
-              const isSelf = t.id === profile?.uid || t.uid === profile?.uid || t.role === 'play_school_incharge';
-              const hasAsg = Array.isArray(t.subjectAssignments) && t.subjectAssignments.some((asg: any) => 
-                (asg?.classId && assignedClassIds.has(asg.classId)) || (asg?.batchId && assignedBatchIds.has(asg.batchId))
-              );
-              const isClassTeach = batchesForStaff.some((b: any) => 
-                b.classTeacherId === (t.id || t.uid) && 
-                (assignedClassIds.has(b.classId) || assignedBatchIds.has(b.id))
-              );
-              const hasClassId = t.classId && assignedClassIds.has(t.classId);
-              const hasBatchId = t.batchId && assignedBatchIds.has(t.batchId);
-              return isSelf || hasAsg || isClassTeach || hasClassId || hasBatchId;
             });
-          }
-          teacherCount = initialStaff.length;
-        }
+            setPeriodSlots(uniqueSlots);
 
-        // Calculate today's attendance percentage
-        const today = new Date().toISOString().split('T')[0];
-        let todayAttendanceCount = 0;
-        let todayAbsentCount = 0;
-        let attendanceRate: any = 0;
+            if (isTeacher) {
+              const mySchedule = (ttData as any[]).flatMap(tt => {
+                const batch = (batchesData || []).find(b => b && b.id === tt.batchId);
+                const cls = (classesList || []).find((c: any) => c && (c.id === batch?.classId || c.id === (batch as any)?.class));
+                const className = cls?.name || (batch as any)?.className;
+                const batchName = batch?.name;
+                const classAndBatchName = className && batchName && className !== batchName
+                  ? `${className} - ${batchName}`
+                  : (batchName || className || 'Class');
 
-        const allAttendanceRecords = await dbService.list('attendance', []).catch(() => []);
-        
-        if (isTeacher && profile?.uid) {
-          const todayAttendanceRecords = allAttendanceRecords.filter((rec: any) => rec.date === today);
-          
-          const todayMyAttendance = todayAttendanceRecords.filter((rec: any) => 
-            myStudentIds.includes(rec.studentId)
-          );
-          
-          todayAttendanceCount = todayMyAttendance.filter((rec: any) => rec.status === 'present').length;
-          todayAbsentCount = todayMyAttendance.filter((rec: any) => rec.status === 'absent').length;
-
-          const totalMarked = todayAttendanceCount + todayAbsentCount;
-          if (totalMarked > 0) {
-            attendanceRate = Math.round((todayAttendanceCount / totalMarked) * 100);
-          } else if (studentCount > 0) {
-            attendanceRate = Math.round((todayAttendanceCount / studentCount) * 100);
-          } else {
-            attendanceRate = 100;
-          }
-          
-          const activeYearDetails = settings?.academicYearDetails?.find((y: any) => y.name === activeYear);
-          const academicYearStartDate = activeYearDetails?.startDate || `${activeYear.slice(0, 4)}-06-01`;
-
-          const myAttendanceRecords = await dbService.list('staff_attendance', [
-            where('userId', '==', profile.uid)
-          ]).catch(() => []);
-
-          const filteredRecords = myAttendanceRecords.filter((rec: any) => rec.date >= academicYearStartDate);
-          const myPresentCount = filteredRecords.filter((rec: any) => rec.status === 'present').length;
-          const myAbsentCount = filteredRecords.filter((rec: any) => rec.status === 'absent').length;
-
-          const totalMyDays = myPresentCount + myAbsentCount;
-          if (totalMyDays > 0) {
-            attendanceRate = Math.round((myPresentCount / totalMyDays) * 100);
-          }
-        } else if (isStudent && profile?.uid) {
-          const myRecords = allAttendanceRecords.filter((rec: any) => rec.studentId === profile.uid || rec.studentId === (profile as any).id);
-          const myPresent = myRecords.filter((r: any) => r.status === 'present').length;
-          const myAbsent = myRecords.filter((r: any) => r.status === 'absent').length;
-          const total = myPresent + myAbsent;
-          attendanceRate = total > 0 ? Math.round((myPresent / total) * 100) : 100;
-          todayAttendanceCount = myPresent;
-          todayAbsentCount = myAbsent;
-        } else if (isParent) {
-          const currentEmail = profile?.email || auth.currentUser?.email;
-          let parentStudentId = '';
-          if (currentEmail) {
-            const kids = await dbService.list('students', [where('parentEmail', '==', currentEmail), limit(1)]).catch(() => []);
-            if (kids && kids.length > 0) {
-              parentStudentId = kids[0].id || kids[0].uid;
-            }
-          }
-          if (parentStudentId) {
-            const myRecords = allAttendanceRecords.filter((rec: any) => rec.studentId === parentStudentId);
-            const myPresent = myRecords.filter((r: any) => r.status === 'present').length;
-            const myAbsent = myRecords.filter((r: any) => r.status === 'absent').length;
-            const total = myPresent + myAbsent;
-            attendanceRate = total > 0 ? Math.round((myPresent / total) * 100) : 100;
-            todayAttendanceCount = myPresent;
-            todayAbsentCount = myAbsent;
-          } else {
-            attendanceRate = 100;
-          }
-        } else if (profile?.role === 'play_school_incharge') {
-          let playSchoolPresentCount = 0;
-          let playSchoolAbsentCount = 0;
-
-          if (myStudentIds.length > 0) {
-            const todayPlaySchoolAttendance = allAttendanceRecords.filter((rec: any) => 
-              rec.date === today && myStudentIds.includes(rec.studentId)
-            );
-
-            playSchoolPresentCount = todayPlaySchoolAttendance.filter((rec: any) => rec.status === 'present').length;
-            playSchoolAbsentCount = todayPlaySchoolAttendance.filter((rec: any) => rec.status === 'absent').length;
-
-            const totalMarked = playSchoolPresentCount + playSchoolAbsentCount;
-            if (totalMarked > 0) {
-              attendanceRate = Math.round((playSchoolPresentCount / totalMarked) * 100);
-            } else if (playSchoolTotalCount > 0) {
-              attendanceRate = Math.round((playSchoolPresentCount / playSchoolTotalCount) * 100);
-            } else {
-              attendanceRate = 100;
-            }
-          } else {
-            attendanceRate = 100;
-          }
-
-          todayAttendanceCount = playSchoolPresentCount;
-          todayAbsentCount = playSchoolAbsentCount;
-        } else {
-          const todayRecords = allAttendanceRecords.filter((rec: any) => rec.date === today);
-          todayAttendanceCount = todayRecords.filter((rec: any) => rec.status === 'present').length;
-          todayAbsentCount = todayRecords.filter((rec: any) => rec.status === 'absent').length;
-          const totalMarkedToday = todayAttendanceCount + todayAbsentCount;
-
-          if (totalMarkedToday > 0) {
-            attendanceRate = Math.round((todayAttendanceCount / totalMarkedToday) * 100);
-          } else if (allAttendanceRecords.length > 0) {
-            const datesWithAttendance = Array.from(new Set(allAttendanceRecords.map((r: any) => r.date).filter(Boolean))).sort().reverse();
-            if (datesWithAttendance.length > 0) {
-              const latestDate = datesWithAttendance[0];
-              const latestRecords = allAttendanceRecords.filter((r: any) => r.date === latestDate);
-              const present = latestRecords.filter((r: any) => r.status === 'present').length;
-              const total = latestRecords.filter((r: any) => r.status === 'present' || r.status === 'absent').length;
-              attendanceRate = total > 0 ? Math.round((present / total) * 100) : 100;
-            } else {
-              attendanceRate = 100;
-            }
-          } else {
-            attendanceRate = 100;
-          }
-        }
-
-        // Bounds check: start from academic year starting date onwards, and hide if student holiday
-        const currentYearName = settings?.currentAcademicYear || '2026-27';
-        const currentYearDetails = settings?.academicYearDetails?.find((y: any) => y.name === currentYearName);
-        const academicYearStartDate = currentYearDetails?.startDate || `${currentYearName.slice(0, 4)}-06-01`;
-
-        const holidayList = await dbService.list('holidays').catch(() => []);
-        const isTodayHolidayCombined = holidayList.some((h: any) => {
-          const start = h.date;
-          const end = h.toDate || h.date;
-          return today >= start && today <= end && h.type !== 'working_day';
-        });
-
-        const isBeforeAcademicYear = today < academicYearStartDate;
-
-        if (isBeforeAcademicYear) {
-          attendanceRate = 'N/A';
-          todayAttendanceCount = 0;
-          todayAbsentCount = 0;
-        } else if (isTodayHolidayCombined) {
-          attendanceRate = 'Holiday';
-          todayAttendanceCount = 0;
-          todayAbsentCount = 0;
-        }
-
-        // Load collections to compute fee collection status
-        const activeYearForRevenue = settings?.currentAcademicYear || '2026-27';
-        
-        let allStudentsList: any[] = [];
-        let allFeeStructures: any[] = [];
-        let allConcessions: any[] = [];
-        let allClasses: any[] = [];
-        let allBatches: any[] = [];
-        let allPayments: any[] = [];
-        let allFeeDocs: any[] = [];
-
-        const hasFinancialAccess = showFinancials || isStudent || isParent;
-
-        if (hasFinancialAccess) {
-          if (isStudent || isParent) {
-            // For student and parent, load ONLY their own student record and payments to make it extremely fast and secure!
-            let targetStudent: any = null;
-            if (isStudent && profile?.uid) {
-              targetStudent = profile;
-            } else if (isParent) {
-              const currentEmail = profile?.email || auth.currentUser?.email;
-              if (currentEmail) {
-                const kids = await dbService.list('students', [where('parentEmail', '==', currentEmail), limit(1)]).catch(() => []);
-                if (kids && kids.length > 0) {
-                  targetStudent = kids[0];
-                }
-              }
-            }
-
-            if (targetStudent) {
-              const sId = targetStudent.id || targetStudent.uid;
-              allStudentsList = [targetStudent];
-              const [feesData, concessionsData, classesData, batchesData, paymentsData, feeDocs] = await Promise.all([
-                dbService.list('feeStructures').catch(() => []),
-                dbService.list('concessions').catch(() => []),
-                dbService.list('classes').catch(() => []),
-                dbService.list('batches').catch(() => []),
-                dbService.list('payments', [where('studentId', '==', sId)]).catch(() => []),
-                dbService.list('fees', [where('studentId', '==', sId)]).catch(() => [])
-              ]);
-              allFeeStructures = feesData || [];
-              allConcessions = concessionsData || [];
-              allClasses = classesData || [];
-              allBatches = batchesData || [];
-              allFeeDocs = feeDocs || [];
-
-              const mergedPayments: any[] = [...(paymentsData || [])];
-              const seenRefs = new Set(mergedPayments.map(p => p.id || p.reference).filter(Boolean));
-              (feeDocs || []).forEach((f: any) => {
-                if (f.paymentHistory && Array.isArray(f.paymentHistory)) {
-                  f.paymentHistory.forEach((ph: any, idx: number) => {
-                    const ref = ph.reference || ph.orderId || ph.transactionId || `ph_${f.id || f.studentId}_${idx}`;
-                    if (!seenRefs.has(ref) && !seenRefs.has(ph.id)) {
-                      seenRefs.add(ref);
-                      mergedPayments.push({
-                        id: ph.id || ref,
-                        studentId: ph.studentId || f.studentId || sId,
-                        amount: Number(ph.amount) || 0,
-                        date: ph.date || ph.paymentDate || f.updatedAt || f.createdAt || '',
-                        method: ph.method || ph.paymentMethod || 'Online',
-                        reference: ref,
-                        academicYear: ph.academicYear || f.academicYear || activeYearForRevenue,
-                        component: ph.component || 'Fees'
-                      });
-                    }
-                  });
-                }
+                return (tt.periods || [])
+                  .filter((p: any) => p.teacherId === profile?.uid || p.teacherId === profile?.id)
+                  .map((p: any) => ({ ...p, batchName: classAndBatchName }));
               });
-              allPayments = mergedPayments;
+              setTodayTimetable(mySchedule);
+            } else if (isStudent && profile?.batchId) {
+              const myBatchTT = (ttData as any[]).find(tt => tt.batchId === profile.batchId);
+              setTodayTimetable(myBatchTT?.periods || []);
             }
-          } else {
-            // For admins/finance staff, load everything
-            const [
-              studentsData,
-              feesData,
-              concessionsData,
-              classesData,
-              batchesData,
-              paymentsData,
-              feeDocs
-            ] = await Promise.all([
-              dbService.list('students').catch(() => []),
-              dbService.list('feeStructures').catch(() => []),
-              dbService.list('concessions').catch(() => []),
-              dbService.list('classes').catch(() => []),
-              dbService.list('batches').catch(() => []),
-              dbService.list('payments').catch(() => []),
-              dbService.list('fees').catch(() => [])
-            ]);
-            allStudentsList = studentsData || [];
-            allFeeStructures = feesData || [];
-            allConcessions = concessionsData || [];
-            allClasses = classesData || [];
-            allBatches = batchesData || [];
-            allFeeDocs = feeDocs || [];
-
-            const mergedPayments: any[] = [...(paymentsData || [])];
-            const seenRefs = new Set(mergedPayments.map(p => p.id || p.reference).filter(Boolean));
-            (feeDocs || []).forEach((f: any) => {
-              if (f.paymentHistory && Array.isArray(f.paymentHistory)) {
-                f.paymentHistory.forEach((ph: any, idx: number) => {
-                  const ref = ph.reference || ph.orderId || ph.transactionId || `ph_${f.id || f.studentId}_${idx}`;
-                  if (!seenRefs.has(ref) && !seenRefs.has(ph.id)) {
-                    seenRefs.add(ref);
-                    mergedPayments.push({
-                      id: ph.id || ref,
-                      studentId: ph.studentId || f.studentId || f.studentUid || '',
-                      amount: Number(ph.amount) || 0,
-                      date: ph.date || ph.paymentDate || f.updatedAt || f.createdAt || '',
-                      method: ph.method || ph.paymentMethod || 'Online',
-                      reference: ref,
-                      academicYear: ph.academicYear || f.academicYear || activeYearForRevenue,
-                      component: ph.component || 'Fees'
-                    });
-                  }
-                });
-              }
-            });
-            allPayments = mergedPayments;
           }
+        } catch (ttErr) {
+          console.warn('Timetable loading warning:', ttErr);
         }
 
-        const studentMap = new Map<string, string>();
-        if (allStudentsList && allStudentsList.length > 0) {
-          allStudentsList.forEach((s: any) => {
-            const sId = s.id || s.uid;
-            if (sId) {
-              studentMap.set(sId, s.name || s.studentName || 'Student');
-            }
-          });
-        }
-
-        const recentPayments = (allPayments || [])
-          .filter((p: any) => !p.reference || !p.reference.startsWith('EXP'))
-          .map((p: any) => {
-            const sId = p.studentId || (p as any).studentUid;
-            const studentName = studentMap.get(sId) || p.studentName || 'Student';
-            return {
-              id: p.id || p.reference || Math.random().toString(),
-              studentId: sId,
-              studentName: studentName,
-              paymentMethod: p.method || p.paymentMethod || 'Online',
-              paidAmount: Number(p.amount) || 0,
-              date: p.date || p.paymentTime || p.updatedAt || p.createdAt || '',
-              component: p.component || 'Fees',
-              reference: p.reference || p.orderId || ''
-            };
-          })
-          .sort((a: any, b: any) => {
-            const dateA = a.date ? new Date(a.date).getTime() : 0;
-            const dateB = b.date ? new Date(b.date).getTime() : 0;
-            return dateB - dateA;
-          });
-
-        const targetYearNorm = normalizeYear(activeYearForRevenue);
-
-        // Pre-index payments by student ID for O(1) retrieval
-        const paymentsByStudent = new Map<string, any[]>();
-        if (allPayments && allPayments.length > 0) {
-          allPayments.forEach((p: any) => {
-            if (p.reference && p.reference.startsWith('EXP')) return;
-            const ids = new Set([p.studentId, (p as any).studentUid].filter(Boolean));
-            ids.forEach(sId => {
-              if (!paymentsByStudent.has(sId)) {
-                paymentsByStudent.set(sId, []);
-              }
-              paymentsByStudent.get(sId)!.push(p);
-            });
-          });
-        }
-
-        // Centralized student fee metrics and financial overview computation
-        const studentFeeMetrics = computeStudentFeeMetrics({
-          students: allStudentsList,
-          academicYear: activeYearForRevenue,
-          feeStructures: allFeeStructures,
-          concessions: allConcessions,
-          classes: allClasses,
-          batches: allBatches,
-          payments: allPayments,
-          fees: allFeeDocs
-        });
-
-        const overviewStats = calculateFinancialOverview(studentFeeMetrics);
-
-        setRevenueDetails({
-          totalPayable: overviewStats.totalPayable,
-          totalCollected: overviewStats.totalCollected,
-          totalPending: overviewStats.totalPending,
-          term1Collected: overviewStats.term1Collected,
-          term1Pending: overviewStats.term1Pending,
-          term2Collected: overviewStats.term2Collected,
-          term2Pending: overviewStats.term2Pending,
-          term3Collected: overviewStats.term3Collected,
-          term3Pending: overviewStats.term3Pending,
-        });
-
-        const totalPayableSum = overviewStats.totalPayable;
-        const totalCollectedSum = overviewStats.totalCollected;
-        const totalPendingSum = overviewStats.totalPending;
-        const feeCollectionPercent = overviewStats.completionRate;
-
-        const todayStr = new Date().toISOString().split('T')[0];
-        const todayCollectionSum = (allPayments || []).reduce((sum: number, p: any) => {
-          const pDate = p.date || p.createdAt || p.timestamp;
-          if (pDate && pDate.startsWith(todayStr)) {
-            return sum + (Number(p.amount) || 0);
-          }
-          return sum;
-        }, 0);
-
-        // Get pending leaves count
-        let pendingLeavesCount = 0;
-        if (isAdmin || isPrincipal || isVicePrincipal) {
-          pendingLeavesCount = await dbService.count('leaves', [where('status', '==', 'pending')]).catch(() => 0);
-        } else if (isTeacher && profile?.classId) {
-          pendingLeavesCount = await dbService.count('leaves', [
-            where('status', '==', 'pending'),
-            where('applicantRole', '==', 'student'),
-            where('classId', '==', profile.classId)
-          ]).catch(() => 0);
-        }
-
-        // WhatsApp messages count - sync directly from unified server stats
+        // 3. Fetch upcoming notices and events for timeline via REST API
         try {
-          const s = await whatsappService.getStats();
-          if (s && s.total !== undefined) {
-            const dVal = Math.max(0, Number(s.delivered) || 0);
-            const pVal = Math.max(0, Number(s.processing) || 0);
-            const fVal = Math.max(0, Number(s.failed) || 0);
-            const sVal = Math.max(0, Number(s.sent) || 0);
-            setWaStats({
-              total: dVal + pVal + fVal + sVal,
-              delivered: dVal,
-              processing: pVal,
-              failed: fVal
-            });
-          }
-        } catch (err) {
-          // Fallback to whatsapp_stats subscription
-        }
-
-        setStats((prev: any) => ({
-          ...prev,
-          students: studentCount || 0,
-          teachers: teacherCount || 0,
-          attendance: attendanceRate ?? 100,
-          recentPayments: recentPayments || [],
-          pendingLeaves: pendingLeavesCount,
-          presentCount: todayAttendanceCount || 0,
-          absentCount: profile?.role === 'play_school_incharge'
-            ? (todayAbsentCount || (playSchoolTotalCount > 0 ? Math.max(0, playSchoolTotalCount - todayAttendanceCount) : 0))
-            : (todayAbsentCount || (studentCount > 0 ? Math.max(0, studentCount - todayAttendanceCount) : 0)),
-          fees: feeCollectionPercent,
-          feesCollected: totalCollectedSum,
-          feesPending: totalPendingSum,
-          todayCollection: todayCollectionSum
-        }));
-
-        // Fetch Timetable Data for Dashboard
-        const [ttData, subjectsData, batchesData, classesList, timetableSettings] = await Promise.all([
-          dbService.list('timetableSlots', [where('day', '==', format(new Date(), 'EEEE')), limit(50)]),
-          dbService.list('subjects', [limit(200)]),
-          dbService.list('batches', [limit(200)]),
-          dbService.list('classes', [limit(200)]).catch(() => []),
-          dbService.get('settings', 'timetable')
-        ]);
-
-        setSubjects(subjectsData);
-        setBatches(batchesData);
-        const rawSlots = (timetableSettings as any)?.slots || [
-          { label: 'P1', start: '08:00', end: '09:00' },
-          { label: 'P2', start: '09:00', end: '10:00' },
-          { label: 'Short Break', start: '10:00', end: '10:15', isBreak: true },
-          { label: 'P3', start: '10:15', end: '11:15' },
-          { label: 'P4', start: '11:15', end: '12:15' },
-          { label: 'Lunch', start: '12:15', end: '01:00', isBreak: true },
-          { label: 'P5', start: '01:00', end: '02:00' },
-          { label: 'P6', start: '02:00', end: '03:00' },
-          { label: 'P7', start: '03:00', end: '04:00' },
-        ];
-        
-        const uniqueSlots: any[] = [];
-        const seenLabels = new Set();
-        rawSlots.forEach((s: any) => {
-          if (s && s.label) {
-            const trimmedLabel = s.label.trim();
-            if (!seenLabels.has(trimmedLabel)) {
-              seenLabels.add(trimmedLabel);
-              uniqueSlots.push({ ...s, label: trimmedLabel });
+          const noticesRes = await fetch('/api/dashboard/notices');
+          if (noticesRes.ok) {
+            const nData = await noticesRes.json();
+            const list = (nData.notices || []).slice(0, 4).map((n: any) => ({
+              ...n,
+              date: (n.date || n.createdAt || new Date().toISOString()).slice(0, 10),
+              title: n.title || 'Notice',
+              type: 'notice'
+            }));
+            if (isMounted) {
+              setUpcomingEvents(list);
             }
           }
-        });
-        setPeriodSlots(uniqueSlots);
-
-        if (isTeacher) {
-          const mySchedule = (ttData as any[]).flatMap(tt => {
-            const batch = (batchesData || []).find(b => b && b.id === tt.batchId);
-            const cls = (classesList || []).find((c: any) => c && (c.id === batch?.classId || c.id === (batch as any)?.class));
-            const className = cls?.name || (batch as any)?.className;
-            const batchName = batch?.name;
-            const classAndBatchName = className && batchName && className !== batchName
-              ? `${className} - ${batchName}`
-              : (batchName || className || 'Class');
-
-            return (tt.periods || [])
-              .filter((p: any) => p.teacherId === profile.uid || p.teacherId === profile.id || p.teacherId === (profile as any).docId)
-              .map((p: any) => ({ ...p, batchName: classAndBatchName }));
-          });
-          setTodayTimetable(mySchedule);
-          
-          const subData = await dbService.list('substitutions', [
-            where('substituteTeacherId', '==', profile.uid),
-            where('date', '==', today),
-            limit(10)
-          ]);
-          setMySubstitutions(subData || []);
-        } else if (isStudent && profile?.batchId) {
-          const myBatchTT = (ttData as any[]).find(tt => tt.batchId === profile.batchId);
-          setTodayTimetable(myBatchTT?.periods || []);
-        }
-
-        // Fetch upcoming calendar events & milestones for Timeline
-        try {
-          const [calendarEventsData, holidaysData, noticesData, examsData] = await Promise.all([
-            dbService.list('calendar_events', [limit(50)]).catch(() => []),
-            dbService.list('holidays', [limit(50)]).catch(() => []),
-            dbService.list('notices', [limit(50)]).catch(() => []),
-            dbService.list('exams', [limit(50)]).catch(() => [])
-          ]);
-
-          const combinedEvents: any[] = [];
-          (calendarEventsData || []).forEach((e: any) => {
-            if (e.date) combinedEvents.push({ ...e, title: e.title || e.name || 'Event', type: e.type || 'event' });
-          });
-          (holidaysData || []).forEach((h: any) => {
-            if (h.date) combinedEvents.push({ ...h, title: h.title || h.name || 'Holiday', type: 'holiday' });
-          });
-          (examsData || []).forEach((ex: any) => {
-            if (ex.date || ex.startDate) combinedEvents.push({ ...ex, date: ex.date || ex.startDate, title: ex.title || ex.name || 'Exam', type: 'exam' });
-          });
-          (noticesData || []).forEach((n: any) => {
-            if (n.date || n.createdAt) combinedEvents.push({ ...n, date: (n.date || n.createdAt).slice(0, 10), title: n.title || 'Notice', type: 'notice' });
-          });
-
-          const todayStr = new Date().toISOString().split('T')[0];
-          const sorted = [...combinedEvents].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-          const upcoming = sorted.filter(e => e.date >= todayStr).slice(0, 4);
-          const finalEvents = upcoming.length > 0 ? upcoming : sorted.slice(-4).reverse();
-          setUpcomingEvents(finalEvents);
-        } catch (e: any) {
-          console.error("Error fetching events for dashboard:", e);
-          if (e.message?.includes('index')) setIndexError(e);
+        } catch (nErr) {
+          console.warn('Notices loading warning:', nErr);
         }
       } catch (error: any) {
-        console.error("Dashboard Stats Error:", error);
-        if (error.message?.includes('index')) setIndexError(error);
+        console.error('Dashboard Stats Error:', error);
       } finally {
-        setLoading(false);
+        if (isMounted) setLoading(false);
       }
     };
 
-    if (profile?.uid) {
+    fetchStats();
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
       fetchStats();
-    }
-  }, [profile?.uid, isTeacher, isStudent, isParent, settings?.currentAcademicYear]);
+    }, 60000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [profile?.uid, profile?.role, isTeacher, isStudent, isParent, settings?.currentAcademicYear]);
+
 
   const barData = useMemo(() => [
     { name: 'Jan', attendance: 92 },

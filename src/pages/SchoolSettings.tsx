@@ -3302,7 +3302,7 @@ const SchoolSettings: FC = () => {
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <a
-                    href="https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/antony-database1/indexes"
+                    href="https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/(default)/indexes"
                     target="_blank"
                     rel="noreferrer noopener"
                     className="px-5 py-2.5 bg-rose-500 hover:bg-rose-600 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md shadow-rose-500/20 flex items-center gap-2"
@@ -3448,7 +3448,7 @@ const SchoolSettings: FC = () => {
                       <p className="text-[10px] text-neutral-400 mt-1 font-medium leading-relaxed">Required to query attendance logs filtered by student and sorted by date.</p>
                     </div>
                     <a
-                      href="https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/antony-database1/indexes"
+                      href="https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/(default)/indexes"
                       target="_blank"
                       rel="noreferrer noopener"
                       className="text-xs font-extrabold text-primary hover:text-indigo-600 transition-colors uppercase tracking-wider flex items-center gap-1 self-start"
@@ -3464,7 +3464,7 @@ const SchoolSettings: FC = () => {
                       <p className="text-[10px] text-neutral-400 mt-1 font-medium leading-relaxed">Required to pull fee payments filtered by student and sorted by academic year.</p>
                     </div>
                     <a
-                      href="https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/antony-database1/indexes"
+                      href="https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/(default)/indexes"
                       target="_blank"
                       rel="noreferrer noopener"
                       className="text-xs font-extrabold text-primary hover:text-rose-600 transition-colors uppercase tracking-wider flex items-center gap-1 self-start"
@@ -3480,7 +3480,7 @@ const SchoolSettings: FC = () => {
                       <p className="text-[10px] text-neutral-400 mt-1 font-medium leading-relaxed">Required to view invoice list sorted chronologically for 360 profile views.</p>
                     </div>
                     <a
-                      href="https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/antony-database1/indexes"
+                      href="https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/(default)/indexes"
                       target="_blank"
                       rel="noreferrer noopener"
                       className="text-xs font-extrabold text-primary hover:text-emerald-600 transition-colors uppercase tracking-wider flex items-center gap-1 self-start"
@@ -3496,7 +3496,7 @@ const SchoolSettings: FC = () => {
                       <p className="text-[10px] text-neutral-400 mt-1 font-medium leading-relaxed">Required to filter audit trails by type and display them chronologically.</p>
                     </div>
                     <a
-                      href="https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/antony-database1/indexes"
+                      href="https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/(default)/indexes"
                       target="_blank"
                       rel="noreferrer noopener"
                       className="text-xs font-extrabold text-primary hover:text-amber-600 transition-colors uppercase tracking-wider flex items-center gap-1 self-start"

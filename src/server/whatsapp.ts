@@ -13,7 +13,7 @@ import { Server } from 'socket.io';
 import path from 'path';
 import fs from 'fs';
 import { getSmartBotResponse } from './aiBotService.js';
-import { getDbAdmin, getDbAdminInstance, initializationPromise, isDatabaseDenied, setDatabaseDenied } from './firebaseAdmin.js';
+import { getDbAdmin, getDbAdminInstance, initializationPromise, isDatabaseDenied, setDatabaseDenied, isQuotaOrPermissionError, handleFirestoreError } from './firebaseAdmin.js';
 import admin from './firebaseAdmin.js';
 import { useFirestoreAuthState } from './firestoreAuthState.js';
 import {
@@ -23,6 +23,15 @@ import {
   getDelayForPriority
 } from './whatsappUtils.js';
 import { consumeLeaveActionToken } from './leaveWhatsappActions.js';
+import {
+  createQueueItem,
+  fetchNextPendingItem,
+  updateQueueItem,
+  updateQueueItemByWaMessageId,
+  resetStalledItems,
+  WhatsAppQueue
+} from './models/WhatsAppQueue.js';
+import { startWhatsAppQueueWorker, triggerQueueProcessing } from './whatsappQueueWorker.js';
 import NodeCache from 'node-cache';
 
 const msgRetryCounterCache = new NodeCache({ stdTTL: 0, checkperiod: 0 });
@@ -81,13 +90,29 @@ export function resolveMediaPayload(options: any, textVal: string) {
 export async function markMessageAsDelivered(msgId: string, targetStatus: 'delivered' | 'read' = 'delivered') {
   if (!msgId) return;
   try {
+    const nowIso = new Date().toISOString();
+
+    // 1. Update local MongoDB collection whatsapp_queue and in-memory queue first (always active)
+    try {
+      const mongoStatusUpdate: any = {
+        status: targetStatus,
+        updatedAt: nowIso
+      };
+      if (targetStatus === 'delivered') {
+        mongoStatusUpdate.deliveredAt = nowIso;
+      }
+      if (targetStatus === 'read') {
+        mongoStatusUpdate.deliveredAt = nowIso;
+        mongoStatusUpdate.readAt = nowIso;
+      }
+      await updateQueueItemByWaMessageId(msgId, mongoStatusUpdate);
+    } catch (_) {}
+
     if (isDatabaseDenied()) return;
     const db = getDbAdminInstance();
     if (!db) return;
 
-    const nowIso = new Date().toISOString();
-
-    // 1. Update whatsappLogs
+    // 2. Update whatsappLogs in Firestore
     const logsSnap = await db.collection('whatsappLogs')
       .where('messageId', '==', msgId)
       .limit(5)
@@ -116,68 +141,97 @@ export async function markMessageAsDelivered(msgId: string, targetStatus: 'deliv
       }
     }
 
-    // 2. Update whatsapp_queue
-    const queueSnap = await db.collection(QUEUE_COLLECTION)
-      .where('waMessageId', '==', msgId)
-      .limit(5)
-      .get();
-    
-    for (const doc of queueSnap.docs) {
-      const data = doc.data();
-      const curr = data.status;
-      if (curr !== targetStatus && curr !== 'read') {
-        const updateData: any = {
-          status: targetStatus,
-          updatedAt: nowIso
-        };
-        if (targetStatus === 'delivered' && !data.deliveredAt) {
-          updateData.deliveredAt = nowIso;
+    // 3. Update Firestore queue if available and not denied
+    if (db && !isDatabaseDenied()) {
+      try {
+        const queueSnap = await db.collection(QUEUE_COLLECTION)
+          .where('waMessageId', '==', msgId)
+          .limit(5)
+          .get();
+        
+        for (const doc of queueSnap.docs) {
+          const data = doc.data();
+          const curr = data.status;
+          if (curr !== targetStatus && curr !== 'read') {
+            const updateData: any = {
+              status: targetStatus,
+              updatedAt: nowIso
+            };
+            if (targetStatus === 'delivered' && !data.deliveredAt) {
+              updateData.deliveredAt = nowIso;
+            }
+            if (targetStatus === 'read') {
+              if (!data.deliveredAt) updateData.deliveredAt = nowIso;
+              if (!data.readAt) updateData.readAt = nowIso;
+            }
+            await doc.ref.update(updateData);
+            console.log(`[WhatsApp Queue] Updated queue item ${doc.id} (waMessageId: ${msgId}) to ${targetStatus}`);
+          }
         }
-        if (targetStatus === 'read') {
-          if (!data.deliveredAt) updateData.deliveredAt = nowIso;
-          if (!data.readAt) updateData.readAt = nowIso;
-        }
-        await doc.ref.update(updateData);
-        console.log(`[WhatsApp Queue] Updated queue item ${doc.id} (waMessageId: ${msgId}) to ${targetStatus}`);
-      }
-    }
 
-    // 3. Fallback: check queue by doc ID in case waMessageId == doc.id
-    const docById = await db.collection(QUEUE_COLLECTION).doc(msgId).get();
-    if (docById.exists) {
-      const data = docById.data()!;
-      const curr = data.status;
-      if (curr !== targetStatus && curr !== 'read') {
-        const updateData: any = {
-          status: targetStatus,
-          updatedAt: nowIso
-        };
-        if (targetStatus === 'delivered' && !data.deliveredAt) {
-          updateData.deliveredAt = nowIso;
+        // Fallback: check queue by doc ID in case waMessageId == doc.id
+        const docById = await db.collection(QUEUE_COLLECTION).doc(msgId).get();
+        if (docById.exists) {
+          const data = docById.data()!;
+          const curr = data.status;
+          if (curr !== targetStatus && curr !== 'read') {
+            const updateData: any = {
+              status: targetStatus,
+              updatedAt: nowIso
+            };
+            if (targetStatus === 'delivered' && !data.deliveredAt) {
+              updateData.deliveredAt = nowIso;
+            }
+            if (targetStatus === 'read') {
+              if (!data.deliveredAt) updateData.deliveredAt = nowIso;
+              if (!data.readAt) updateData.readAt = nowIso;
+            }
+            await docById.ref.update(updateData);
+            console.log(`[WhatsApp Queue] Updated queue item by doc ID ${msgId} to ${targetStatus}`);
+          }
         }
-        if (targetStatus === 'read') {
-          if (!data.deliveredAt) updateData.deliveredAt = nowIso;
-          if (!data.readAt) updateData.readAt = nowIso;
-        }
-        await docById.ref.update(updateData);
-        console.log(`[WhatsApp Queue] Updated queue item by doc ID ${msgId} to ${targetStatus}`);
-      }
+      } catch (_) {}
     }
   } catch (err: any) {
-    console.error(`[WhatsApp Status] Error updating message status for ${msgId}:`, err.message);
+    if (isQuotaOrPermissionError(err)) {
+      handleFirestoreError(err, 'WhatsApp Status');
+    } else {
+      console.error(`[WhatsApp Status] Error updating message status for ${msgId}:`, err.message);
+    }
   }
 }
 
+let localLastSentTimestamp = 0;
+let localBatchCount = 0;
+
 async function acquireGlobalSendSlot(db: any, isEmergency: boolean = false): Promise<number> {
-  if (!db) return isEmergency ? 0 : 15000;
-  
+  // Emergency P0 messages (Outpass, Gate pass, OTP): Immediate dispatch with zero delay
+  if (isEmergency) {
+    localLastSentTimestamp = Date.now();
+    return 0;
+  }
+
   // Meta Anti-Ban Rate Limiter:
   // Standard broadcasts & notifications: 15s base delay = 4 messages per minute
-  // Emergency P0 messages (Outpass, Gate pass, OTP): 2s fast safety delay
-  const MIN_INTERVAL_MS = isEmergency ? 2000 : 15000; 
-  const JITTER_MS = isEmergency ? 500 : Math.floor(Math.random() * 2500) + 1000; // 1.0s to 3.5s randomized human jitter
+  const MIN_INTERVAL_MS = 15000; 
+  const JITTER_MS = Math.floor(Math.random() * 2500) + 1000; // 1.0s to 3.5s randomized human jitter
   const BATCH_SIZE_LIMIT = 15; // Cool down pause every 15 messages for bulk broadcasts
   const BATCH_COOL_OFF_MS = 45000; // 45-second cooling break
+
+  if (!db || isDatabaseDenied()) {
+    const now = Date.now();
+    let targetSendTime = localLastSentTimestamp + MIN_INTERVAL_MS + JITTER_MS;
+    if (localBatchCount >= BATCH_SIZE_LIMIT) {
+      targetSendTime = Math.max(targetSendTime, localLastSentTimestamp + BATCH_COOL_OFF_MS + JITTER_MS);
+      localBatchCount = 0;
+    }
+    if (now >= targetSendTime) {
+      localLastSentTimestamp = now;
+      localBatchCount = localBatchCount + 1;
+      return 0;
+    }
+    return targetSendTime - now;
+  }
 
   try {
     const docRef = db.collection('whatsapp_metadata').doc('global_rate_limiter');
@@ -238,7 +292,7 @@ async function acquireGlobalSendSlot(db: any, isEmergency: boolean = false): Pro
     return waitMs;
   } catch (err: any) {
     console.error(`[WhatsApp Rate Limiter] Error in acquireGlobalSendSlot:`, err.message);
-    return isEmergency ? 2000 : 15000;
+    return isEmergency ? 0 : 15000;
   }
 }
 
@@ -298,7 +352,11 @@ const updateStatus = async (status: typeof connectionStatus, localOnly = false) 
         safeLogWhatsappEvent('status_change', { status, instanceId, pid: process.pid });
       }
     } catch(e: any) {
-      console.error(`[WhatsApp] Failed to sync status to Firestore: ${e.message}`);
+      if (isQuotaOrPermissionError(e)) {
+        handleFirestoreError(e, 'WhatsApp Status Sync');
+      } else {
+        console.error(`[WhatsApp] Failed to sync status to Firestore: ${e.message}`);
+      }
     }
   }
 };
@@ -379,7 +437,11 @@ const acquireLock = async (isConflict = false, isForce = false): Promise<boolean
         console.log(`[WhatsApp ${process.pid}] Global lock atomically claimed/refreshed: ${instanceId}`);
       }
     } catch (fsErr: any) {
-      console.warn(`[WhatsApp ${process.pid}] Global lock transaction warning:`, fsErr.message);
+      if (isQuotaOrPermissionError(fsErr)) {
+        handleFirestoreError(fsErr, 'WhatsApp Lock');
+      } else {
+        console.warn(`[WhatsApp ${process.pid}] Global lock transaction warning:`, fsErr.message);
+      }
     }
     return true;
   } catch (e) {
@@ -435,12 +497,15 @@ process.on('SIGTERM', cleanup);
 
 async function cleanupStalledMessages() {
   try {
+    // 1. Always reset stalled items in local MongoDB collection whatsapp_queue
+    await resetStalledItems().catch(() => {});
+
     if (isDatabaseDenied()) {
-      console.warn(`[WhatsApp Queue] Database access is denied. Skipping cleanup.`);
       return;
     }
 
-    const db = getDbAdmin();
+    const db = getDbAdminInstance();
+    if (!db) return;
     console.log(`[WhatsApp Queue] Cleanup check...`);
     const stalledSnap = await db.collection(QUEUE_COLLECTION)
       .where('status', '==', 'processing')
@@ -465,9 +530,8 @@ async function cleanupStalledMessages() {
       }
     }
   } catch (err: any) {
-    const errText = (err?.message || String(err)).toLowerCase();
-    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing') || errText.includes('not_found') || errText.includes('not found') || errText.includes('5 not_found')) {
-      console.warn(`[WhatsApp Queue] Database is currently unavailable or requires billing/setup (${err.message}). Skipping cleanup.`);
+    if (isQuotaOrPermissionError(err)) {
+      handleFirestoreError(err, 'WhatsApp Queue');
     } else {
       console.error("[WhatsApp Queue] Cleanup failed:", err.message);
     }
@@ -510,10 +574,115 @@ async function ensureWhatsAppConnected(maxWaitMs = 25000): Promise<boolean> {
   return checkSocketAlive();
 }
 
+async function dispatchMongoQueueItem(item: any): Promise<boolean> {
+  let targetJid = String(item.recipient || item.to || '').trim();
+  if (targetJid.includes('@g.us') || targetJid.includes('@newsletter') || targetJid.includes('@lid')) {
+    // Keep group / newsletter / lid JID
+  } else {
+    const cleanDigits = targetJid.replace(/\D/g, '');
+    if (!cleanDigits) {
+      await updateQueueItem(item._id, {
+        status: 'failed',
+        error: 'Invalid recipient phone number'
+      });
+      return false;
+    }
+    const formattedPhone = cleanDigits.length === 10 ? `91${cleanDigits}` : cleanDigits;
+    targetJid = `${formattedPhone}@s.whatsapp.net`;
+  }
+
+  const rawText = String(item.message || item.text || '');
+  const options = item.options || {};
+  const mediaUrl = item.mediaUrl || options.imageUrl || options.documentUrl || options.videoUrl;
+
+  try {
+    console.log(`[WhatsApp Queue Engine] Dispatching MongoDB item to ${targetJid} (ID: ${item._id}, P${item.priority ?? 3})`);
+
+    // Immediately mark item as processing so concurrent queue workers don't grab it
+    await updateQueueItem(item._id, {
+      status: 'processing',
+      startedAt: new Date()
+    }).catch(() => {});
+
+    // Pacing: Global anti-ban slot limiter
+    const isEmergencyP0 = item.priority === 0;
+    const db = getDbAdminInstance();
+    let slotWait = await acquireGlobalSendSlot(db, isEmergencyP0);
+    while (slotWait > 0) {
+      await delay(slotWait);
+      slotWait = await acquireGlobalSendSlot(db, isEmergencyP0);
+    }
+
+    let msgPayload: any = null;
+    if (mediaUrl) {
+      if (mediaUrl.match(/\.(jpeg|jpg|png|webp)($|\?)/i) || options.imageUrl) {
+        msgPayload = { image: { url: mediaUrl }, caption: rawText };
+      } else if (mediaUrl.match(/\.(mp4|mov|avi)($|\?)/i) || options.videoUrl) {
+        msgPayload = { video: { url: mediaUrl }, caption: rawText, gifPlayback: options.asGif || false };
+      } else {
+        msgPayload = { document: { url: mediaUrl }, fileName: options.fileName || 'document.pdf', caption: rawText, mimetype: options.mimetype || 'application/pdf' };
+      }
+    } else if (options.buttons || options.templateButtons || options.sections) {
+      const buttons = options.buttons || options.templateButtons || [];
+      let formattedText = rawText;
+      if (buttons.length > 0 && !formattedText.includes('1.')) {
+        const optionsList = buttons.map((b: any, i: number) => {
+          const label = b.buttonText?.displayText || b.text || b.title || "Option";
+          return `${i + 1}. ${label}`;
+        }).join('\n');
+        formattedText += `\n\n📌 *Options:*\n${optionsList}\n\n_Reply with option number or keyword_`;
+      }
+      msgPayload = { text: formattedText };
+    } else {
+      msgPayload = { text: rawText };
+    }
+
+    const SEND_TIMEOUT_MS = 25000;
+    const sendPromise = sock.sendMessage(targetJid, msgPayload);
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('WhatsApp dispatch timed out after 25 seconds')), SEND_TIMEOUT_MS)
+    );
+    const result = await Promise.race([sendPromise, timeoutPromise]);
+    const waMessageId = (result as any)?.key?.id;
+
+    await updateQueueItem(item._id, {
+      status: 'sent',
+      sentAt: new Date(),
+      waMessageId,
+      error: undefined
+    });
+    console.log(`[WhatsApp Queue Engine] Successfully sent MongoDB message to ${targetJid} (waMessageId: ${waMessageId || 'ok'})`);
+    return true;
+  } catch (error: any) {
+    const rawMsg = String(error?.message || error?.toString?.() || error || '');
+    console.error(`[WhatsApp Queue Engine] Error sending MongoDB message to ${targetJid}:`, rawMsg);
+    const attempts = (item.attempts || 1);
+    if (attempts >= 3) {
+      await updateQueueItem(item._id, {
+        status: 'failed',
+        error: rawMsg
+      });
+    } else {
+      const backoffMs = attempts * 10000;
+      await updateQueueItem(item._id, {
+        status: 'retrying',
+        nextAttemptAt: new Date(Date.now() + backoffMs),
+        error: rawMsg
+      });
+    }
+    return false;
+  }
+}
+
 async function processQueue() {
   if (isProcessingQueue) return;
   isProcessingQueue = true;
   
+  // Ensure background queue worker is active
+  try {
+    startWhatsAppQueueWorker();
+  } catch (_) {}
+
   await cleanupStalledMessages();
   console.log(`[WhatsApp Queue] Starting persistent processor...`);
 
@@ -534,18 +703,35 @@ async function processQueue() {
         continue;
       }
 
-      // 2. Fetch queue items from Firestore
-      if (isDatabaseDenied()) {
-        await delay(30000); // Wait longer if missing permissions
-        continue;
-      }
-
       // Periodically cleanup stalled messages within the loop
       if (Math.random() < 0.05) {
         await cleanupStalledMessages();
       }
 
-      const db = getDbAdmin();
+      // 2. Process next pending item from local MongoDB collection whatsapp_queue first
+      let mongoItem: any = null;
+      try {
+        mongoItem = await fetchNextPendingItem();
+      } catch (err: any) {
+        console.warn(`[WhatsApp Queue] fetchNextPendingItem error:`, err?.message);
+      }
+
+      if (mongoItem) {
+        await dispatchMongoQueueItem(mongoItem);
+        continue;
+      }
+
+      // 3. Fallback: If no MongoDB items and Firestore is available, check Firestore QUEUE_COLLECTION
+      if (isDatabaseDenied()) {
+        await delay(1500);
+        continue;
+      }
+
+      const db = getDbAdminInstance();
+      if (!db) {
+        await delay(1500);
+        continue;
+      }
       
       // Query pending and retrying messages in parallel to ensure ESM backward compatibility
       const pendingRef = db.collection(QUEUE_COLLECTION).where('status', '==', 'pending').limit(20);
@@ -876,6 +1062,7 @@ async function processQueue() {
                               errMsgLower.includes('stream') ||
                               errMsgLower.includes('closed') ||
                               errMsgLower.includes('disconnect') ||
+                              errMsgLower.includes('1006') ||
                               errMsgLower.includes('econn');
 
             const isSessionErr = errMsgLower.includes('no sessions') ||
@@ -1063,16 +1250,9 @@ async function processQueue() {
       }
 
     } catch (outerErr: any) {
-      const isExpectedError = outerErr.message.includes('PERMISSION_DENIED') || 
-                            outerErr.message.includes('Quota limit exceeded') ||
-                            outerErr.message.includes('quota exceeded');
-      
-      if (outerErr.message.includes('PERMISSION_DENIED')) {
-        const db = getDbAdmin();
-        const firestore = db as any;
-        console.error(`[WhatsApp Queue] Persistent PERMISSION_DENIED on DB: ${firestore.projectId}/${firestore.databaseId || '(default)'}`);
-        console.error(`[WhatsApp Queue] Error detail: ${outerErr.message}`);
-      } else if (!isExpectedError || Math.random() < 0.05) { 
+      if (isQuotaOrPermissionError(outerErr)) {
+        handleFirestoreError(outerErr, 'WhatsApp Queue Processor');
+      } else {
         console.error(`[WhatsApp Queue] Persistent error:`, outerErr.message);
       }
       
@@ -1081,51 +1261,47 @@ async function processQueue() {
   }
 }
 
-// Start queue processor after a longer delay to ensure Admin SDK is ready and verified
+// Start queue processor
 setTimeout(async () => {
   console.log(`[WhatsApp Queue] Initializing processor...`);
   
-  // Wait for the admin SDK to complete its initial connection check/fallback
-  await initializationPromise;
+  // Wait for the admin SDK connection check if present, without blocking on errors
+  try {
+    await initializationPromise;
+  } catch (_) {}
   
   if (isDatabaseDenied()) {
-    console.error(`[WhatsApp Queue] CRITICAL: Database access is denied. WhatsApp Queue will NOT process messages.`);
-    return;
-  }
-  
-  // Simple check to wait for dbAdmin to be ready and verified
-  let ready = false;
-  let attempts = 0;
-  while (!ready && attempts < 10) {
+    console.log(`[WhatsApp Queue] Firestore access is denied/offline. WhatsApp Queue will process strictly via local MongoDB collection whatsapp_queue.`);
+  } else {
     try {
-      const db = getDbAdmin();
-      // Try a small read to verify connectivity + permissions
-      const healthDoc = await db.collection('_health').doc('queue_check').get();
-      await db.collection('_health').doc('queue_check').set({ 
-        lastCheck: new Date().toISOString(),
-        verified: true 
-      }, { merge: true });
-      ready = true;
-      console.log(`[WhatsApp Queue] Firestore connectivity verified.`);
-    } catch (e: any) {
-      attempts++;
-      console.warn(`[WhatsApp Queue] Firestore not ready or denied (attempt ${attempts}): ${e.message}`);
-      if (e.message.includes('PERMISSION_DENIED')) {
-        const db = getDbAdmin();
-        const fsAdmin = db as any;
-        console.error(`[WhatsApp Queue] PERMISSION_DENIED on Project: ${fsAdmin._projectId || fsAdmin.projectId}, DB: ${fsAdmin._databaseId || fsAdmin.databaseId || '(default)'}`);
-        console.error(`[WhatsApp Queue] This suggests an IAM issue or missing database. Check if database exists in Firebase Console.`);
+      const db = getDbAdminInstance();
+      if (db) {
+        await db.collection('_health').doc('queue_check').set({ 
+          lastCheck: new Date().toISOString(),
+          verified: true 
+        }, { merge: true }).catch(() => {});
+        console.log(`[WhatsApp Queue] Firestore connectivity verified.`);
       }
-      await delay(3000);
+    } catch (e: any) {
+      console.warn(`[WhatsApp Queue] Firestore optional check notice: ${e.message}`);
     }
   }
 
-  processQueue().catch(err => console.error("[WhatsApp Queue] Processor failed to start:", err.message));
+  // Always ensure local WhatsApp queue worker is started
+  try {
+    startWhatsAppQueueWorker();
+  } catch (_) {}
+
+  processQueue().catch(err => {
+    console.error("[WhatsApp Queue] Processor failed to start:", err.message);
+  });
 
   // Background Migration: Self-heal indexing for all students
   setTimeout(async () => {
+    if (isDatabaseDenied()) return;
     try {
       const db = getDbAdmin();
+      if (!db) return;
       console.log(`[WhatsApp Migration] Starting indexing for all existing users...`);
       const studentsSnap = await db.collection('users').get();
       
@@ -1170,9 +1346,13 @@ setTimeout(async () => {
         console.log(`[WhatsApp Migration] Successfully indexed ${patched} users for robust bot matching.`);
       }
     } catch (e: any) {
-      console.warn(`[WhatsApp Migration] Background indexing failed: ${e.message}`);
+      if (isQuotaOrPermissionError(e)) {
+        handleFirestoreError(e, 'WhatsApp Migration');
+      } else {
+        console.warn(`[WhatsApp Migration] Background indexing failed: ${e.message}`);
+      }
     }
-  }, 30000); // 30s after startup
+  }, 60000); // 60s after startup
 }, 15000);
 
 export async function reconcileWhatsAppStats() {
@@ -1216,16 +1396,27 @@ export async function reconcileWhatsAppStats() {
       legacyLogsSnap.forEach(processLogDoc);
     } catch (_) {}
 
-    // 2. Scan whatsapp_queue collection for pending / processing / retrying items
+    // 2. Scan MongoDB whatsapp_queue collection and Firestore queue
     let processingCount = 0;
-    const queueSnap = await db.collection(QUEUE_COLLECTION).get();
-    queueSnap.forEach(doc => {
-      const data = doc.data();
-      const st = (data.status || '').toLowerCase();
-      if (st === 'processing' || st === 'pending' || st === 'retrying') {
-        processingCount++;
-      }
-    });
+    try {
+      const mongoPendingCount = await WhatsAppQueue.countDocuments({
+        status: { $in: ['processing', 'pending', 'retrying'] }
+      });
+      processingCount += (mongoPendingCount || 0);
+    } catch (_) {}
+
+    if (db && !isDatabaseDenied()) {
+      try {
+        const queueSnap = await db.collection(QUEUE_COLLECTION).get();
+        queueSnap.forEach(doc => {
+          const data = doc.data();
+          const st = (data.status || '').toLowerCase();
+          if (st === 'processing' || st === 'pending' || st === 'retrying') {
+            processingCount++;
+          }
+        });
+      } catch (_) {}
+    }
 
     const totalCount = deliveredCount + sentCount + processingCount + failedCount;
 
@@ -1263,7 +1454,9 @@ setTimeout(() => {
 
 async function incrementWhatsAppStat(updates: Record<string, number>, type?: string) {
   try {
+    if (isDatabaseDenied()) return;
     const db = getDbAdmin();
+    if (!db) return;
     const statsRef = db.collection('whatsapp_stats').doc('summary');
     
     const updateData: any = {};
@@ -1277,7 +1470,9 @@ async function incrementWhatsAppStat(updates: Record<string, number>, type?: str
     
     await statsRef.set(updateData, { merge: true });
   } catch (err: any) {
-    console.error("[WhatsApp Stats] Increment failed:", err.message);
+    if (!isQuotaOrPermissionError(err)) {
+      console.warn("[WhatsApp Stats] Increment notice:", err?.message || err);
+    }
   }
 }
 
@@ -1560,10 +1755,14 @@ async function getERPContext(from?: string, pushName?: string) {
         const res = await query.get();
         return res;
       } catch (err: any) {
-        const db = getDbAdmin() as any;
-        const project = db?._projectId || db?.projectId || 'unknown';
-        const database = db?._databaseId || db?.databaseId || '(default)';
-        console.error(`[WhatsApp context] Failed to fetch ${collName} [Project: ${project}, DB: ${database}]: ${err.message}`);
+        if (isQuotaOrPermissionError(err)) {
+          handleFirestoreError(err, `WhatsApp Context (${collName})`);
+        } else {
+          const db = getDbAdmin() as any;
+          const project = db?._projectId || db?.projectId || 'unknown';
+          const database = db?._databaseId || db?.databaseId || '(default)';
+          console.error(`[WhatsApp context] Failed to fetch ${collName} [Project: ${project}, DB: ${database}]: ${err.message}`);
+        }
         return { 
           docs: [], 
           empty: true, 
@@ -2420,6 +2619,8 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
           statusCode === 504 ||
           statusCode === 428 ||
           statusCode === 515 ||
+          statusCode === 1006 ||
+          errorMsg.includes('1006') ||
           errorMsg.includes('timed out') || 
           errorMsg.includes('timeout') || 
           errorMsg.includes('handshake') || 
@@ -3873,9 +4074,8 @@ export async function checkAndSendAutomatedBirthdays() {
 
     console.log(`[Automated Birthdays] Successfully logged run for ${istDateStr}. Total queued: ${wishesQueued}`);
   } catch (error: any) {
-    const errText = (error?.message || String(error)).toLowerCase();
-    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing') || errText.includes('not_found') || errText.includes('not found') || errText.includes('5 not_found')) {
-      console.warn(`[Automated Birthdays] Database requires Google Cloud billing or creation on project. Background automated birthdays skipped.`);
+    if (isQuotaOrPermissionError(error)) {
+      handleFirestoreError(error, 'Automated Birthdays');
     } else {
       console.error(`[Automated Birthdays] Error in automated birthday checker:`, error);
     }
@@ -3999,9 +4199,8 @@ export async function checkAndRunStaffAutoAttendance() {
     });
 
   } catch (error: any) {
-    const errText = (error?.message || String(error)).toLowerCase();
-    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing') || errText.includes('not_found') || errText.includes('not found') || errText.includes('5 not_found')) {
-      console.warn(`[Staff Auto Attendance] Database requires Google Cloud billing or creation on project. Background automated attendance skipped.`);
+    if (isQuotaOrPermissionError(error)) {
+      handleFirestoreError(error, 'Staff Auto Attendance');
     } else {
       console.error(`[Staff Auto Attendance] Error in automated staff attendance:`, error);
     }
@@ -4010,28 +4209,45 @@ export async function checkAndRunStaffAutoAttendance() {
 
 // Run automated birthdays and staff auto attendance check every hour
 setInterval(async () => {
+  if (isDatabaseDenied()) return;
   await checkAndSendAutomatedBirthdays();
   await checkAndRunStaffAutoAttendance();
 }, 60 * 60 * 1000); // Every 1 hour
 
-// Run once on startup after 30 seconds delay to ensure DB/connection is ready
+// Run once on startup after 45 seconds delay to ensure DB/connection is ready
 setTimeout(async () => {
+  if (isDatabaseDenied()) return;
   console.log("[Automated Birthdays & Staff Attendance] Running initial startup check...");
   await checkAndSendAutomatedBirthdays();
   await checkAndRunStaffAutoAttendance();
-}, 30000);
+}, 45000);
 
 export const getWASocket = () => sock;
 export const getWAStatus = () => {
   return { status: connectionStatus, qr: qrCode };
 };
+export { checkSocketAlive, ensureWhatsAppConnected };
+
+let cachedRemoteStatus: { status: string; qr: string | null } | null = null;
+let lastRemoteStatusFetch = 0;
+let remoteStatusCooldown = 0;
 
 export const getRemoteWAStatus = async (): Promise<{ status: string; qr: string | null } | null> => {
+  const now = Date.now();
+  if (now < remoteStatusCooldown) {
+    return cachedRemoteStatus;
+  }
+  if (now - lastRemoteStatusFetch < 10000) {
+    return cachedRemoteStatus;
+  }
+
   try {
+    if (isDatabaseDenied()) return cachedRemoteStatus;
     await initializationPromise;
-    if (isDatabaseDenied()) return null;
+    if (isDatabaseDenied()) return cachedRemoteStatus;
     const db = getDbAdminInstance();
     if (db) {
+      lastRemoteStatusFetch = now;
       const doc = await db.collection(LOCK_COLLECTION).doc(STATUS_DOC).get();
       if (doc.exists) {
         const data = doc.data();
@@ -4045,29 +4261,36 @@ export const getRemoteWAStatus = async (): Promise<{ status: string; qr: string 
           }
           const isRecent = docTime === 0 || (Date.now() - docTime < 60000);
           if (isRecent && data.status) {
-            return {
+            cachedRemoteStatus = {
               status: data.status,
               qr: data.status === 'qr' ? (data.qr || null) : null
             };
+            return cachedRemoteStatus;
           }
         }
       }
+      cachedRemoteStatus = null;
     }
   } catch (err: any) {
-    console.warn('[WhatsApp] Failed to fetch remote status:', err?.message);
+    if (isQuotaOrPermissionError(err)) {
+      handleFirestoreError(err, 'WhatsApp Remote Status');
+      remoteStatusCooldown = Date.now() + 60000;
+    } else {
+      console.warn('[WhatsApp] Failed to fetch remote status:', err?.message || err);
+      remoteStatusCooldown = Date.now() + 15000;
+    }
   }
-  return null;
+  return cachedRemoteStatus;
 };
 
 export const sendMessage = async (to: string, text: string, options: any = {}, type: 'single' | 'broadcast' | 'birthday' | 'bot' = 'single') => {
   let db: any = null;
   try {
-    db = getDbAdmin();
+    if (!isDatabaseDenied()) {
+      db = getDbAdminInstance();
+    }
   } catch (err: any) {
-    const dbId = 'antony-database1';
-    const projId = 'antonyserp-cc9df';
-    console.error(`[WhatsApp Queue] Cannot send message: Database access is unavailable to ${projId}/${dbId}:`, err?.message || err);
-    throw new Error(`WhatsApp Service: Database access is denied to ${projId}/${dbId}. Check Firebase configuration and permissions.`);
+    // Firestore unavailable or denied - ignored, local MongoDB collection whatsapp_queue is used
   }
 
   try {
@@ -4112,6 +4335,12 @@ export const sendMessage = async (to: string, text: string, options: any = {}, t
     } else {
       const lowerText = text.toLowerCase();
       const hasP0Keyword = 
+        lowerText.includes('otp') ||
+        lowerText.includes('verification code') ||
+        lowerText.includes('passcode') ||
+        lowerText.includes('security code') ||
+        lowerText.includes('reset code') ||
+        lowerText.includes('login') ||
         lowerText.includes('leave') || 
         lowerText.includes('token') || 
         lowerText.includes('approve') || 
@@ -4138,22 +4367,28 @@ export const sendMessage = async (to: string, text: string, options: any = {}, t
     }
 
     // 2. Check Opt-Out status for non-emergency messages
-    if (priorityVal > 0) {
-      const optOutDoc = await db.collection('whatsapp_opt_out').doc(normalizedPhone).get();
-      if (optOutDoc.exists) {
-        console.warn(`[WhatsApp Queue] Rejecting queue submission: Recipient ${normalizedPhone} has opted out.`);
-        safeLogWhatsappEvent('send_message_rejected_opt_out', { recipient: normalizedPhone, text });
-        return { success: false, skipped: true, reason: 'Recipient opted out' };
-      }
+    if (priorityVal > 0 && db && !isDatabaseDenied()) {
+      try {
+        const optOutDoc = await db.collection('whatsapp_opt_out').doc(normalizedPhone).get();
+        if (optOutDoc.exists) {
+          console.warn(`[WhatsApp Queue] Rejecting queue submission: Recipient ${normalizedPhone} has opted out.`);
+          safeLogWhatsappEvent('send_message_rejected_opt_out', { recipient: normalizedPhone, text });
+          return { success: false, skipped: true, reason: 'Recipient opted out' };
+        }
+      } catch (optErr) {}
     }
 
     // 3. Compute Idempotency records to prevent duplicates
     let schoolId = options.schoolId;
     if (!schoolId) {
-      try {
-        const schoolDoc = await db.collection('settings').doc('school').get();
-        schoolId = schoolDoc.exists && schoolDoc.data()?.schoolId ? schoolDoc.data()?.schoolId : 'st_antonys_school';
-      } catch (err) {
+      if (db && !isDatabaseDenied()) {
+        try {
+          const schoolDoc = await db.collection('settings').doc('school').get();
+          schoolId = schoolDoc.exists && schoolDoc.data()?.schoolId ? schoolDoc.data()?.schoolId : 'st_antonys_school';
+        } catch (err) {
+          schoolId = 'st_antonys_school';
+        }
+      } else {
         schoolId = 'st_antonys_school';
       }
     }
@@ -4285,81 +4520,88 @@ export const sendMessage = async (to: string, text: string, options: any = {}, t
     // Verify unless forced send is true or it's a conversational bot reply
     const isBotReply = type === 'bot' || options.messageType === 'bot' || options.eventType === 'bot';
     if (!options.forceSend && !isBotReply) {
-      const idSnapshot = await db.collection('whatsapp_idempotency').doc(idempotencyKey).get();
-      if (idSnapshot.exists) {
-        const idData = idSnapshot.data()!;
-        const blockedStatuses = ['pending', 'processing', 'sent', 'retrying'];
-        const isStalePending = (idData.status === 'pending' || idData.status === 'processing') && 
-          idData.updatedAt && 
-          (Date.now() - new Date(idData.updatedAt).getTime() > 15 * 60 * 1000);
-        if (blockedStatuses.includes(idData.status) && !isStalePending) {
-          console.warn(`[WhatsApp Queue] Duplicate automated notice blocked by idempotency key: ${idempotencyKey}`);
-          safeLogWhatsappEvent('duplicate_message_blocked', { key: idempotencyKey, recipient: normalizedPhone });
-          if (isFeeReceipt) {
-            safeLogWhatsappEvent('fee_receipt_duplicate_skipped', {
-              key: idempotencyKey,
-              recipient: normalizedPhone,
-              studentId: studentId,
-              receiptId: options.receiptId || options.receiptNumber,
-              paymentId: options.paymentId
-            });
-          }
-          if (isExamResult) {
-            safeLogWhatsappEvent('marks_result_duplicate_skipped', {
-              key: idempotencyKey,
-              recipient: normalizedPhone,
-              studentId: studentId,
-              examId: options.examId,
-              marksId: options.marksId
-            });
-          }
-          if (options.templateType === 'leave_approval_request' || options.templateType === 'leave_status') {
-            safeLogWhatsappEvent('leave_approval_duplicate_skipped', {
-              key: idempotencyKey,
-              recipient: normalizedPhone,
-              applicantId: options.applicantId,
-              leaveId: options.leaveId
-            });
-          }
-          if (isStudentPermission) {
-            safeLogWhatsappEvent('student_permission_duplicate_skipped', {
-              key: idempotencyKey,
-              recipient: normalizedPhone,
-              studentId: studentId !== 'none' ? studentId : (options.studentId || 'unknown_student'),
-              permissionId: options.permissionId
-            });
-          }
-          if (isHostelOuting) {
-            safeLogWhatsappEvent('hostel_outing_duplicate_skipped', {
-              key: idempotencyKey,
-              recipient: normalizedPhone,
-              studentId: studentId !== 'none' ? studentId : (options.studentId || 'unknown_student'),
-              outingId: options.outingId
-            });
-          }
-          // Log skipped notice in whatsappLogs for full report visibility
-          await logWhatsAppMessage(
-            normalizedPhone,
-            text,
-            type,
-            'duplicate',
-            undefined,
-            `Skipped: Duplicate notice already sent today (${idData.status})`,
-            options
-          ).catch(() => {});
+      if (db && !isDatabaseDenied() && idempotencyKey) {
+        try {
+          const idSnapshot = await db.collection('whatsapp_idempotency').doc(idempotencyKey).get();
+          if (idSnapshot.exists) {
+            const idData = idSnapshot.data()!;
+            const blockedStatuses = ['pending', 'processing', 'sent', 'retrying'];
+            const isStalePending = (idData.status === 'pending' || idData.status === 'processing') && 
+              idData.updatedAt && 
+              (Date.now() - new Date(idData.updatedAt).getTime() > 15 * 60 * 1000);
+            if (blockedStatuses.includes(idData.status) && !isStalePending) {
+              console.warn(`[WhatsApp Queue] Duplicate automated notice blocked by idempotency key: ${idempotencyKey}`);
+              safeLogWhatsappEvent('duplicate_message_blocked', { key: idempotencyKey, recipient: normalizedPhone });
+              if (isFeeReceipt) {
+                safeLogWhatsappEvent('fee_receipt_duplicate_skipped', {
+                  key: idempotencyKey,
+                  recipient: normalizedPhone,
+                  studentId: studentId,
+                  receiptId: options.receiptId || options.receiptNumber,
+                  paymentId: options.paymentId
+                });
+              }
+              if (isExamResult) {
+                safeLogWhatsappEvent('marks_result_duplicate_skipped', {
+                  key: idempotencyKey,
+                  recipient: normalizedPhone,
+                  studentId: studentId,
+                  examId: options.examId,
+                  marksId: options.marksId
+                });
+              }
+              if (options.templateType === 'leave_approval_request' || options.templateType === 'leave_status') {
+                safeLogWhatsappEvent('leave_approval_duplicate_skipped', {
+                  key: idempotencyKey,
+                  recipient: normalizedPhone,
+                  applicantId: options.applicantId,
+                  leaveId: options.leaveId
+                });
+              }
+              if (isStudentPermission) {
+                safeLogWhatsappEvent('student_permission_duplicate_skipped', {
+                  key: idempotencyKey,
+                  recipient: normalizedPhone,
+                  studentId: studentId !== 'none' ? studentId : (options.studentId || 'unknown_student'),
+                  permissionId: options.permissionId
+                });
+              }
+              if (isHostelOuting) {
+                safeLogWhatsappEvent('hostel_outing_duplicate_skipped', {
+                  key: idempotencyKey,
+                  recipient: normalizedPhone,
+                  studentId: studentId !== 'none' ? studentId : (options.studentId || 'unknown_student'),
+                  outingId: options.outingId
+                });
+              }
+              // Log skipped notice in whatsappLogs for full report visibility
+              await logWhatsAppMessage(
+                normalizedPhone,
+                text,
+                type,
+                'duplicate',
+                undefined,
+                `Skipped: Duplicate notice already sent today (${idData.status})`,
+                options
+              ).catch(() => {});
 
-          return { success: true, skipped: true, reason: `Duplicate message blocked (idempotency status: ${idData.status})` };
-        }
+              return { success: true, skipped: true, reason: `Duplicate message blocked (idempotency status: ${idData.status})` };
+            }
+          }
+        } catch (_) {}
       }
     } else {
-      // Log manual force-send override
-      await db.collection('whatsapp_audit_logs').add({
-        event: 'idempotency_force_send_override',
-        operator: 'api_admin',
-        idempotencyKey,
-        recipient: normalizedPhone,
-        timestamp: new Date().toISOString()
-      });
+      if (db && !isDatabaseDenied()) {
+        try {
+          await db.collection('whatsapp_audit_logs').add({
+            event: 'idempotency_force_send_override',
+            operator: 'api_admin',
+            idempotencyKey,
+            recipient: normalizedPhone,
+            timestamp: new Date().toISOString()
+          });
+        } catch (_) {}
+      }
       if (isFeeReceipt) {
         safeLogWhatsappEvent('fee_receipt_force_send_used', {
           key: idempotencyKey,
@@ -4406,13 +4648,15 @@ export const sendMessage = async (to: string, text: string, options: any = {}, t
     }
 
     // Set idempotency record to pending if not a conversational bot reply
-    if (!isBotReply) {
-      await db.collection('whatsapp_idempotency').doc(idempotencyKey).set({
-        status: 'pending',
-        recipient: normalizedPhone,
-        timestamp: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
+    if (!isBotReply && db && !isDatabaseDenied() && idempotencyKey) {
+      try {
+        await db.collection('whatsapp_idempotency').doc(idempotencyKey).set({
+          status: 'pending',
+          recipient: normalizedPhone,
+          timestamp: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      } catch (_) {}
     }
 
     // Format broadcast text with Meta Anti-Ban opt-out footer if not present
@@ -4421,22 +4665,41 @@ export const sendMessage = async (to: string, text: string, options: any = {}, t
       messageContent += `\n\n—\nSt. Antony's High School\n(Reply STOP to unsubscribe from broadcasts)`;
     }
 
-    // 4. Add to Queue Collection
-    const docRef = await db.collection(QUEUE_COLLECTION).add({
+    // 4. Add to Queue: Store in local MongoDB collection whatsapp_queue
+    const queueItem = await createQueueItem({
+      recipient: normalizedPhone,
       to: normalizedPhone,
+      message: messageContent,
       text: messageContent,
       options,
       type,
       priority: priorityVal,
-      attempts: 0,
       idempotencyKey,
-      status: 'pending',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      status: 'pending'
     });
 
+    const queueId = queueItem._id;
+
+    // Mirror to Firestore queue if available and not denied
+    if (db && !isDatabaseDenied()) {
+      try {
+        await db.collection(QUEUE_COLLECTION).doc(queueId).set({
+          to: normalizedPhone,
+          text: messageContent,
+          options,
+          type,
+          priority: priorityVal,
+          attempts: 0,
+          idempotencyKey,
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+      } catch (_) {}
+    }
+
     // Update real-time stats
-    await incrementWhatsAppStat({ total: 1, processing: 1 }, type);
+    await incrementWhatsAppStat({ total: 1, processing: 1 }, type).catch(() => {});
     
     if (isFeeReceipt) {
       safeLogWhatsappEvent('fee_receipt_message_queued', {
@@ -4464,8 +4727,21 @@ export const sendMessage = async (to: string, text: string, options: any = {}, t
       });
     }
     
-    console.log(`[WhatsApp Queue] Message added to persistent queue (Priority: P${priorityVal}) for ${normalizedPhone}. ID: ${docRef.id}`);
-    return { success: true, id: docRef.id };
+    console.log(`[WhatsApp Queue] Message added to MongoDB queue (Priority: P${priorityVal}) for ${normalizedPhone}. ID: ${queueId}`);
+
+    // Fast-path: If emergency P0 (such as OTP, verification code, outpass), dispatch immediately if socket is connected
+    if (priorityVal === 0) {
+      if (checkSocketAlive()) {
+        dispatchMongoQueueItem(queueItem).catch((dispatchErr) => {
+          console.warn(`[WhatsApp Queue] Fast-path emergency dispatch notice:`, dispatchErr?.message || dispatchErr);
+        });
+      }
+      try {
+        triggerQueueProcessing();
+      } catch (_) {}
+    }
+
+    return { success: true, id: queueId };
   } catch (err: any) {
     console.error(`[WhatsApp Queue] Failed to add message to queue:`, err.message);
     throw err;
@@ -4586,33 +4862,41 @@ export const sendCommunityBroadcast = async (classIds: string[], messageText: st
   let targetJids: string[] = [];
 
   try {
-    const db = getDbAdmin();
-    if (!db) {
-      throw new Error("Database not available on server");
-    }
+    let db: any = null;
+    try {
+      if (!isDatabaseDenied()) {
+        db = getDbAdminInstance();
+      }
+    } catch (_) {}
 
-    // Resolve community JIDs from whatsapp_communities collection
+    // Resolve community JIDs from whatsapp_communities collection if Firestore is available
     const jidsSet = new Set<string>();
     const jidToClassesMap = new Map<string, string[]>(); // Map targetJid -> associated class IDs
 
-    const communitiesSnap = await db.collection('whatsapp_communities')
-      .where('isActive', '==', true)
-      .get();
+    if (db && !isDatabaseDenied()) {
+      try {
+        const communitiesSnap = await db.collection('whatsapp_communities')
+          .where('isActive', '==', true)
+          .get();
 
-    communitiesSnap.forEach((doc: any) => {
-      const data = doc.data();
-      const associated = data.associatedClasses || [];
-      const hasOverlap = associated.some((cId: string) => classIds.includes(cId));
-      if (hasOverlap && data.communityJid) {
-        const cleanJid = data.communityJid.trim();
-        jidsSet.add(cleanJid);
-        
-        // Accumulate matching classes for this JID
-        const currentClasses = jidToClassesMap.get(cleanJid) || [];
-        const matched = associated.filter((cId: string) => classIds.includes(cId));
-        jidToClassesMap.set(cleanJid, Array.from(new Set([...currentClasses, ...matched])));
+        communitiesSnap.forEach((doc: any) => {
+          const data = doc.data();
+          const associated = data.associatedClasses || [];
+          const hasOverlap = associated.some((cId: string) => classIds.includes(cId));
+          if (hasOverlap && data.communityJid) {
+            const cleanJid = data.communityJid.trim();
+            jidsSet.add(cleanJid);
+            
+            // Accumulate matching classes for this JID
+            const currentClasses = jidToClassesMap.get(cleanJid) || [];
+            const matched = associated.filter((cId: string) => classIds.includes(cId));
+            jidToClassesMap.set(cleanJid, Array.from(new Set([...currentClasses, ...matched])));
+          }
+        });
+      } catch (commsErr) {
+        console.warn(`[WhatsApp Community Broadcast] Error querying communities:`, commsErr);
       }
-    });
+    }
 
     targetJids = Array.from(jidsSet);
     if (targetJids.length === 0) {
@@ -4624,13 +4908,15 @@ export const sendCommunityBroadcast = async (classIds: string[], messageText: st
       
       // Fetch classes to map names
       const classIdToNameMap = new Map<string, string>();
-      try {
-        const classesSnap = await db.collection('classes').get();
-        classesSnap.forEach((doc: any) => {
-          classIdToNameMap.set(doc.id, doc.data().name || doc.id);
-        });
-      } catch (classErr) {
-        console.warn(`[WhatsApp Community Broadcast] Failed to fetch classes to resolve names:`, classErr);
+      if (db && !isDatabaseDenied()) {
+        try {
+          const classesSnap = await db.collection('classes').get();
+          classesSnap.forEach((doc: any) => {
+            classIdToNameMap.set(doc.id, doc.data().name || doc.id);
+          });
+        } catch (classErr) {
+          console.warn(`[WhatsApp Community Broadcast] Failed to fetch classes to resolve names:`, classErr);
+        }
       }
 
       // Dispatch to target JIDs sequentially
@@ -4642,15 +4928,18 @@ export const sendCommunityBroadcast = async (classIds: string[], messageText: st
           ? `Community (${matchedClassNames.join(', ')})` 
           : 'Community Broadcast';
 
-        try {
-          const groupDoc = await db.collection('whatsapp_discovered_groups').doc(targetJid).get();
-          if (groupDoc.exists && groupDoc.data()?.subject) {
-            displayName = groupDoc.data().subject;
+        if (db && !isDatabaseDenied()) {
+          try {
+            const groupDoc = await db.collection('whatsapp_discovered_groups').doc(targetJid).get();
+            if (groupDoc.exists && groupDoc.data()?.subject) {
+              displayName = groupDoc.data().subject;
+            }
+          } catch (groupErr) {
+            console.warn(`[WhatsApp Community Broadcast] Failed to resolve group subject for ${targetJid}:`, groupErr);
           }
-        } catch (groupErr) {
-          console.warn(`[WhatsApp Community Broadcast] Failed to resolve group subject for ${targetJid}:`, groupErr);
         }
 
+        let mongoQueueId: string | null = null;
         let queueDocRef: any = null;
         const communityOptions = {
           ...options,
@@ -4664,21 +4953,38 @@ export const sendCommunityBroadcast = async (classIds: string[], messageText: st
           console.error(`[WhatsApp Community Broadcast] Failed to increment stats:`, statsErr.message);
         });
 
-        // Add to whatsapp_queue with status: 'processing'
+        // Add to local MongoDB collection whatsapp_queue with status: 'processing'
         try {
-          queueDocRef = await db.collection('whatsapp_queue').add({
+          const qItem = await createQueueItem({
+            recipient: targetJid,
             to: targetJid,
+            message: messageText,
             text: messageText,
             options: communityOptions,
             type: 'broadcast',
             priority: 2,
             attempts: 1,
-            status: 'processing',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
+            status: 'processing'
           });
+          mongoQueueId = qItem._id;
         } catch (queueAddErr: any) {
-          console.error(`[WhatsApp Community Broadcast] Failed to add to queue before send:`, queueAddErr.message);
+          console.error(`[WhatsApp Community Broadcast] Failed to add to MongoDB queue:`, queueAddErr.message);
+        }
+
+        if (db && !isDatabaseDenied()) {
+          try {
+            queueDocRef = await db.collection('whatsapp_queue').add({
+              to: targetJid,
+              text: messageText,
+              options: communityOptions,
+              type: 'broadcast',
+              priority: 2,
+              attempts: 1,
+              status: 'processing',
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            });
+          } catch (_) {}
         }
 
         try {
@@ -4693,7 +4999,15 @@ export const sendCommunityBroadcast = async (classIds: string[], messageText: st
           await sendWithRetry(targetJid, messageText, options);
           successJids.push(targetJid);
 
-          // Update whatsapp_queue doc to 'sent'
+          // Update MongoDB queue doc to 'sent'
+          if (mongoQueueId) {
+            await updateQueueItem(mongoQueueId, {
+              status: 'sent',
+              sentAt: new Date()
+            }).catch(() => {});
+          }
+
+          // Update Firestore doc to 'sent'
           if (queueDocRef) {
             await queueDocRef.update({
               status: 'sent',
@@ -4718,7 +5032,15 @@ export const sendCommunityBroadcast = async (classIds: string[], messageText: st
           console.error(`[WhatsApp Community Broadcast] Failed to send to ${targetJid} after retries:`, sendErr.message);
           failedJids.push(targetJid);
 
-          // Update whatsapp_queue doc to 'failed'
+          // Update MongoDB queue doc to 'failed'
+          if (mongoQueueId) {
+            await updateQueueItem(mongoQueueId, {
+              status: 'failed',
+              error: sendErr.message
+            }).catch(() => {});
+          }
+
+          // Update Firestore doc to 'failed'
           if (queueDocRef) {
             await queueDocRef.update({
               status: 'failed',

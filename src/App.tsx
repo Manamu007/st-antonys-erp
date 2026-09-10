@@ -264,14 +264,15 @@ const AutoUpdateNotifier: React.FC = () => {
     }
 
     const checkVersion = async () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
       try {
         const res = await fetch('/api/app-version');
         if (res.ok) {
-          const data = await res.json();
+          const data = await res.json().catch(() => null);
           if (data && data.version && data.version !== currentVersion) {
             console.log(`[AutoUpdate] Version mismatch! Browser: ${currentVersion}, Server: ${data.version}`);
             setUpdateAvailable(true);
-          } else {
+          } else if (data && data.version) {
             // Version matches or is newer, reset sync attempts
             try {
               sessionStorage.removeItem('version_sync_attempts');
@@ -283,9 +284,9 @@ const AutoUpdateNotifier: React.FC = () => {
       }
     };
 
-    // Run check initially after 5 seconds, then every 30 seconds
-    const initialTimeout = setTimeout(checkVersion, 5000);
-    const interval = setInterval(checkVersion, 30000);
+    // Run check initially after 10 seconds, then every 90 seconds
+    const initialTimeout = setTimeout(checkVersion, 10000);
+    const interval = setInterval(checkVersion, 90000);
 
     return () => {
       clearTimeout(initialTimeout);

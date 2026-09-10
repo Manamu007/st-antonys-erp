@@ -1,4 +1,4 @@
-import { getDbAdmin, initializationPromise, isDatabaseDenied, setDatabaseDenied } from '../../server/firebaseAdmin.js';
+import { getDbAdmin, initializationPromise, isDatabaseDenied, setDatabaseDenied, isQuotaOrPermissionError, handleFirestoreError } from '../../server/firebaseAdmin.js';
 import { sendMessage } from '../../server/whatsapp.js';
 
 /**
@@ -327,6 +327,10 @@ export async function runTeacherSubstitutionEngine(leaveId: string): Promise<boo
 
     return true;
   } catch (error: any) {
+    if (isQuotaOrPermissionError(error)) {
+      handleFirestoreError(error, 'Substitution Engine');
+      return false;
+    }
     console.error(`[Substitution Engine Error] Failed during auto teacher substitution calculation:`, error);
     return false;
   }
@@ -357,9 +361,18 @@ export async function startSubstitutionEngineListener(): Promise<void> {
 
     console.log(`[Substitution Engine] Initializing real-time Firestore listener for approved leaves...`);
 
+    let isInitial = true;
     unsubscribeLeavesListener = db.collection('leaves')
       .where('status', '==', 'approved')
       .onSnapshot((snapshot: any) => {
+        if (isInitial) {
+          isInitial = false;
+          // Seed the set with existing approved leaves so we do not re-run substitutions on historical leaves on every server start
+          snapshot.docs.forEach((doc: any) => processedLeaveIds.add(doc.id));
+          console.log(`[Substitution Engine Listener] Initialized with ${processedLeaveIds.size} existing approved leaves.`);
+          return;
+        }
+
         snapshot.docChanges().forEach(async (change: any) => {
           if (change.type === 'added' || change.type === 'modified') {
             const leaveId = change.doc.id;
@@ -377,29 +390,30 @@ export async function startSubstitutionEngineListener(): Promise<void> {
               
               try {
                 await runTeacherSubstitutionEngine(leaveId);
-              } catch (err) {
-                console.error(`[Substitution Engine Listener] Error running engine for leave ${leaveId}:`, err);
+              } catch (err: any) {
+                if (isQuotaOrPermissionError(err)) {
+                  handleFirestoreError(err, 'Substitution Engine Listener');
+                } else {
+                  console.error(`[Substitution Engine Listener] Error running engine for leave ${leaveId}:`, err);
+                }
               }
             }
           }
         });
       }, (error: any) => {
-        const errText = (error?.message || String(error)).toLowerCase();
-        if (errText.includes('retries') || errText.includes('billing') || errText.includes('permission_denied') || errText.includes('quota') || errText.includes('exceeded')) {
-          setDatabaseDenied(true);
+        if (isQuotaOrPermissionError(error)) {
+          handleFirestoreError(error, 'Substitution Engine Listener');
           if (unsubscribeLeavesListener) {
             try { unsubscribeLeavesListener(); } catch {}
             unsubscribeLeavesListener = null;
           }
-          console.warn(`[Substitution Engine Listener] Firestore listener deactivated (database requires billing or permissions).`);
         } else {
           console.error(`[Substitution Engine Listener] Firestore listener encountered an error:`, error);
         }
       });
   } catch (err: any) {
-    const errText = (err?.message || String(err)).toLowerCase();
-    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('quota')) {
-      setDatabaseDenied(true);
+    if (isQuotaOrPermissionError(err)) {
+      handleFirestoreError(err, 'Substitution Engine Listener');
     } else {
       console.error(`[Substitution Engine Listener] Failed to start:`, err.message);
     }

@@ -419,7 +419,7 @@ export const ERPDatabaseFlow: React.FC = () => {
           </p>
           <div className="pt-2 flex items-center gap-1">
             <a
-              href={`https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/antony-database1/indexes`}
+              href={`https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/(default)/indexes`}
               target="_blank"
               rel="noreferrer noopener"
               className="text-[10px] font-black text-primary hover:text-indigo-600 uppercase tracking-widest flex items-center gap-1 transition-colors"

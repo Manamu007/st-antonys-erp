@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import Sidebar from './Sidebar';
-import { Menu, X, ChevronLeft, ChevronRight, Settings, Calendar, Bell, LogOut, Shield, Users, ArrowRightLeft, AlertTriangle, ExternalLink } from 'lucide-react';
+import { Menu, X, ChevronLeft, ChevronRight, Settings, Calendar, Bell, LogOut, Shield, Users, ArrowRightLeft } from 'lucide-react';
 import { AIAssistant } from './AIAssistant';
 import { motion } from 'motion/react';
 import { format } from 'date-fns';
 import { NotificationCenter } from './NotificationCenter';
-import { QuotaExceededBanner } from './QuotaExceededBanner';
 import { usePermissions } from '../hooks/usePermissions';
 import { useAuth } from '../context/AuthContext';
 import { auth } from '../firebase';
@@ -24,34 +23,6 @@ const Layout: React.FC = () => {
   const [classTeacherInfo, setClassTeacherInfo] = useState<{ className: string; batchName: string } | null>(null);
   const [isMobile, setIsMobile] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
-  
-  const [isBillingDenied, setIsBillingDenied] = useState(false);
-  const [dbStatusError, setDbStatusError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const checkDbStatus = async () => {
-      try {
-        const response = await fetch('/api/admin-check');
-        if (response.ok) {
-          const data = await response.json();
-          if (!data.connected) {
-            setDbStatusError(data.error);
-            if (data.isDenied || (data.error && (data.error.includes('billing') || data.error.includes('Billing') || data.error.includes('PERMISSION_DENIED')))) {
-              setIsBillingDenied(true);
-            } else {
-              setIsBillingDenied(false);
-            }
-          } else {
-            setIsBillingDenied(false);
-            setDbStatusError(null);
-          }
-        }
-      } catch (err) {
-        console.warn("Could not fetch db status details from server:", err);
-      }
-    };
-    checkDbStatus();
-  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -114,7 +85,8 @@ const Layout: React.FC = () => {
   };
 
   useEffect(() => {
-    if (!profile?.uid) {
+    const userUid = profile?.uid || profile?.id;
+    if (!userUid) {
       setClassTeacherInfo(null);
       return;
     }
@@ -168,12 +140,26 @@ const Layout: React.FC = () => {
   }, [profile?.uid, profile?.id, profile?.role, isTeacher]);
 
   const handleLogout = async () => {
+    const token = localStorage.getItem('auth_jwt_token');
+    if (token) {
+      try {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+      } catch (e) {}
+    }
+    localStorage.removeItem('auth_jwt_token');
     localStorage.removeItem('preferred_profile_id');
     localStorage.removeItem('bypass_user_email');
     localStorage.removeItem('bypass_user_uid');
     localStorage.removeItem('bypass_user_name');
     localStorage.removeItem('bypass_user_photo');
-    await auth.signOut();
+    localStorage.removeItem('bypass_user_role');
+    localStorage.removeItem('bypass_user_profile');
+    try {
+      await auth.signOut();
+    } catch (e) {}
     navigate('/login');
   };
 
@@ -207,7 +193,6 @@ const Layout: React.FC = () => {
       className="flex h-screen bg-background overflow-hidden relative font-sans selection:bg-primary/20 selection:text-primary transition-colors duration-500"
       data-sidebar-collapsed={isSidebarCollapsed}
     >
-      <QuotaExceededBanner />
       {/* Immersive Background Elements - Only show for default theme */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none z-0 [[data-theme='glass-dark']_&]:hidden text-red-500">
         <div className="absolute top-[-10%] right-[-10%] w-[50%] h-[50%] bg-primary/3 rounded-full blur-[150px] animate-pulse" />
@@ -414,39 +399,6 @@ const Layout: React.FC = () => {
       {/* Content Engine */}
       <main className="flex-1 overflow-y-auto px-4 md:px-8 py-10 pt-32 lg:pt-32 w-full max-w-[100vw] relative scroll-smooth transition-all duration-500">
         <div className={`${isSidebarCollapsed ? 'max-w-full' : 'max-w-[1600px]'} mx-auto space-y-10 transition-all duration-500`}>
-          {isBillingDenied && (
-            <motion.div 
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="p-6 bg-rose-50 dark:bg-rose-950/20 border-2 border-rose-200 dark:border-rose-900/30 rounded-[2.5rem] flex flex-col md:flex-row items-center justify-between gap-6 shadow-xl"
-            >
-              <div className="flex items-start gap-4">
-                <div className="w-12 h-12 bg-rose-100 dark:bg-rose-900/40 rounded-2xl flex items-center justify-center flex-shrink-0">
-                  <AlertTriangle className="w-6 h-6 text-rose-600 dark:text-rose-400" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-black uppercase tracking-wider text-rose-800 dark:text-rose-300">
-                    School Cloud Database Unavailable (గూగుల్ క్లౌడ్ బిల్లింగ్ అవసరం)
-                  </h3>
-                  <p className="text-xs text-rose-600 dark:text-rose-400 font-bold uppercase tracking-wider mt-0.5">
-                    Google Cloud Billing Account Required for project: <span className="font-mono font-black text-rose-800 dark:text-rose-300">antonyserp-cc9df</span>
-                  </p>
-                  <p className="text-xs text-slate-600 dark:text-slate-300 mt-2 max-w-4xl leading-relaxed">
-                    మీ గూగుల్ క్లౌడ్ ప్రాజెక్ట్ <b>antonyserp-cc9df</b> లో <b>Billing ఎనేబుల్ చేయబడలేదు</b> లేదా Blaze ప్లాన్‌కి అప్‌గ్రేడ్ చేయాలి. ఈ కారణంగా Firestore డేటాబేస్ నిలిపివేయబడింది. దయచేసి ప్రాజెక్ట్ లో బిల్లింగ్ అకౌంట్ యాక్టివేట్ చేయండి, ఆ తర్వాత వెంటనే విద్యార్థులు (students), స్టాఫ్ (staff) మరియు క్లాస్ వివరాలు కనిపిస్తాయి.
-                  </p>
-                </div>
-              </div>
-              <a 
-                href="https://console.developers.google.com/billing/enable?project=antonyserp-cc9df"
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-2 bg-rose-600 hover:bg-rose-700 text-white font-black text-xs px-6 py-3.5 rounded-2xl uppercase tracking-widest transition-all hover:scale-105 active:scale-95 shadow-xl shadow-rose-900/20 flex-shrink-0 cursor-pointer"
-              >
-                Enable Billing <ExternalLink className="w-4 h-4" />
-              </a>
-            </motion.div>
-          )}
-
           {studentProfiles.length > 1 && (isStudent || isParent) && (
             <motion.div 
               initial={{ opacity: 0, y: -20 }}

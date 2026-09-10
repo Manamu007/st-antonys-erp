@@ -8,14 +8,14 @@ import {
   updateDoc, 
   deleteDoc, 
   query, 
-  where, 
+  where as firestoreWhere, 
   onSnapshot,
   Timestamp,
   addDoc,
   writeBatch,
-  limit,
+  limit as firestoreLimit,
   startAfter,
-  orderBy,
+  orderBy as firestoreOrderBy,
   getCountFromServer,
   QueryConstraint
 } from 'firebase/firestore';
@@ -23,6 +23,7 @@ import { db, auth, isBackendUnreachable } from '../firebase';
 import { generateUniqueStudentId } from '../lib/studentUtils';
 import { safeStorage as localStorage, safeSessionStorage as sessionStorage } from '../lib/safeStorage';
 import { isSystemAccount, isDeveloperAccount } from '../constants/systemAccounts';
+import { resolveApiUrl } from '../lib/apiClient';
 
 export enum OperationType {
   CREATE = 'create',
@@ -52,55 +53,32 @@ interface FirestoreErrorInfo {
   }
 }
 
-// Quota & Billing tracking logic
-const QUOTA_ERROR_KEY = 'firestore_quota_exceeded_timestamp';
-const QUOTA_COOLOFF_PERIOD = 1000 * 60 * 60; // 1 hour cooloff
+// Billing and quota tracking logic disabled - exclusively communicating with local Express backend API + MongoDB
+export const isCloudBillingFallbackActive = () => false;
+export const enableBillingFallbackMode = () => {};
+export const checkQuotaStatus = () => false;
 
-let isCloudBillingRestricted = false;
+export const where = (field: string, op: any, value: any) => ({
+  type: 'where' as const,
+  field,
+  op,
+  value
+});
 
-export const isCloudBillingFallbackActive = () => {
-  if (isCloudBillingRestricted) return true;
-  if (typeof window !== 'undefined') {
-    try {
-      if (sessionStorage.getItem('fs_billing_fallback_active') === 'true' || localStorage.getItem('fs_billing_fallback_active') === 'true') {
-        isCloudBillingRestricted = true;
-        return true;
-      }
-    } catch (_) {}
-  }
-  return false;
-};
+export const limit = (value: number) => ({
+  type: 'limit' as const,
+  value
+});
 
-export const enableBillingFallbackMode = () => {
-  if (!isCloudBillingRestricted) {
-    isCloudBillingRestricted = true;
-    if (typeof window !== 'undefined') {
-      try {
-        sessionStorage.setItem('fs_billing_fallback_active', 'true');
-        localStorage.setItem('fs_billing_fallback_active', 'true');
-      } catch (_) {}
-      window.dispatchEvent(new CustomEvent('firestore-billing-required', {
-        detail: {
-          projectId: 'antonyserp-cc9df',
-          billingUrl: 'https://console.developers.google.com/billing/enable?project=antonyserp-cc9df'
-        }
-      }));
-    }
-  }
-};
-
-export const checkQuotaStatus = () => {
-  return false;
-};
+export const orderBy = (field: string, direction: 'asc' | 'desc' = 'asc') => ({
+  type: 'orderBy' as const,
+  field,
+  direction
+});
 
 let isSdkPoisoned = false;
 
-const setQuotaExceeded = () => {
-  if (typeof window !== 'undefined') {
-    localStorage.setItem(QUOTA_ERROR_KEY, Date.now().toString());
-    window.dispatchEvent(new CustomEvent('firestore-quota-exceeded'));
-  }
-};
+const setQuotaExceeded = () => {};
 
 // Throttling for repeated identical errors to prevent main thread blocking
 const errorTracker = new Map<string, { count: number, lastTime: number }>();
@@ -202,7 +180,7 @@ export const handleFirestoreError = (error: unknown, operationType: OperationTyp
     console.warn(`[PermNote] Client access restricted for path '${path}' - falling back to secure API proxy... Original status:`, errorMessage);
   } else if (isIndexError) {
     const consoleUrlMatch = errorMessage.match(/https:\/\/console\.firebase\.google\.com[^\s']+/)?.[0];
-    const url = consoleUrlMatch || `https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/antony-database1/indexes`;
+    const url = consoleUrlMatch || `https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/(default)/indexes`;
     console.warn(`Firestore Index Missing on ${path}. Generate it here: ${url}`);
     
     // Auto-persist index error to Firebase collection "index_errors"
@@ -687,13 +665,14 @@ async function logAudit(
 
 export async function resilientFetch(input: RequestInfo | URL, init?: RequestInit, retries = 5, delay = 800): Promise<Response> {
   let attempt = 0;
+  const targetUrl = typeof input === 'string' ? resolveApiUrl(input) : input;
   while (true) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
       const requestInit = { ...init, signal: controller.signal };
 
-      const res = await fetch(input, requestInit);
+      const res = await fetch(targetUrl, requestInit);
       clearTimeout(timeoutId);
 
       if (res.status === 429) {
@@ -708,6 +687,13 @@ export async function resilientFetch(input: RequestInfo | URL, init?: RequestIni
       attempt++;
       if (attempt >= retries) {
         console.error(`[ResilientFetch] Failed after ${attempt} attempts: ${err?.message || String(err)}`);
+        // Non-critical telemetry and audit logs gracefully return empty success
+        if (typeof input === 'string' && (input.includes('audit-log') || input.includes('log'))) {
+          return new Response(JSON.stringify({ success: true, skipped: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
         throw err;
       }
       const backoffDelay = delay * Math.pow(2, attempt - 1) + Math.random() * 300;
@@ -736,8 +722,7 @@ export async function parseResponseJson<T = any>(res: Response | null | undefine
 }
 
 const isBypassActive = (): boolean => {
-  if (typeof window === 'undefined') return false;
-  return isCloudBillingFallbackActive() || !!localStorage.getItem('bypass_user_email') || isBackendUnreachable;
+  return true;
 };
 
 const deduplicateArrayByID = (arr: any[]): any[] => {

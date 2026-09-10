@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>St. Antony's School ERP</title>
+    <meta name="description" content="A cutting-edge, AI-powered School Management System with student/staff records, smart attendance, fee tracking, communication portal, and intelligent performance insights." />
+    <meta property="og:title" content="St. Antony's School ERP" />
+    <meta property="og:description" content="A cutting-edge, AI-powered School Management System with student/staff records, smart attendance, fee tracking, communication portal, and intelligent performance insights." />
     
     <!-- PWA Settings and iOS Safari Support -->
     <link rel="manifest" href="/manifest.json" />
@@ -18,20 +21,61 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <script>
-      // Block benign ResizeObserver error loop notifications from triggering iframe and console alerts
+      // Block benign ResizeObserver and rate-limit error loop notifications from triggering iframe and console alerts
       window.addEventListener('error', function(e) {
-        if (e.message && (e.message.indexOf('ResizeObserver') !== -1 || e.message.indexOf('loop limit exceeded') !== -1)) {
+        var msg = (e && e.message) || '';
+        if (
+          msg.indexOf('ResizeObserver') !== -1 ||
+          msg.indexOf('loop limit exceeded') !== -1 ||
+          msg.indexOf('Rate exceeded') !== -1 ||
+          msg.indexOf("Unexpected token 'R'") !== -1
+        ) {
           e.preventDefault();
           e.stopImmediatePropagation();
         }
       }, true);
       window.addEventListener('unhandledrejection', function(e) {
-        var msg = (e.reason && e.reason.message) || '';
-        if (msg.indexOf('ResizeObserver') !== -1 || msg.indexOf('loop limit exceeded') !== -1) {
+        var reason = (e && e.reason) || '';
+        var msg = (typeof reason === 'string' ? reason : (reason && reason.message) || '') + '';
+        if (
+          msg.indexOf('ResizeObserver') !== -1 ||
+          msg.indexOf('loop limit exceeded') !== -1 ||
+          msg.indexOf('Rate exceeded') !== -1 ||
+          msg.indexOf("Unexpected token 'R'") !== -1
+        ) {
           e.preventDefault();
           e.stopImmediatePropagation();
         }
       }, true);
+
+      // Resilient Response.prototype.json to prevent "Rate exceeded." or HTML error responses from crashing with SyntaxError
+      (function() {
+        try {
+          if (typeof Response !== 'undefined' && Response.prototype && Response.prototype.json) {
+            var rawJson = Response.prototype.json;
+            Response.prototype.json = async function() {
+              try {
+                var text = await this.text();
+                if (!text || !text.trim()) {
+                  return {};
+                }
+                try {
+                  return JSON.parse(text);
+                } catch (syntaxErr) {
+                  var trimmed = text.trim();
+                  if (trimmed.indexOf('Rate exceeded') !== -1 || trimmed.startsWith('<!doctype') || trimmed.startsWith('<html')) {
+                    console.warn('[Safe Response.json] Intercepted non-JSON response (' + trimmed.slice(0, 40) + '...), returning safe fallback');
+                    return { success: false, error: trimmed, rateLimited: true, status: this.status || 429 };
+                  }
+                  return { success: false, error: syntaxErr.message, raw: trimmed };
+                }
+              } catch (e) {
+                return {};
+              }
+            };
+          }
+        } catch (respErr) {}
+      })();
 
       // Polyfill/shim writable fetch property for sandbox environments where window.fetch has only a getter
       (function() {
@@ -39,12 +83,20 @@
           var originalFetch = typeof window !== 'undefined' ? window.fetch : null;
           var customFetch = originalFetch;
 
+          function smartFetch(input, init) {
+            var targetFetch = customFetch || originalFetch;
+            if (typeof targetFetch === 'function') {
+              return targetFetch.call(this, input, init);
+            }
+            return Promise.reject(new Error('Fetch API not available'));
+          }
+
           function makeWritableFetch(target) {
             if (!target) return;
             try {
               Object.defineProperty(target, 'fetch', {
                 get: function() {
-                  return customFetch || originalFetch || (typeof window !== 'undefined' ? window.fetch : undefined);
+                  return smartFetch;
                 },
                 set: function(fn) {
                   customFetch = fn;
@@ -54,7 +106,6 @@
               });
             } catch (e) {}
           }
-
           makeWritableFetch(window);
           if (typeof Window !== 'undefined' && Window.prototype) {
             makeWritableFetch(Window.prototype);

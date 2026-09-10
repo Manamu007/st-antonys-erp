@@ -1,3 +1,5 @@
+import { resolveApiUrl } from '../lib/apiClient';
+
 export interface WASendOptions {
   imageUrl?: string;
   videoUrl?: string;
@@ -22,7 +24,7 @@ export interface WASendOptions {
 
 export const whatsappService = {
   async sendMessage(to: string, text: string, options: WASendOptions = {}) {
-    const response = await fetch('/api/whatsapp/send', {
+    const response = await fetch(resolveApiUrl('/api/whatsapp/send'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ to, text, options })
@@ -31,7 +33,7 @@ export const whatsappService = {
   },
 
   async broadcastMessage(to: string[], text: string, options: WASendOptions = {}) {
-    const response = await fetch('/api/whatsapp/broadcast', {
+    const response = await fetch(resolveApiUrl('/api/whatsapp/broadcast'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ to, text, options })
@@ -40,17 +42,17 @@ export const whatsappService = {
   },
 
   async getStatus() {
-    const response = await fetch('/api/whatsapp/status');
+    const response = await fetch(resolveApiUrl('/api/whatsapp/status'));
     return response.json();
   },
 
   async getStats() {
-    const response = await fetch('/api/whatsapp/stats');
+    const response = await fetch(resolveApiUrl('/api/whatsapp/stats'));
     return response.json();
   },
 
   async reconcileStats() {
-    const response = await fetch('/api/whatsapp/reconcile-stats', {
+    const response = await fetch(resolveApiUrl('/api/whatsapp/reconcile-stats'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
     });

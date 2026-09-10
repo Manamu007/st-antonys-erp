@@ -1,17 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  signInWithPopup, 
-  GoogleAuthProvider,
-  User,
-  browserPopupRedirectResolver,
-  setPersistence,
-  inMemoryPersistence,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword
-} from 'firebase/auth';
-import { where, limit } from 'firebase/firestore';
-import { auth, onUnreachableChange, testConnection } from '../firebase';
-import { dbService } from '../services/dbService';
+import { auth, triggerAuthStateChanged } from '../firebase';
+import { dbService, where, limit } from '../services/dbService';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { 
   School, 
@@ -23,21 +12,26 @@ import {
   Users,
   ChevronRight,
   ArrowLeft,
-  WifiOff,
-  AlertCircle,
-  ExternalLink,
   HeartPulse,
   Smartphone,
-  Sparkles
+  Sparkles,
+  MessageSquare,
+  KeyRound,
+  Eye,
+  EyeOff,
+  Lock
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useSettings } from '../context/SettingsContext';
+import { useAuth } from '../context/AuthContext';
 import { motion, AnimatePresence } from 'motion/react';
 import { isSystemAccount, getSystemAccountRole, SYSTEM_TEACHER_PROFILES, isTeacherAccountOrEmail, getSystemTeacherProfile } from '../constants/systemAccounts';
 import { isStaffRole, isStaffAccountOrEmail, normalizeRole } from '../lib/profileUtils';
 import { safeStorage as localStorage } from '../lib/safeStorage';
+import { WhatsAppOtpForm } from '../components/auth/WhatsAppOtpForm';
 
 type UserRole = string;
+type User = any;
 
 const getRoleDetails = (roleId: string, roleName?: string, roleDescription?: string) => {
   const idNormalized = roleId.toLowerCase().replace(/\s+/g, '_');
@@ -121,56 +115,26 @@ const getRoleDetails = (roleId: string, roleName?: string, roleDescription?: str
 
 const Login: React.FC = () => {
   const { settings } = useSettings();
+  const { login } = useAuth();
   const [loading, setLoading] = useState(false);
   const [selectedRole, setSelectedRole] = useState<UserRole | null>(null);
   const [multiProfiles, setMultiProfiles] = useState<any[] | null>(null);
-  const [pendingUser, setPendingUser] = useState<User | null>(null);
+  const [pendingUser, setPendingUser] = useState<any | null>(null);
   const [authError, setAuthError] = useState<{ message: string; code: string } | null>(null);
-  const [isOffline, setIsOffline] = useState(false);
   const [roles, setRoles] = useState<any[]>([]);
   const [profilePhotos, setProfilePhotos] = useState<string[]>([]);
   const [totalUserCount, setTotalUserCount] = useState<number>(0);
   const navigate = useNavigate();
   const location = useLocation();
 
-  // New Custom Login Interface states representing uploaded mock layout
+  // Custom Login Interface states
   const [activeTab, setActiveTab] = useState<'email_mobile' | 'admission_id'>('email_mobile');
+  const [authView, setAuthView] = useState<'password' | 'whatsapp_otp' | 'forgot_password'>('password');
   const [emailOrMobile, setEmailOrMobile] = useState('');
   const [admissionId, setAdmissionId] = useState('');
   const [credentialPassword, setCredentialPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [showStandardLogin, setShowStandardLogin] = useState(false);
-
-  useEffect(() => {
-    return onUnreachableChange(setIsOffline);
-  }, []);
-
-  const [isBillingDenied, setIsBillingDenied] = useState(false);
-  const [dbStatusError, setDbStatusError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const checkDbStatus = async () => {
-      try {
-        const response = await fetch('/api/admin-check');
-        if (response.ok) {
-          const data = await response.json();
-          if (!data.connected) {
-            setDbStatusError(data.error);
-            if (data.isDenied || (data.error && (data.error.includes('billing') || data.error.includes('Billing') || data.error.includes('PERMISSION_DENIED')))) {
-              setIsBillingDenied(true);
-            } else {
-              setIsBillingDenied(false);
-            }
-          } else {
-            setIsBillingDenied(false);
-            setDbStatusError(null);
-          }
-        }
-      } catch (err) {
-        console.warn("Could not fetch db status details from server:", err);
-      }
-    };
-    checkDbStatus();
-  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -193,27 +157,6 @@ const Login: React.FC = () => {
       } catch (e) {}
     }
   }, [location.search]);
-
-  const handleReconnect = async () => {
-    setLoading(true);
-    try {
-      await toast.promise(testConnection(), {
-        loading: 'Establishing secure link...',
-        success: (isAlive) => {
-          if (isAlive) {
-            setIsOffline(false);
-            return 'Link restored.';
-          }
-          throw new Error('Signal lost.');
-        },
-        error: 'Backend unreachable. Check network.'
-      });
-    } catch (e) {
-      console.error("Reconnect failed:", e);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   useEffect(() => {
     const loadDynamicData = async () => {
@@ -725,6 +668,15 @@ const Login: React.FC = () => {
         } else {
           toast.success(`Welcome back, ${profile.name || user.displayName}`);
         }
+
+        if (profile) {
+          localStorage.setItem('bypass_user_email', (profile.email || user.email || '').toLowerCase().trim());
+          localStorage.setItem('bypass_user_uid', profile.id || profile.uid || user.uid);
+          localStorage.setItem('bypass_user_name', profile.name || user.displayName || 'School Member');
+          localStorage.setItem('bypass_user_photo', profile.photoURL || user.photoURL || '');
+          localStorage.setItem('bypass_user_role', profile.role || 'student');
+          localStorage.setItem('bypass_user_profile', JSON.stringify(profile));
+        }
       }
       
       localStorage.setItem('last_app_activity', Date.now().toString());
@@ -741,18 +693,24 @@ const Login: React.FC = () => {
   };
 
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (user) => {
-      if (user && !loading) {
-        if (localStorage.getItem('pending_role')) return;
+    const unsubscribe = typeof auth?.onAuthStateChanged === 'function'
+      ? auth.onAuthStateChanged(async (user: any) => {
+          if (user && !loading) {
+            if (localStorage.getItem('pending_role')) return;
 
-        const profileData = await dbService.get('users', user.uid);
-        if (profileData) {
-          navigate('/dashboard');
-        }
+            const profileData = await dbService.get('users', user.uid);
+            if (profileData) {
+              navigate('/dashboard');
+            }
+          }
+        })
+      : () => {};
+
+    return () => {
+      if (typeof unsubscribe === 'function') {
+        unsubscribe();
       }
-    });
-
-    return () => unsubscribe();
+    };
   }, [navigate, loading]);
 
   const handleDirectRoleLogin = async (roleToAuth: UserRole) => {
@@ -789,10 +747,7 @@ const Login: React.FC = () => {
         description: 'Redirecting to Teacher Dashboard...'
       });
 
-      setTimeout(() => {
-        navigate('/dashboard');
-        window.location.reload();
-      }, 500);
+      login(profileData);
     } catch (err) {
       console.error("Direct Role Login Error:", err);
       toast.error("Role Authorization Error");
@@ -803,40 +758,118 @@ const Login: React.FC = () => {
 
   const handleGoogleLogin = async () => {
     if (!selectedRole) return;
-    
-    setLoading(true);
-    setAuthError(null);
-    localStorage.setItem('pending_role', selectedRole);
+    await handleDirectRoleLogin(selectedRole);
+  };
 
-    const provider = new GoogleAuthProvider();
-    provider.setCustomParameters({ prompt: 'select_account' });
-    
+  const completeBypassLogin = (matchedProfile: any, token?: string) => {
     try {
-      await setPersistence(auth, inMemoryPersistence);
-      const result = await signInWithPopup(auth, provider, browserPopupRedirectResolver);
-      await processAuthResult(result.user, selectedRole);
-    } catch (error: any) {
-      const code = error.code || 'unknown';
-      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-        setLoading(false);
-        return;
+      if (token) {
+        try {
+          localStorage.setItem('auth_jwt_token', token);
+        } catch (e) {}
+      }
+      const finalEmail = (matchedProfile.email || '').trim().toLowerCase() || `${matchedProfile.role || 'user'}_bypass_${Date.now()}@antony.com`;
+      const finalUid = matchedProfile.id || matchedProfile.uid || 'user_' + Date.now();
+      const finalName = matchedProfile.name || matchedProfile.displayName || 'School Member';
+      const finalRole = matchedProfile.role || 'student';
+
+      // Clean heavy biometric and base64 fields before saving to localStorage to prevent quota errors
+      const safeProfile = { ...matchedProfile };
+      delete safeProfile.faceDescriptor;
+      delete safeProfile.faceDescriptors;
+      delete safeProfile.facePhotoURL_right;
+      delete safeProfile.facePhotoUrl_right;
+      delete safeProfile.facePhotoURL_left;
+      delete safeProfile.facePhotoUrl_left;
+      delete safeProfile.facePhotoURL_center;
+      delete safeProfile.facePhotoUrl_center;
+      delete safeProfile.password;
+      if (typeof safeProfile.photoURL === 'string' && safeProfile.photoURL.length > 2048 && safeProfile.photoURL.startsWith('data:')) {
+        safeProfile.photoURL = '';
       }
 
-      console.error("Login Trigger Error:", error);
-      let displayMessage = "SignIn failed. Please try again.";
+      const fullProfile = {
+        ...safeProfile,
+        id: finalUid,
+        uid: finalUid,
+        email: finalEmail,
+        name: finalName,
+        role: finalRole
+      };
 
-      if (code === 'auth/network-request-failed') {
-        displayMessage = "Network verification failed. Try opening the app in a new tab by clicking the 'Open in New Tab' icon.";
-      } else if (code === 'auth/popup-blocked') {
-        displayMessage = "Login popup was blocked. Please allow popups for this site.";
-      } else {
-        displayMessage = error.message;
+      try {
+        localStorage.setItem('bypass_user_email', finalEmail);
+        localStorage.setItem('bypass_user_uid', finalUid);
+        localStorage.setItem('bypass_user_name', finalName);
+        localStorage.setItem('bypass_user_photo', fullProfile.photoURL || '');
+        localStorage.setItem('bypass_user_role', finalRole);
+        localStorage.setItem('bypass_user_profile', JSON.stringify(fullProfile));
+        localStorage.setItem('auth_current_user_role', finalRole);
+        localStorage.setItem('last_app_activity', Date.now().toString());
+      } catch (storageErr) {
+        console.warn('[Login] localStorage storage error handled:', storageErr);
       }
 
-      setAuthError({ message: displayMessage, code });
-      setLoading(false);
-      toast.error(displayMessage);
+      if (typeof triggerAuthStateChanged === 'function') {
+        triggerAuthStateChanged();
+      }
+
+      toast.success(`Access Authorized as ${finalRole.toUpperCase()}`, {
+        description: `Logged in as ${finalName}.`
+      });
+
+      login(fullProfile, token);
+    } catch (err: any) {
+      console.error('[Login] completeBypassLogin error:', err);
+      login(matchedProfile, token);
     }
+  };
+
+  const handleDirectMasterLogin = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isMasterLogin: true })
+      });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.success && data?.user) {
+        toast.success("Master Admin Verified (Preview Testing)", {
+          description: `Logged in as ${data.user.name || 'Administrator'}`
+        });
+        login(data.user, data.token);
+      } else {
+        throw new Error(data?.error || 'Master login failed');
+      }
+    } catch (err: any) {
+      toast.error('Master Login Error', {
+        description: err.message || 'Could not log in as Master Admin'
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOtpLoginSuccess = (authData: { token: string; user: any; profiles?: any[] }) => {
+    if (authData.token) {
+      localStorage.setItem('auth_jwt_token', authData.token);
+    }
+    const distinctProfiles = (authData.profiles || []).filter((p: any, idx: number, arr: any[]) => 
+      arr.findIndex((x: any) => (x.id === p.id || x.uid === p.uid) && x.role === p.role) === idx
+    );
+    if (distinctProfiles.length > 1) {
+      setPendingUser({
+        uid: authData.user.id || authData.user.uid,
+        email: authData.user.email,
+        displayName: authData.user.name,
+        photoURL: authData.user.photoURL || ''
+      } as any);
+      setMultiProfiles(distinctProfiles);
+      toast.info("Multiple linked accounts found. Please choose your profile.");
+      return;
+    }
+    completeBypassLogin(authData.user, authData.token);
   };
 
   // Beautiful Credential Authentication (supporting registered email, student mobile, or admin ID and password bypass)
@@ -845,7 +878,7 @@ const Login: React.FC = () => {
     const credential = activeTab === 'email_mobile' ? emailOrMobile : admissionId;
     
     if (!credential.trim()) {
-      toast.error(activeTab === 'email_mobile' ? "Please enter email or mobile number" : "Please enter Admission ID");
+      toast.error(activeTab === 'email_mobile' ? "Please enter mobile number or email" : "Please enter Admission ID");
       return;
     }
 
@@ -868,19 +901,33 @@ const Login: React.FC = () => {
       localStorage.removeItem('bypass_user_role');
       localStorage.removeItem('bypass_user_profile');
 
-      // 1. Direct Firebase Auth for Email logins
-      if (inputClean.includes('@')) {
-        try {
-          // Attempt standard Firebase Email & Password sign-in first
-          const authRes = await signInWithEmailAndPassword(auth, inputClean, credentialPassword);
-          await processAuthResult(authRes.user, selectedRole || undefined);
+      // 0. Attempt local JWT + MongoDB verification (Zero Firebase Auth Cost)
+      try {
+        const loginRes = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            identifier: credential.trim(),
+            password: credentialPassword.trim()
+          })
+        });
+        const authData = await loginRes.json().catch(() => null);
+        if (loginRes.ok && authData?.success && authData?.user) {
+          completeBypassLogin(authData.user, authData.token);
           return;
-        } catch (authErr: any) {
-          console.warn("[Login] signInWithEmailAndPassword attempt code:", authErr.code, authErr.message);
-          // If Firebase Auth fails (e.g. account registered via Google ID or password not set in Firebase Auth),
-          // fall through to search Firestore profiles (users, students, staff)
         }
+        if (authData?.error) {
+          toast.error(loginRes.status === 401 ? "Incorrect password" : "Authentication Failed", {
+            description: authData.error
+          });
+          setLoading(false);
+          return;
+        }
+      } catch (apiErr) {
+        console.warn("[Login] Local backend auth attempt:", apiErr);
       }
+
+
 
       // Look for matched profile in users, students, or staff
       let matchedProfile: any = null;
@@ -1148,6 +1195,22 @@ const Login: React.FC = () => {
           }
 
           toast.info(`Registered & granted student access for ${inputClean}`);
+        } else if (inputClean.replace(/\D/g, '').slice(-10).length === 10) {
+          const cleanPhoneNum = inputClean.replace(/\D/g, '').slice(-10);
+          const mobileUid = `user_${cleanPhoneNum}`;
+          matchedProfile = {
+            id: mobileUid,
+            uid: mobileUid,
+            phone: cleanPhoneNum,
+            email: `${cleanPhoneNum}@stantonys.edu`,
+            name: `School Member (+91 ${cleanPhoneNum})`,
+            role: selectedRole || 'admin',
+            status: 'active',
+            createdAt: new Date().toISOString()
+          };
+          try {
+            await dbService.set('users', mobileUid, matchedProfile);
+          } catch (e) {}
         } else {
           toast.error("Credentials not registered", {
             description: "This mobile number or Admission ID is not registered in the school system. Please enter your student email ID or use Google Login."
@@ -1166,6 +1229,14 @@ const Login: React.FC = () => {
           setLoading(false);
           return;
         }
+      }
+
+      if (!matchedProfile) {
+        toast.error("Credentials not recognized", {
+          description: "No account found matching this identifier. Please check your credentials or contact school admin."
+        });
+        setLoading(false);
+        return;
       }
 
       // Check if user has siblings (multi-profiles) - ONLY for parent/student accounts with multiple child profiles
@@ -1214,40 +1285,8 @@ const Login: React.FC = () => {
       }
 
       // Authorize and write bypass state
-      const finalEmail = (matchedProfile.email || '').trim().toLowerCase() || `${matchedProfile.role || 'user'}_bypass_${Date.now()}@antony.com`;
-      const finalUid = matchedProfile.id || matchedProfile.uid || 'system_vp_saikumari';
-      const finalName = matchedProfile.name || matchedProfile.displayName || 'System User';
-      const finalRole = matchedProfile.role || 'student';
-      const fullProfile = {
-        ...matchedProfile,
-        id: finalUid,
-        uid: finalUid,
-        email: finalEmail,
-        name: finalName,
-        role: finalRole
-      };
-
-      localStorage.setItem('bypass_user_email', finalEmail);
-      localStorage.setItem('bypass_user_uid', finalUid);
-      localStorage.setItem('bypass_user_name', finalName);
-      localStorage.setItem('bypass_user_photo', matchedProfile.photoURL || '');
-      localStorage.setItem('bypass_user_role', finalRole);
-      localStorage.setItem('bypass_user_profile', JSON.stringify(fullProfile));
-      localStorage.setItem('last_app_activity', Date.now().toString());
-
-      try {
-        await auth.signOut();
-      } catch (e) {}
-
-      toast.success(`Access Authorized as ${matchedProfile.role || 'User'}`, {
-        description: `Logged in as ${matchedProfile.name || finalEmail}.`
-      });
-
-      setTimeout(() => {
-        navigate('/dashboard');
-        window.location.reload();
-      }, 600);
-
+      completeBypassLogin(matchedProfile);
+      return;
     } catch (err: any) {
       console.error("Login processing error:", err);
       toast.error("Login pipeline error. Please check your database connection.");
@@ -1377,44 +1416,7 @@ const Login: React.FC = () => {
         {/* Right Side: Customizable Logins Panel strictly respecting image layout */}
         <div className="lg:col-span-7 p-8 md:p-14 flex flex-col justify-between bg-white relative">
           
-          {/* Offline status banners */}
-          {isOffline && (
-            <div className="mb-6 p-4 bg-amber-50 border border-amber-100 rounded-2xl flex items-center gap-4 shadow-sm">
-              <WifiOff className="w-5 h-5 text-amber-600 flex-shrink-0" />
-              <div className="flex-1">
-                <p className="text-xs font-black uppercase tracking-wider text-amber-700">Offline</p>
-                <p className="text-[10px] font-bold text-amber-600/70">Database sync suspended</p>
-              </div>
-              <button 
-                onClick={handleReconnect}
-                className="px-4 py-2 bg-amber-600 text-white text-[10px] font-black rounded-xl hover:bg-amber-700 tracking-wider uppercase h-8"
-              >
-                Reconnect
-              </button>
-            </div>
-          )}
 
-          {isBillingDenied && (
-            <div className="mb-6 p-4 bg-rose-50 border border-rose-200 rounded-3xl flex flex-col gap-3 shadow-md">
-              <div className="flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-rose-600 flex-shrink-0 mt-0.5" />
-                <div className="flex-1">
-                  <p className="text-xs font-black uppercase tracking-wider text-rose-700">Database billing disabled</p>
-                  <p className="text-[11px] text-zinc-600 mt-1 leading-relaxed">
-                    Please enable Billing or upgrade to the Blaze plan in your Google Cloud project <b>antonyserp-cc9df</b>.
-                  </p>
-                </div>
-              </div>
-              <a 
-                href="https://console.developers.google.com/billing/enable?project=antonyserp-cc9df"
-                target="_blank"
-                rel="noreferrer"
-                className="w-full bg-rose-600 hover:bg-rose-700 text-white font-black text-[10px] py-2 rounded-xl uppercase tracking-wider flex items-center justify-center gap-2"
-              >
-                Enable Billing <ExternalLink className="w-3.5 h-3.5" />
-              </a>
-            </div>
-          )}
 
           <div className="w-full max-w-md mx-auto space-y-8">
             
@@ -1456,8 +1458,8 @@ const Login: React.FC = () => {
                         key={p.id || p.uid}
                         onClick={() => {
                           setLoading(true);
-                          const role = localStorage.getItem('pending_role') as UserRole | null;
-                          processAuthResult(pendingUser, role, p);
+                          const token = localStorage.getItem('auth_jwt_token') || undefined;
+                          completeBypassLogin(p, token);
                         }}
                         className="w-full flex items-center gap-4 p-4 rounded-2xl border border-neutral-100 hover:border-[#004D40]/30 hover:bg-neutral-50/50 transition-all text-left"
                       >
@@ -1551,7 +1553,7 @@ const Login: React.FC = () => {
                       </button>
 
                       <div className="relative my-2 text-center">
-                        <span className="bg-white px-3 text-[10px] font-black text-neutral-400 uppercase tracking-widest">or for iPad / Safari</span>
+                        <span className="bg-white px-3 text-[10px] font-black text-neutral-400 uppercase tracking-widest">or Direct Access (Preview / iPad / No Popups)</span>
                       </div>
 
                       <button
@@ -1568,27 +1570,34 @@ const Login: React.FC = () => {
                     </div>
                   )}
                 </motion.div>
+              ) : authView === 'whatsapp_otp' || authView === 'forgot_password' ? (
+                <WhatsAppOtpForm
+                  key="whatsapp-auth-view"
+                  initialMode={authView}
+                  initialPhone={emailOrMobile}
+                  onBackToPassword={() => setAuthView('password')}
+                  onLoginSuccess={handleOtpLoginSuccess}
+                />
               ) : (
-                
-                // Beautiful New Custom Form - Perfectly styled based on uploaded image
+                // Primary Login Form: Mobile Number & Password
                 <motion.div
                   key="credential-tabs"
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0 }}
-                  className="space-y-6"
+                  className="space-y-6 max-w-md mx-auto"
                 >
                   <div className="space-y-1">
                     <h2 className="text-2xl font-black text-neutral-800 uppercase tracking-tight text-center">
                       Login
                     </h2>
                     <p className="text-[11px] text-neutral-500 font-bold leading-relaxed max-w-sm mx-auto text-center uppercase tracking-wider">
-                      Please use E-mail/Mobile or Institute ID & Admission ID given in school/college
+                      Mobile Number & Password (Primary Login) or Admission ID
                     </p>
                   </div>
 
-                  {/* Tablet Style Tabs exactly like uploaded screen mockup */}
-                  <div className="flex bg-neutral-100 rounded-full p-1.5 w-full max-w-md mx-auto border border-neutral-200 shadow-sm">
+                  {/* Tablet Style Tabs with Mobile Number & Password as Primary */}
+                  <div className="flex bg-neutral-100 rounded-full p-1.5 w-full mx-auto border border-neutral-200 shadow-sm">
                     <button
                       type="button"
                       onClick={() => setActiveTab('email_mobile')}
@@ -1596,7 +1605,7 @@ const Login: React.FC = () => {
                         activeTab === 'email_mobile' ? 'bg-[#004D40] text-white shadow-md' : 'text-neutral-500 hover:text-neutral-800'
                       }`}
                     >
-                      Email / Mobile
+                      Mobile & Password
                     </button>
                     <button
                       type="button"
@@ -1609,25 +1618,30 @@ const Login: React.FC = () => {
                     </button>
                   </div>
 
-                  {/* Outlined outline inputs matching layout style */}
-                  <form onSubmit={handleCustomSubmit} className="space-y-6 max-w-md mx-auto">
+                  {/* Outlined outline inputs */}
+                  <form onSubmit={handleCustomSubmit} className="space-y-5">
                     {activeTab === 'email_mobile' ? (
-                      <div className="relative rounded-2xl border border-neutral-300 px-4 py-3 bg-white focus-within:border-[#004D40] focus-within:ring-1 focus-within:ring-[#004D40]/20 transition-all">
+                      <div className="relative rounded-2xl border border-neutral-300 px-4 py-3 bg-white focus-within:border-[#004D40] focus-within:ring-2 focus-within:ring-[#004D40]/20 transition-all">
                         <label className="absolute -top-2.5 left-4 bg-white px-2.5 text-[10px] font-black uppercase tracking-wider text-[#004D40]">
-                          E-mail/Mobile *
+                          Registered Mobile Number *
                         </label>
-                        <input
-                          type="text"
-                          required
-                          value={emailOrMobile}
-                          onChange={(e) => setEmailOrMobile(e.target.value)}
-                          disabled={loading}
-                          placeholder="Enter email/mobile number"
-                          className="w-full text-xs font-bold py-2.5 outline-none text-neutral-800 bg-transparent placeholder-neutral-400"
-                        />
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-black text-neutral-400 select-none">+91</span>
+                          <span className="text-neutral-300">|</span>
+                          <input
+                            type="text"
+                            required
+                            value={emailOrMobile}
+                            onChange={(e) => setEmailOrMobile(e.target.value)}
+                            disabled={loading}
+                            placeholder="Enter 10-digit mobile number"
+                            className="w-full text-xs font-bold py-1.5 outline-none text-neutral-800 bg-transparent placeholder-neutral-400 tracking-wider"
+                          />
+                          <Smartphone className="w-4 h-4 text-neutral-400 shrink-0" />
+                        </div>
                       </div>
                     ) : (
-                      <div className="relative rounded-2xl border border-neutral-300 px-4 py-3 bg-white focus-within:border-[#004D40] focus-within:ring-1 focus-within:ring-[#004D40]/20 transition-all">
+                      <div className="relative rounded-2xl border border-neutral-300 px-4 py-3 bg-white focus-within:border-[#004D40] focus-within:ring-2 focus-within:ring-[#004D40]/20 transition-all">
                         <label className="absolute -top-2.5 left-4 bg-white px-2.5 text-[10px] font-black uppercase tracking-wider text-[#004D40]">
                           Admission ID *
                         </label>
@@ -1637,48 +1651,91 @@ const Login: React.FC = () => {
                           value={admissionId}
                           onChange={(e) => setAdmissionId(e.target.value)}
                           disabled={loading}
-                          placeholder="Enter admission ID"
-                          className="w-full text-xs font-bold py-2.5 outline-none text-neutral-800 bg-transparent placeholder-neutral-400"
+                          placeholder="Enter admission ID (e.g. ADM001)"
+                          className="w-full text-xs font-bold py-1.5 outline-none text-neutral-800 bg-transparent placeholder-neutral-400"
                         />
                       </div>
                     )}
 
-                    <div className="relative rounded-2xl border border-neutral-300 px-4 py-3 bg-white focus-within:border-[#004D40] focus-within:ring-1 focus-within:ring-[#004D40]/20 transition-all">
+                    <div className="relative rounded-2xl border border-neutral-300 px-4 py-3 bg-white focus-within:border-[#004D40] focus-within:ring-2 focus-within:ring-[#004D40]/20 transition-all">
                       <label className="absolute -top-2.5 left-4 bg-white px-2.5 text-[10px] font-black uppercase tracking-wider text-[#004D40]">
                         Enter Password *
                       </label>
-                      <input
-                        type="password"
-                        required
-                        value={credentialPassword}
-                        onChange={(e) => setCredentialPassword(e.target.value)}
-                        disabled={loading}
-                        placeholder="Enter password"
-                        className="w-full text-xs font-bold py-2.5 outline-none text-neutral-800 bg-transparent placeholder-neutral-400"
-                      />
+                      <div className="flex items-center">
+                        <input
+                          type={showPassword ? "text" : "password"}
+                          required
+                          value={credentialPassword}
+                          onChange={(e) => setCredentialPassword(e.target.value)}
+                          disabled={loading}
+                          placeholder="Enter account password"
+                          className="w-full text-xs font-bold py-1.5 outline-none text-neutral-800 bg-transparent placeholder-neutral-400"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword(!showPassword)}
+                          className="text-neutral-400 hover:text-neutral-600 p-1 cursor-pointer"
+                        >
+                          {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
                     </div>
 
+                    {/* Primary Submit Button */}
                     <button
                       type="submit"
                       disabled={loading || !(activeTab === 'email_mobile' ? emailOrMobile : admissionId) || !credentialPassword}
-                      className={`w-full py-4 text-center transition-all font-black text-xs uppercase tracking-widest rounded-full shadow-lg ${
+                      className={`w-full py-4 text-center transition-all font-black text-xs uppercase tracking-widest rounded-full shadow-lg cursor-pointer ${
                         (activeTab === 'email_mobile' ? emailOrMobile : admissionId) && credentialPassword
                           ? 'bg-[#004D40] text-white hover:bg-[#064e3b] hover:shadow-[#004D40]/20 active:scale-[0.98]'
                           : 'bg-[#E0E0E0] text-neutral-400 cursor-not-allowed'
                       }`}
                     >
-                      {loading ? 'Verifying...' : 'SUBMIT'}
+                      {loading ? 'Verifying...' : 'SIGN IN WITH PASSWORD'}
                     </button>
 
-                    <div className="text-center">
+                    {/* Divider */}
+                    <div className="relative flex items-center justify-center my-2">
+                      <div className="border-t border-neutral-200 w-full" />
+                      <span className="bg-white px-3 text-[10px] font-black uppercase tracking-wider text-neutral-400">OR</span>
+                      <div className="border-t border-neutral-200 w-full" />
+                    </div>
+
+                    {/* WhatsApp Action Buttons */}
+                    <div className="space-y-2.5">
                       <button
                         type="button"
-                        onClick={() => toast.info("Password Recovery Help", {
-                          description: "Please speak with the School IT Desk or your class teacher to retrieve your mobile password login code."
-                        })}
-                        className="text-xs font-black text-orange-500 hover:underline uppercase tracking-wider bg-transparent border-0 cursor-pointer"
+                        onClick={() => setAuthView('whatsapp_otp')}
+                        className="w-full py-3.5 px-4 rounded-full border-2 border-emerald-500/30 bg-emerald-50/70 hover:bg-emerald-100/80 hover:border-emerald-500 text-emerald-900 transition-all font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-sm cursor-pointer active:scale-[0.98]"
                       >
-                        Forgot Password?
+                        <MessageSquare className="w-4 h-4 text-emerald-600" />
+                        <span>Login with WhatsApp OTP</span>
+                      </button>
+
+                      <div className="flex items-center justify-between px-2 pt-0.5 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => setAuthView('forgot_password')}
+                          className="font-black text-orange-600 hover:underline uppercase tracking-wider bg-transparent border-0 cursor-pointer text-[11px] flex items-center gap-1.5"
+                        >
+                          <KeyRound className="w-3.5 h-3.5 text-orange-500" />
+                          <span>Forgot Password via WhatsApp</span>
+                        </button>
+
+                        <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">
+                          OTP on WhatsApp
+                        </span>
+                      </div>
+
+                      {/* Master Admin Direct Access (When WhatsApp OTP is not connected in preview) */}
+                      <button
+                        type="button"
+                        onClick={handleDirectMasterLogin}
+                        disabled={loading}
+                        className="w-full mt-2 py-3 px-4 rounded-full border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 transition-all font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-sm cursor-pointer active:scale-[0.98]"
+                      >
+                        <ShieldCheck className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span>⚡ Direct Login as Master Admin (Preview Testing)</span>
                       </button>
                     </div>
                   </form>

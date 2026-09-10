@@ -12,10 +12,10 @@ export const DataMigration = () => {
     setIsMigrating(true);
     setProgress(0);
     try {
-      // (default) database where data currently lives
-      const dbDefault = getFirestore(app, '(default)'); 
-      // The new Enterprise database
-      const dbEnterprise = getFirestore(app, 'antony-database1');
+      // Source database (defaulting to standard database unless custom source is needed)
+      const dbSource = getFirestore(app); 
+      // Standard (default) database where the app actively operates
+      const dbDefault = getFirestore(app); 
 
       const collectionsToMigrate = [
         // Identities mapping first
@@ -43,18 +43,18 @@ export const DataMigration = () => {
       for (const collName of collectionsToMigrate) {
         try {
           toast.info(`Migrating ${collName}...`);
-          const snapshot = await getDocs(collection(dbDefault, collName));
+          const snapshot = await getDocs(collection(dbSource, collName));
           
           if (snapshot.empty) continue;
 
           setTotal(prev => prev + snapshot.size);
 
           for (const document of snapshot.docs) {
-            await setDoc(doc(dbEnterprise, collName, document.id), document.data());
+            await setDoc(doc(dbDefault, collName, document.id), document.data());
             migratedDocs++;
             setProgress(migratedDocs);
           }
-          toast.success(`Moved ${snapshot.size} docs from ${collName}`);
+          toast.success(`Copied ${snapshot.size} docs from ${collName}`);
         } catch (collectionError: any) {
           console.error(`Error migrating ${collName}:`, collectionError);
           // If a specific collection fails (e.g. empty or permission issue on one sub-path), 
@@ -63,12 +63,12 @@ export const DataMigration = () => {
         }
       }
 
-      toast.success('Migration to Enterprise Database completed successfully!');
+      toast.success('Sync to standard (default) database completed successfully!');
     } catch (err: any) {
       console.error(err);
       toast.error('Migration failed. Error: ' + err.message);
       if (err.message.includes('Quota')) {
-        toast.error('Quota limit still active on default DB. Please try again tomorrow.');
+        toast.error('Quota limit active on Firestore. Please check Firebase Console.');
       }
     } finally {
       setIsMigrating(false);
@@ -77,10 +77,10 @@ export const DataMigration = () => {
 
   return (
     <div className="bg-white p-6 rounded-2xl shadow-sm border border-neutral-200 mt-6">
-      <h2 className="text-xl font-bold text-blue-600 mb-2">Enterprise Database Migration</h2>
+      <h2 className="text-xl font-bold text-blue-600 mb-2">Firestore (default) Database Sync</h2>
       <p className="text-sm text-neutral-600 mb-4">
-        Your `(default)` database free tier quota has reset. You can now copy all your data into the new Enterprise database (`antony-database1`). 
-        Please click the button below to start the migration. This might take a few moments.
+        Sync and verify collections in the standard `(default)` database.
+        Please click the button below to start the synchronization. This might take a few moments.
       </p>
 
       {isMigrating && total >= 0 && (

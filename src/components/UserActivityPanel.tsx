@@ -14,11 +14,9 @@ import {
   Sparkles,
   Filter
 } from 'lucide-react';
-import { dbService } from '../services/dbService';
 import { normalizeUrl, getGravatarUrl } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { formatDistanceToNow } from 'date-fns';
-import { orderBy, limit } from 'firebase/firestore';
 
 const UserActivityPanel: React.FC = () => {
   const [activities, setActivities] = useState<any[]>([]);
@@ -66,33 +64,26 @@ const UserActivityPanel: React.FC = () => {
   }, [activities]);
 
   const fetchActivities = async () => {
+    if (typeof document !== 'undefined' && document.hidden) return;
     try {
-      // Get last 50 activities sorted by timestamp
-      const data = await dbService.list('user_activities', [
-        orderBy('timestamp', 'desc'),
-        limit(50)
-      ]);
-      setActivities(data || []);
+      const res = await fetch('/api/dashboard/timeline');
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.activities)) {
+          setActivities(data.activities);
+        }
+      }
     } catch (e) {
-      console.error('Failed to fetch activities', e);
+      console.warn('Failed to fetch timeline activities', e);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    setLoading(true);
-    const unsubscribe = dbService.subscribe('user_activities', [
-      orderBy('timestamp', 'desc'),
-      limit(50)
-    ], (data) => {
-      setActivities(data || []);
-      setLoading(false);
-    }, (err) => {
-      console.error('Failed to subscribe user activities', err);
-      setLoading(false);
-    });
-    return () => unsubscribe();
+    fetchActivities();
+    const interval = setInterval(fetchActivities, 60000);
+    return () => clearInterval(interval);
   }, []);
 
   const getModuleColor = (path: string) => {

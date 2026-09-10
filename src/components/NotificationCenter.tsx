@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Bell, Calendar, GraduationCap, AlertCircle, Clock, X, Check } from 'lucide-react';
-import { dbService, checkQuotaStatus } from '../services/dbService';
+import { dbService } from '../services/dbService';
 import { usePermissions } from '../hooks/usePermissions';
 import { format, isAfter, subDays } from 'date-fns';
 import { motion, AnimatePresence } from 'motion/react';
-import { limit, where } from 'firebase/firestore';
 
 interface Notification {
   id: string;
@@ -44,43 +43,43 @@ export const NotificationCenter: React.FC = () => {
   useEffect(() => {
     if (!profile) return;
 
-    // Early exit if quota hit
-    const isQuotaHit = typeof window !== 'undefined' && localStorage.getItem('firestore_quota_exceeded_timestamp');
-    if (isQuotaHit) return;
-
     const studentId = isStudent ? profile.uid || profile.id : (isParent ? (profile as any).studentId : null);
 
     const startSubscriptions = async () => {
       // Fetch exams for lookup - using separate listener that won't trigger re-subscription
-      dbService.list('exams', [limit(100)]).then(data => setExams(data)).catch(e => console.error(e));
+      dbService.list('exams').then(data => setExams((data || []).slice(0, 100))).catch(e => console.error(e));
 
-      if (checkQuotaStatus()) return;
+      // 1. Fetch notices via local REST API
+      fetch('/api/dashboard/notices')
+        .then(res => (res.ok ? res.json() : { notices: [] }))
+        .then(data => {
+          if (!data || !data.notices || !Array.isArray(data.notices)) return;
+          const list = data.notices;
+          const recentNotices = list
+            .filter((n: any) => {
+              const isRecent = isAfter(new Date(n.date || n.createdAt), subDays(new Date(), 30));
+              const role = profile?.role || 'staff';
+              const isTargeted = !n.targetRoles || n.targetRoles.includes('all') || n.targetRoles.includes(role);
+              return isRecent && isTargeted;
+            })
+            .map((n: any) => ({
+              id: n.id,
+              type: 'notice' as const,
+              title: n.title,
+              description: n.content,
+              date: n.date || n.createdAt,
+              isRead: readIds.has(n.id),
+              priority: n.priority
+            }));
+          updateNotifications('notices', recentNotices);
+        })
+        .catch(e => console.error(e));
 
-      // 1. Fetch notices with limit
-      dbService.list('notices', [limit(30)]).then((data) => {
-        const recentNotices = data
-          .filter(n => {
-             const isRecent = isAfter(new Date(n.date || n.createdAt), subDays(new Date(), 30));
-             const role = profile?.role || 'staff';
-             const isTargeted = n.targetRoles?.includes('all') || n.targetRoles?.includes(role);
-             return isRecent && isTargeted;
-          })
-          .map(n => ({
-            id: n.id,
-            type: 'notice' as const,
-            title: n.title,
-            description: n.content,
-            date: n.date || n.createdAt,
-            isRead: readIds.has(n.id),
-            priority: n.priority
-          }));
-        updateNotifications('notices', recentNotices);
-      }).catch(e => console.error(e));
-
-      // 2. Fetch holidays with limit
-      dbService.list('holidays', [limit(30)]).then((data) => {
-        const upcomingHolidays = data
+      // 2. Fetch holidays
+      dbService.list('holidays').then((data) => {
+        const upcomingHolidays = (data || [])
           .filter(h => isAfter(new Date(h.date), subDays(new Date(), 1)))
+          .slice(0, 30)
           .map(h => ({
             id: h.id,
             type: 'holiday' as const,
@@ -92,10 +91,11 @@ export const NotificationCenter: React.FC = () => {
         updateNotifications('holidays', upcomingHolidays);
       }).catch(e => console.error(e));
 
-      // 3. Fetch exams with limit
-      dbService.list('exams', [limit(30)]).then((data) => {
-          const relevantExams = data
+      // 3. Fetch exams
+      dbService.list('exams').then((data) => {
+          const relevantExams = (data || [])
             .filter(e => isAfter(new Date(e.date || e.startDate), subDays(new Date(), 1)))
+            .slice(0, 30)
             .map(e => ({
               id: e.id,
               type: 'exam' as const,
@@ -107,10 +107,11 @@ export const NotificationCenter: React.FC = () => {
           updateNotifications('exams', relevantExams);
       }).catch(e => console.error(e));
 
-      // 4. Fetch calendar events with limit
-      dbService.list('calendar_events', [limit(30)]).then((data) => {
-        const upcomingEvents = data
+      // 4. Fetch calendar events
+      dbService.list('calendar_events').then((data) => {
+        const upcomingEvents = (data || [])
           .filter(event => isAfter(new Date(event.date), subDays(new Date(), 1)))
+          .slice(0, 30)
           .map(event => ({
             id: event.id,
             type: 'event' as const,
@@ -124,13 +125,11 @@ export const NotificationCenter: React.FC = () => {
 
       // Student specific notifications (Absences & Results)
       if (studentId) {
-          if (checkQuotaStatus()) return;
-
-          // Fetch attendance specifically for this student with a limit of 30
-          dbService.list('attendance', [where('studentId', '==', studentId), limit(30)]).then((data) => {
-              const myAbsents = data
-                  .filter(a => a.status === 'absent')
+          dbService.list('attendance').then((data) => {
+              const myAbsents = (data || [])
+                  .filter(a => a.studentId === studentId && a.status === 'absent')
                   .filter(a => isAfter(new Date(a.date), subDays(new Date(), 7))) // Only last 7 days
+                  .slice(0, 30)
                   .map(a => ({
                       id: a.id,
                       type: 'absence' as const,
@@ -143,9 +142,9 @@ export const NotificationCenter: React.FC = () => {
               updateNotifications('attendance', myAbsents);
           }).catch(e => console.error(e));
 
-          // Fetch examMarks specifically for this student with a limit of 30
-          dbService.list('examMarks', [where('studentId', '==', studentId), limit(30)]).then((data) => {
-              const myResults = data
+          dbService.list('examMarks').then((data) => {
+              const myResults = (data || [])
+                  .filter(m => m.studentId === studentId)
                   .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime())
                   .slice(0, 10) // Show last 10 subjects updated
                   .map(m => {

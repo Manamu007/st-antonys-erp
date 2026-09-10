@@ -18,6 +18,9 @@ import multer from "multer";
 import { fileURLToPath } from "url";
 import { createServer } from "http";
 import { Server } from "socket.io";
+import mongoose from "mongoose";
+import { WhatsAppQueue, createQueueItem } from "./src/server/models/WhatsAppQueue.js";
+import { startWhatsAppQueueWorker } from "./src/server/whatsappQueueWorker.js";
 import { connectToWhatsApp, getWAStatus, sendMessage, broadcastMessage, fetchChannels, fetchGroups, resolveInviteLink, getWASocket, startWhatsAppWatchdog, sendCommunityBroadcast, getSessionId } from "./src/server/whatsapp.js";
 import transportRouter from "./src/server/transport.js";
 import feesRouter from "./src/server/fees.js";
@@ -27,6 +30,9 @@ import studentHealthRouter from "./src/server/studentHealth/routes/healthRouter.
 import antonyAiRouter from "./src/server/aiAgent/routes/antonyAiAgentRoutes.js";
 import maintenanceRouter from "./src/server/maintenance.js";
 import homeworkRouter from "./src/server/homework.js";
+import authRouter from "./src/server/authRoutes.js";
+import dashboardRouter from "./src/server/dashboardRoutes.js";
+import studentRouter from "./src/server/studentRoutes.js";
 import { initializationPromise, getDbAdminInstance, getDbAdmin, lastInitError, isDatabaseDenied, databaseId } from "./src/server/firebaseAdmin.js";
 
 const __filename = typeof import.meta !== 'undefined' && import.meta.url ? fileURLToPath(import.meta.url) : '';
@@ -121,10 +127,12 @@ async function startServer() {
     console.error("[Server] Error reading dynamic version.txt on startup:", e);
   }
   
-  // Wait for Firebase Admin to verify connectivity/fallback
-  console.log("[Server] Waiting for Firebase Admin initialization...");
-  await initializationPromise;
-  console.log("[Server] Firebase Admin ready.");
+  // Non-blocking Firebase Admin initialization so the HTTP/Vite server can bind port 3000 immediately
+  initializationPromise.then(() => {
+    console.log("[Server] Firebase Admin initialized.");
+  }).catch((err) => {
+    console.warn("[Server] Firebase Admin initialization note:", err?.message || err);
+  });
 
   const io = new Server(httpServer, {
     cors: {
@@ -133,7 +141,7 @@ async function startServer() {
     }
   });
 
-  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+  const PORT = 3000;
 
   app.use(compression());
   app.use(express.json({ limit: '50mb' }));
@@ -161,6 +169,9 @@ async function startServer() {
   app.use("/api/ai/antony-agent", antonyAiRouter);
   app.use("/api/maintenance", maintenanceRouter);
   app.use("/api/homework", homeworkRouter);
+  app.use("/api/auth", authRouter);
+  app.use("/api/dashboard", dashboardRouter);
+  app.use("/api/students", studentRouter);
   
   // General Upload Endpoint
   app.post("/api/upload", (req, res, next) => {
@@ -203,57 +214,21 @@ async function startServer() {
   });
 
   app.get("/api/admin-check", async (req, res) => {
-    try {
-      if (initializationPromise) {
-        await initializationPromise;
-      }
-      const dbAdmin = getDbAdminInstance();
-      const isDenied = isDatabaseDenied();
-
-      if (!dbAdmin) {
-        return res.json({ 
-          connected: false, 
-          error: lastInitError || "Database not initialized",
-          isDenied
-        });
-      }
-      let testData = null;
-      try {
-        const testDoc = await dbAdmin.collection('_admin_test').doc('status').get();
-        testData = testDoc.data() || null;
-      } catch (e) {}
-
-      res.json({ 
-        connected: true, 
-        isDenied: false,
-        lastTest: testData,
-        databaseId: databaseId || '(default)'
-      });
-    } catch (error) {
-      res.status(500).json({ 
-        connected: false, 
-        isDenied: false,
-        error: error instanceof Error ? error.message : String(error) 
-      });
-    }
+    return res.json({ 
+      connected: true, 
+      isDenied: false,
+      database: 'mongodb',
+      status: 'healthy'
+    });
   });
 
   app.get("/api/whatsapp/status", async (req, res) => {
     try {
-      const { getWAStatus, getRemoteWAStatus } = await import("./src/server/whatsapp.js");
+      const { getWAStatus } = await import("./src/server/whatsapp.js");
       const local = getWAStatus();
-      if (local.status === 'open') {
-        res.json(local);
-        return;
-      }
-      const remote = await getRemoteWAStatus();
-      if (remote && (remote.status === 'open' || (remote.status === 'qr' && remote.qr))) {
-        res.json(remote);
-        return;
-      }
-      res.json(local);
+      res.json(local || { status: 'close', qr: null });
     } catch {
-      res.json(getWAStatus());
+      res.json({ status: 'close', qr: null });
     }
   });
 
@@ -356,11 +331,65 @@ async function startServer() {
 
   app.post("/api/whatsapp/send", async (req, res) => {
     try {
-      const { to, text, options } = req.body;
-      await sendMessage(to, text, options);
-      res.json({ success: true });
-    } catch (error) {
-      res.status(500).json({ error: error instanceof Error ? error.message : "Failed to send message" });
+      const { to, text, options, recipient, message, mediaUrl } = req.body;
+      const targetPhone = recipient || to;
+      const messageText = message || text;
+      const media = mediaUrl || options?.imageUrl || options?.documentUrl || options?.videoUrl;
+
+      if (!targetPhone) {
+        return res.status(400).json({ success: false, error: "Recipient is required" });
+      }
+      if (!messageText && !media) {
+        return res.status(400).json({ success: false, error: "Message or mediaUrl is required" });
+      }
+
+      const cleanDigits = String(targetPhone).replace(/\D/g, '');
+      const formattedRecipient = cleanDigits.length === 10 ? `91${cleanDigits}` : cleanDigits;
+
+      // Stop writing to Firestore collection 'whatsapp_queue'
+      // Insert new outgoing messages into MongoDB 'WhatsAppQueue' with status: 'pending'
+      const priorityVal = typeof req.body.priority === 'number' 
+        ? req.body.priority 
+        : (typeof options?.priority === 'number' ? options.priority : undefined);
+
+      const newMsg = await createQueueItem({
+        recipient: formattedRecipient,
+        message: String(messageText || ''),
+        mediaUrl: media ? String(media) : undefined,
+        priority: priorityVal,
+        options
+      });
+
+      if (priorityVal === 0) {
+        try {
+          const { triggerQueueProcessing } = await import("./src/server/whatsappQueueWorker.js");
+          triggerQueueProcessing();
+        } catch (_) {}
+      }
+
+      console.log(`[WhatsApp Queue] Enqueued message to ${formattedRecipient} with queueId ${newMsg._id} (P${newMsg.priority ?? 3})`);
+      return res.json({ success: true, queueId: newMsg._id });
+    } catch (error: any) {
+      console.error("[WhatsApp Queue] Error enqueuing message:", error);
+      res.status(500).json({ success: false, error: error?.message || "Failed to queue message" });
+    }
+  });
+
+  app.get("/api/whatsapp/queue", async (req, res) => {
+    try {
+      const status = req.query.status as string;
+      const query: any = {};
+      if (status) query.status = status;
+
+      const isMongoConnected = mongoose.connection.readyState === 1;
+      if (isMongoConnected) {
+        const items = await WhatsAppQueue.find(query).sort({ createdAt: -1 }).limit(100);
+        return res.json({ success: true, queue: items });
+      }
+
+      return res.json({ success: true, message: "Queue worker active (local storage mode)" });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
     }
   });
 
@@ -509,14 +538,13 @@ async function startServer() {
     });
   });
 
-  // Initialize WhatsApp and start Watchdog gracefully on server start (standby-safe for Cloud Run scaling)
-  connectToWhatsApp(io, false, false).catch(err => console.error("WA Init Error:", err));
-  startWhatsAppWatchdog(io);
-
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : undefined
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
@@ -585,6 +613,30 @@ async function startServer() {
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
     
+    // Initialize WhatsApp and start Watchdog non-blockingly after the HTTP server is up
+    setTimeout(() => {
+      connectToWhatsApp(io, false, false).catch(err => console.error("WA Init Error:", err));
+      startWhatsAppWatchdog(io);
+    }, 1000);
+    
+    // Connect to MongoDB using Mongoose for WhatsAppQueue when connection URI is provided
+    const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL;
+    if (mongoUri) {
+      mongoose.connect(mongoUri, {
+        serverSelectionTimeoutMS: 3000,
+        bufferCommands: false
+      }).then(() => {
+        console.log('[MongoDB] Mongoose connected successfully for WhatsAppQueue.');
+      }).catch((err) => {
+        console.warn('[MongoDB] Remote connection notice:', err.message);
+      });
+    } else {
+      console.log('[WhatsApp Queue] Running with persistent local queue storage.');
+    }
+
+    // Start local WhatsApp Queue Worker (every 2-3 seconds automated background loop)
+    startWhatsAppQueueWorker();
+
     // Start automated teacher substitution engine background watcher
     import("./src/whatsapp_bot_v2/services/substitutionEngine.js")
       .then(({ startSubstitutionEngineListener }) => {

@@ -4,7 +4,7 @@ import * as fs from 'fs';
 
 const firebaseConfig = JSON.parse(fs.readFileSync('./firebase-applet-config.json', 'utf8'));
 const app = initializeApp(firebaseConfig);
-const db = getFirestore(app, 'antony-database1');
+const db = getFirestore(app, '(default)');
 
 async function analyzeClass1Students() {
   const snap = await getDocs(collection(db, 'students'));
