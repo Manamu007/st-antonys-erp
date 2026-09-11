@@ -1,4 +1,5 @@
 import { getDbAdmin } from '../../server/firebaseAdmin.js';
+import { getMongoDb } from '../../server/mongoSession.js';
 import { normalizeIndianPhone } from '../../server/whatsappUtils.js';
 import { NodeType, ConditionField, ConditionOperator, ActionType, BotSession, BotWorkflow } from '../types';
 import { resolveStudentContext, replaceVariables, serializeListMessage } from './databaseResolution';
@@ -7,7 +8,7 @@ import { resolveStudentContext, replaceVariables, serializeListMessage } from '.
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Verifies if the sender is an authorized teacher/admin in either staff or users collections.
+ * Verifies if the sender is an authorized teacher/admin in either staff or users collections using local MongoDB.
  */
 async function isAuthorizedTeacherOrAdmin(senderPhone: string): Promise<boolean> {
   const cleanPhone = senderPhone.replace(/\D/g, '');
@@ -16,66 +17,87 @@ async function isAuthorizedTeacherOrAdmin(senderPhone: string): Promise<boolean>
   if (!last10) return false;
 
   try {
-    const dbAdmin = getDbAdmin();
+    const mongo = await getMongoDb().catch(() => null);
+    if (!mongo) {
+      console.warn("[Bot Router] MongoDB handle is null or offline when checking teacher/admin authorization. Safely returning false.");
+      return false;
+    }
+
+    const reg = new RegExp(`${last10}$`);
+
     // 1. Check in staff collection
-    const staffQueries = ['phone', 'whatsappNumber', 'contact'];
-    for (const field of staffQueries) {
-      const snap = await dbAdmin.collection('staff')
-        .where(field, '>=', last10)
-        .get();
-      let found = false;
-      snap.forEach((docSnap: any) => {
-        const data = docSnap.data();
-        const phoneVal = String(data[field] || '').replace(/\D/g, '');
-        if (phoneVal.endsWith(last10)) {
-          found = true;
-        }
-      });
-      if (found) return true;
+    const staffCol = mongo.collection('staff');
+    if (staffCol) {
+      const staffMember = await staffCol.findOne({
+        $or: [
+          { phone: reg },
+          { whatsappNumber: reg },
+          { contact: reg },
+          { phone: { $regex: last10 } },
+          { whatsappNumber: { $regex: last10 } }
+        ]
+      }).catch(() => null);
+
+      if (staffMember) {
+        return true;
+      }
     }
 
     // 2. Check in users collection
-    const userQueries = ['phone', 'whatsappNumber', 'phoneNumber'];
-    for (const field of userQueries) {
-      const snap = await dbAdmin.collection('users')
-        .where(field, '>=', last10)
-        .get();
-      let isAuth = false;
-      snap.forEach((docSnap: any) => {
-        const data = docSnap.data();
-        const phoneVal = String(data[field] || '').replace(/\D/g, '');
-        if (phoneVal.endsWith(last10)) {
-          const role = data.role || '';
-          if (['teacher', 'admin', 'staff'].includes(role.toLowerCase())) {
-            isAuth = true;
-          }
+    const usersCol = mongo.collection('users');
+    if (usersCol) {
+      const userDoc = await usersCol.findOne({
+        $or: [
+          { phone: reg },
+          { whatsappNumber: reg },
+          { phoneNumber: reg },
+          { contact_last10: last10 },
+          { phone: { $regex: last10 } }
+        ]
+      }).catch(() => null);
+
+      if (userDoc) {
+        const role = String(userDoc.role || '').toLowerCase();
+        if (['teacher', 'admin', 'staff', 'principal', 'management', 'super_admin'].includes(role)) {
+          return true;
         }
-      });
-      if (isAuth) return true;
+      }
     }
   } catch (error) {
-    console.error("[Bot Router] Error verifying authorized teacher/admin:", error);
+    console.error("[Bot Router] Error verifying authorized teacher/admin (safely returned false):", error);
+    return false;
   }
 
   return false;
 }
 
 /**
- * Writes execution logs into a separate whatsapp_group_intercept_logs document.
+ * Writes execution logs into a separate whatsapp_group_intercept_logs collection in MongoDB.
  */
 async function logGroupIntercept(from: string, sender: string, text: string, isAuthorized: boolean) {
   try {
-    const dbAdmin = getDbAdmin();
-    await dbAdmin.collection('whatsapp_group_intercept_logs').add({
-      groupJid: from,
-      senderJid: sender,
-      messageText: text,
-      isAuthorized,
-      timestamp: new Date().toISOString()
-    });
+    const mongo = await getMongoDb().catch(() => null);
+    if (!mongo) {
+      console.log(`[Bot Router Memory Log] Group intercept (DB offline): group: ${from}, sender: ${sender}, authorized: ${isAuthorized}`);
+      return;
+    }
+
+    const logsCol = mongo.collection('whatsapp_group_intercept_logs');
+    if (logsCol) {
+      await logsCol.insertOne({
+        groupJid: from,
+        senderJid: sender,
+        messageText: text,
+        isAuthorized,
+        timestamp: new Date().toISOString()
+      }).catch((err: any) => {
+        console.warn("[Bot Router] Notice inserting group intercept log:", err?.message || err);
+      });
+    }
+
     console.log(`[Bot Router] Intercept logged for group: ${from}, sender: ${sender}, authorized: ${isAuthorized}`);
   } catch (error) {
-    console.error("[Bot Router] Error logging group intercept:", error);
+    console.warn("[Bot Router] Error logging group intercept (gracefully skipped):", error);
   }
 }
 
@@ -134,20 +156,43 @@ async function resolveHolidayMessage(queryText: string): Promise<string> {
   }
   
   try {
-    const holidaysSnap = await dbAdmin.collection('holidays').get();
     const holidaysList: any[] = [];
-    holidaysSnap.forEach((hDoc: any) => {
-      const data = hDoc.data();
-      if (data && data.date) {
-        holidaysList.push({
-          date: data.date,
-          toDate: data.toDate || data.date,
-          title: data.title || 'Official Holiday',
-          description: data.description || '',
-          type: data.type || 'holiday'
+
+    // Query MongoDB holidays first
+    const mongo = await getMongoDb().catch(() => null);
+    if (mongo) {
+      const mHolidays = await mongo.collection('holidays').find({}).toArray().catch(() => []);
+      mHolidays.forEach((data: any) => {
+        if (data && data.date) {
+          holidaysList.push({
+            date: data.date,
+            toDate: data.toDate || data.date,
+            title: data.title || 'Official Holiday',
+            description: data.description || '',
+            type: data.type || 'holiday'
+          });
+        }
+      });
+    }
+
+    // If empty, query Firestore holidays if dbAdmin is available
+    if (holidaysList.length === 0 && dbAdmin) {
+      const holidaysSnap = await dbAdmin.collection('holidays').get().catch(() => null);
+      if (holidaysSnap) {
+        holidaysSnap.forEach((hDoc: any) => {
+          const data = hDoc.data();
+          if (data && data.date) {
+            holidaysList.push({
+              date: data.date,
+              toDate: data.toDate || data.date,
+              title: data.title || 'Official Holiday',
+              description: data.description || '',
+              type: data.type || 'holiday'
+            });
+          }
         });
       }
-    });
+    }
 
     // Sort holidays chronologically
     holidaysList.sort((a, b) => a.date.localeCompare(b.date));
@@ -262,7 +307,6 @@ async function resolveHolidayMessage(queryText: string): Promise<string> {
 export async function processIncomingBotMessage(from: string, incomingText: string, senderJid?: string): Promise<boolean> {
   try {
     const cleanText = incomingText.trim();
-    const dbAdmin = getDbAdmin();
 
     // IF inbound payload context matches a group/community signature (jid.endsWith('@g.us'))
     if (from.endsWith('@g.us')) {
@@ -276,6 +320,12 @@ export async function processIncomingBotMessage(from: string, incomingText: stri
       
       // Do NOT initialize parent chatbot sessions or trigger the React Flow conversational builder graph for groups
       return true;
+    }
+
+    const dbAdmin = getDbAdmin();
+    if (!dbAdmin) {
+      console.log(`[Bot Router] Firestore dbAdmin is null or offline for DM from ${from}. Safely skipping visual builder interception.`);
+      return false;
     }
 
     const cleanPhone = from.replace(/\D/g, '');
@@ -592,6 +642,10 @@ export async function processIncomingBotMessage(from: string, incomingText: stri
 async function executeNextStep(session: BotSession, sourceHandleId: string): Promise<void> {
   try {
     const dbAdmin = getDbAdmin();
+    if (!dbAdmin) {
+      console.warn("[Bot Router] dbAdmin is null in executeNextStep. Safely terminating step.");
+      return;
+    }
     const sessionDocRef = dbAdmin.collection('whatsapp_bot_sessions').doc(session.id);
     
     // Load the flow
@@ -697,6 +751,10 @@ async function executeNextStep(session: BotSession, sourceHandleId: string): Pro
  */
 async function processNode(session: BotSession, node: any): Promise<void> {
   const dbAdmin = getDbAdmin();
+  if (!dbAdmin) {
+    console.warn("[Bot Router] dbAdmin is null in processNode. Safely skipping node execution.");
+    return;
+  }
   const sessionDocRef = dbAdmin.collection('whatsapp_bot_sessions').doc(session.id);
   const targetRecipient = session.fullJid || session.id;
   

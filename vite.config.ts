@@ -126,7 +126,6 @@ export default defineConfig(({command, mode}) => {
         'tailwind-merge',
         'date-fns',
       ],
-      force: true,
     },
     build: {
       outDir: 'dist',

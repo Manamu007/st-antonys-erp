@@ -16,5 +16,77 @@
     "attempts": 5,
     "createdAt": "2026-09-09T06:18:31.320Z",
     "error": "Dispatch error"
+  },
+  {
+    "_id": "6aa3b321fe87dc77ecabde10",
+    "recipient": "+918247480350",
+    "to": "+918247480350",
+    "message": "🎉 *Happy Birthday, Charitha Chinta! / జన్మదిన శుభాకాంక్షలు!* 🎂🎈\n\nOn your special day, St. Antony's High School wishes you a fantastic year ahead filled with joy, learning, and wonderful achievements. May all your dreams come true! 🌟\n\nమీకు ఈ పుట్టినరోజు మరిన్ని విజయాలను, సంతోషాలను ప్రసాదించాలని సెయింట్ ఆంటోనీస్ హైస్కూల్ ఆకాంక్షిస్తోంది. 🎁✨",
+    "text": "🎉 *Happy Birthday, Charitha Chinta! / జన్మదిన శుభాకాంక్షలు!* 🎂🎈\n\nOn your special day, St. Antony's High School wishes you a fantastic year ahead filled with joy, learning, and wonderful achievements. May all your dreams come true! 🌟\n\nమీకు ఈ పుట్టినరోజు మరిన్ని విజయాలను, సంతోషాలను ప్రసాదించాలని సెయింట్ ఆంటోనీస్ హైస్కూల్ ఆకాంక్షిస్తోంది. 🎁✨",
+    "options": {
+      "studentId": "charitha_c_91824711",
+      "templateType": "birthday_wish",
+      "messageType": "automated_birthday_wish"
+    },
+    "priority": 3,
+    "type": "birthday",
+    "idempotencyKey": "st_antonys_school_918247480350_charitha_c_91824711_birthday_wish_automated_birthday_wish_2026-09-11",
+    "status": "pending",
+    "attempts": 0,
+    "createdAt": "2026-09-11T07:52:01.151Z"
+  },
+  {
+    "_id": "6aa3b322fe87dc77ecabde11",
+    "recipient": "+919440060942",
+    "to": "+919440060942",
+    "message": "🎉 *Happy Birthday, Guru Sudeepthi Morasa! / జన్మదిన శుభాకాంక్షలు!* 🎂🎈\n\nOn your special day, St. Antony's High School wishes you a fantastic year ahead filled with joy, learning, and wonderful achievements. May all your dreams come true! 🌟\n\nమీకు ఈ పుట్టినరోజు మరిన్ని విజయాలను, సంతోషాలను ప్రసాదించాలని సెయింట్ ఆంటోనీస్ హైస్కూల్ ఆకాంక్షిస్తోంది. 🎁✨",
+    "text": "🎉 *Happy Birthday, Guru Sudeepthi Morasa! / జన్మదిన శుభాకాంక్షలు!* 🎂🎈\n\nOn your special day, St. Antony's High School wishes you a fantastic year ahead filled with joy, learning, and wonderful achievements. May all your dreams come true! 🌟\n\nమీకు ఈ పుట్టినరోజు మరిన్ని విజయాలను, సంతోషాలను ప్రసాదించాలని సెయింట్ ఆంటోనీస్ హైస్కూల్ ఆకాంక్షిస్తోంది. 🎁✨",
+    "options": {
+      "studentId": "guru_sudeepthi_m_9194411",
+      "templateType": "birthday_wish",
+      "messageType": "automated_birthday_wish"
+    },
+    "priority": 3,
+    "type": "birthday",
+    "idempotencyKey": "st_antonys_school_919440060942_guru_sudeepthi_m_9194411_birthday_wish_automated_birthday_wish_2026-09-11",
+    "status": "pending",
+    "attempts": 0,
+    "createdAt": "2026-09-11T07:52:02.173Z"
+  },
+  {
+    "_id": "6aa3b323fe87dc77ecabde12",
+    "recipient": "+919703752216",
+    "to": "+919703752216",
+    "message": "🎉 *Happy Birthday, Kavya Sree Yeggolu! / జన్మదిన శుభాకాంక్షలు!* 🎂🎈\n\nOn your special day, St. Antony's High School wishes you a fantastic year ahead filled with joy, learning, and wonderful achievements. May all your dreams come true! 🌟\n\nమీకు ఈ పుట్టినరోజు మరిన్ని విజయాలను, సంతోషాలను ప్రసాదించాలని సెయింట్ ఆంటోనీస్ హైస్కూల్ ఆకాంక్షిస్తోంది. 🎁✨",
+    "text": "🎉 *Happy Birthday, Kavya Sree Yeggolu! / జన్మదిన శుభాకాంక్షలు!* 🎂🎈\n\nOn your special day, St. Antony's High School wishes you a fantastic year ahead filled with joy, learning, and wonderful achievements. May all your dreams come true! 🌟\n\nమీకు ఈ పుట్టినరోజు మరిన్ని విజయాలను, సంతోషాలను ప్రసాదించాలని సెయింట్ ఆంటోనీస్ హైస్కూల్ ఆకాంక్షిస్తోంది. 🎁✨",
+    "options": {
+      "studentId": "kavya_sree_y_91970411",
+      "templateType": "birthday_wish",
+      "messageType": "automated_birthday_wish"
+    },
+    "priority": 3,
+    "type": "birthday",
+    "idempotencyKey": "st_antonys_school_919703752216_kavya_sree_y_91970411_birthday_wish_automated_birthday_wish_2026-09-11",
+    "status": "pending",
+    "attempts": 0,
+    "createdAt": "2026-09-11T07:52:03.295Z"
+  },
+  {
+    "_id": "6aa3b324fe87dc77ecabde13",
+    "recipient": "+919491642077",
+    "to": "+919491642077",
+    "message": "🎉 *Happy Birthday, Kodivella Mohammad Ali Shaik! / జన్మదిన శుభాకాంక్షలు!* 🎂🎈\n\nOn your special day, St. Antony's High School wishes you a fantastic year ahead filled with joy, learning, and wonderful achievements. May all your dreams come true! 🌟\n\nమీకు ఈ పుట్టినరోజు మరిన్ని విజయాలను, సంతోషాలను ప్రసాదించాలని సెయింట్ ఆంటోనీస్ హైస్కూల్ ఆకాంక్షిస్తోంది. 🎁✨",
+    "text": "🎉 *Happy Birthday, Kodivella Mohammad Ali Shaik! / జన్మదిన శుభాకాంక్షలు!* 🎂🎈\n\nOn your special day, St. Antony's High School wishes you a fantastic year ahead filled with joy, learning, and wonderful achievements. May all your dreams come true! 🌟\n\nమీకు ఈ పుట్టినరోజు మరిన్ని విజయాలను, సంతోషాలను ప్రసాదించాలని సెయింట్ ఆంటోనీస్ హైస్కూల్ ఆకాంక్షిస్తోంది. 🎁✨",
+    "options": {
+      "studentId": "mahammad_ali_s_91949211",
+      "templateType": "birthday_wish",
+      "messageType": "automated_birthday_wish"
+    },
+    "priority": 3,
+    "type": "birthday",
+    "idempotencyKey": "st_antonys_school_919491642077_mahammad_ali_s_91949211_birthday_wish_automated_birthday_wish_2026-09-11",
+    "status": "pending",
+    "attempts": 0,
+    "createdAt": "2026-09-11T07:52:04.199Z"
   }
 ]
