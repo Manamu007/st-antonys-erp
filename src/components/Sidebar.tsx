@@ -32,7 +32,7 @@ import {
   Settings as SettingsIcon
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { auth } from '../firebase';
+import { auth } from '../services/authService';
 import { useAuth } from '../context/AuthContext';
 import { usePermissions } from '../hooks/usePermissions';
 import { useSettings } from '../context/SettingsContext';
@@ -41,6 +41,7 @@ import { normalizeUrl, getGravatarUrl } from '../lib/utils';
 import { motion } from 'motion/react';
 
 import { checkIsTeacherAccount } from '../utils/teacherFilter';
+import { isDeveloperAccount } from '../constants/systemAccounts';
 
 interface SidebarProps {
   collapsed?: boolean;
@@ -53,6 +54,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onItemClick }) => {
     hasPermission, 
     hasAnyPermission, 
     isAdmin, 
+    isSuperAdmin,
     profile, 
     isPrincipal, 
     isVicePrincipal,
@@ -156,8 +158,9 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onItemClick }) => {
   const userEmailClean = (user?.email || profile?.email || '').toLowerCase().trim();
   const userDisplayClean = (user?.displayName || profile?.name || '').toLowerCase().trim();
   const roleLower = (profile?.role || '').toLowerCase().trim();
-  const isTeacherUser = checkIsTeacherAccount(roleLower, userEmailClean, userDisplayClean);
-  const isReceptionist = roleLower === 'receptionist' || profile?.role === 'receptionist' || (profile?.designation || '').toLowerCase().includes('receptionist') || userEmailClean.includes('reception');
+  const isMasterOrAdmin = isAdmin || isSuperAdmin || roleLower === 'super_admin' || roleLower === 'admin' || userEmailClean === 'manamunagaraju@gmail.com' || userDisplayClean.includes('nagaraju') || isDeveloperAccount(userEmailClean);
+  const isTeacherUser = !isMasterOrAdmin && checkIsTeacherAccount(roleLower, userEmailClean, userDisplayClean);
+  const isReceptionist = !isMasterOrAdmin && (roleLower === 'receptionist' || profile?.role === 'receptionist' || (profile?.designation || '').toLowerCase().includes('receptionist') || userEmailClean.includes('reception'));
 
   const filteredItems = navItems.filter(item => {
     // Strict restriction for Receptionist: only Dashboard and Attendance
@@ -183,7 +186,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onItemClick }) => {
       if (hiddenTeacherRoutes.includes(item.to)) return false;
     }
 
-    const isTeacherPortal = (profile?.role !== 'principal' && profile?.role !== 'vice_principal') && (profile?.isTeacherPortal === true || (!isAdmin && (
+    const isTeacherPortal = !isMasterOrAdmin && (profile?.role !== 'principal' && profile?.role !== 'vice_principal') && (profile?.isTeacherPortal === true || (!isAdmin && (
       isTeacher ||
       isTeacherUser ||
       profile?.role === 'teacher' ||

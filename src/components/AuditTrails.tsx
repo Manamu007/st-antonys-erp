@@ -1,6 +1,5 @@
 import { useState, useEffect, type FC } from 'react';
-import { dbService } from '../services/dbService';
-import { where, limit } from 'firebase/firestore';
+import { dbService, where, limit } from '../services/dbService';
 import { 
   Search, 
   Clock, 

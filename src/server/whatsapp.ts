@@ -13,9 +13,8 @@ import { Server } from 'socket.io';
 import path from 'path';
 import fs from 'fs';
 import { getSmartBotResponse } from './aiBotService.js';
-import { getDbAdmin, getDbAdminInstance, initializationPromise, isDatabaseDenied, setDatabaseDenied, isQuotaOrPermissionError, handleFirestoreError } from './firebaseAdmin.js';
-import admin from './firebaseAdmin.js';
-import { useFirestoreAuthState } from './firestoreAuthState.js';
+import { getDbAdmin, getDbAdminInstance, initializationPromise, isDatabaseDenied, setDatabaseDenied, isQuotaOrPermissionError, handleFirestoreError, admin } from './db.js';
+import { useWAAuthState as useFirestoreAuthState } from './waAuthState.js';
 import {
   normalizeIndianPhone,
   extractParentPhone,
@@ -335,7 +334,7 @@ const updateStatus = async (status: typeof connectionStatus, localOnly = false) 
           status: connectionStatus,
           qr: connectionStatus === 'qr' ? qrCode : null,
           instanceId,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: new Date().toISOString(),
           expiresAt: new Date(Date.now() + 3600000).toISOString() // 1 hour expiration for lock state if not refreshed
         }, { merge: true });
 
@@ -346,7 +345,7 @@ const updateStatus = async (status: typeof connectionStatus, localOnly = false) 
           instanceId,
           pid: process.pid,
           activeWorkers: 1,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+          updatedAt: new Date().toISOString()
         }, { merge: true });
 
         safeLogWhatsappEvent('status_change', { status, instanceId, pid: process.pid });
@@ -419,7 +418,7 @@ const acquireLock = async (isConflict = false, isForce = false): Promise<boolean
 
           const updateData: any = {
             instanceId,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp() as any,
+            updatedAt: new Date().toISOString(),
             pid: process.pid,
             hostname: process.env.HOSTNAME || 'unknown',
             expiresAt: new Date(now + 3600000).toISOString(),
@@ -461,7 +460,7 @@ const releaseLock = async () => {
       if (doc.exists && doc.data()?.instanceId === instanceId) {
         await lockRef.update({
           instanceId: null,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp() as any
+          updatedAt: new Date().toISOString()
         });
       }
     }
@@ -1461,11 +1460,11 @@ async function incrementWhatsAppStat(updates: Record<string, number>, type?: str
     
     const updateData: any = {};
     for (const [key, value] of Object.entries(updates)) {
-      updateData[key] = admin.firestore.FieldValue.increment(value);
+      updateData[key] = typeof value === 'number' ? value : 1;
     }
     
     if (type) {
-      updateData[`types.${type}`] = admin.firestore.FieldValue.increment(1);
+      updateData[`types.${type}`] = 1;
     }
     
     await statsRef.set(updateData, { merge: true });
@@ -2771,7 +2770,7 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
               status: 'open',
               qr: null,
               instanceId,
-              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedAt: new Date().toISOString(),
               expiresAt: new Date(Date.now() + 3600000).toISOString()
             }, { merge: true });
 
@@ -3896,44 +3895,47 @@ setInterval(async () => {
       }
     }
     
-    // 3. Delete files inside Google Cloud Storage older than 1 week (7 days)
-    console.log(`[Storage Cleanup] Scanning Google Storage bucket for expired files...`);
-    const bucket = admin.storage().bucket();
-    const sevenDaysInMs = 7 * 24 * 60 * 60 * 1000;
-    const nowMs = now.getTime();
-    const storagePrefixes = ['uploads/', 'temp/'];
-    let deletedFilesCount = 0;
-    
-    for (const prefix of storagePrefixes) {
-      try {
-        const [files] = await bucket.getFiles({ prefix });
-        for (const file of files) {
+    // 3. Delete files inside Cloud Storage older than 1 week (7 days) if configured
+    try {
+      const storage = (admin as any).storage?.();
+      const bucket = storage?.bucket?.();
+      if (bucket) {
+        console.log(`[Storage Cleanup] Scanning Storage bucket for expired files...`);
+        const sevenDaysInMs = 7 * 24 * 60 * 60 * 1000;
+        const nowMs = now.getTime();
+        const storagePrefixes = ['uploads/', 'temp/'];
+        let deletedFilesCount = 0;
+        
+        for (const prefix of storagePrefixes) {
           try {
-            const [metadata] = await file.getMetadata();
-            const createdTimeStr = metadata.timeCreated || metadata.updated;
-            if (createdTimeStr) {
-              const createdTime = new Date(createdTimeStr).getTime();
-              const age = nowMs - createdTime;
-              if (age > sevenDaysInMs) {
-                await file.delete();
-                deletedFilesCount++;
-                console.log(`[Storage Cleanup] Deleted expired file: ${file.name} (Created: ${createdTimeStr})`);
+            const [files] = await bucket.getFiles({ prefix });
+            for (const file of files) {
+              try {
+                const [metadata] = await file.getMetadata();
+                const createdTimeStr = metadata.timeCreated || metadata.updated;
+                if (createdTimeStr) {
+                  const createdTime = new Date(createdTimeStr).getTime();
+                  const age = nowMs - createdTime;
+                  if (age > sevenDaysInMs) {
+                    await file.delete();
+                    deletedFilesCount++;
+                    console.log(`[Storage Cleanup] Deleted expired file: ${file.name} (Created: ${createdTimeStr})`);
+                  }
+                }
+              } catch (fileErr: any) {
+                console.warn(`[Storage Cleanup] Failed to process/delete file ${file.name}: ${fileErr.message}`);
               }
             }
-          } catch (fileErr: any) {
-            console.warn(`[Storage Cleanup] Failed to process/delete file ${file.name}: ${fileErr.message}`);
+          } catch (prefixErr: any) {
+            console.warn(`[Storage Cleanup] Failed to list files with prefix ${prefix}: ${prefixErr.message}`);
           }
         }
-      } catch (prefixErr: any) {
-        console.warn(`[Storage Cleanup] Failed to list files with prefix ${prefix}: ${prefixErr.message}`);
+        
+        if (deletedFilesCount > 0) {
+          console.log(`[Storage Cleanup] Completed. Deleted ${deletedFilesCount} files older than 7 days.`);
+        }
       }
-    }
-    
-    if (deletedFilesCount > 0) {
-      console.log(`[Storage Cleanup] Completed. Deleted ${deletedFilesCount} files older than 7 days.`);
-    } else {
-      console.log(`[Storage Cleanup] No files older than 7 days found in uploads/ or temp/.`);
-    }
+    } catch (_) {}
     
   } catch (e: any) {
     const errText = (e?.message || String(e)).toLowerCase();

@@ -2,7 +2,7 @@ import { useLocation } from 'react-router-dom';
 import { useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { dbService } from '../services/dbService';
-import { auth, testConnection } from '../firebase';
+import { auth, testConnection } from '../services/authService';
 import { toast } from 'sonner';
 import { safeStorage as localStorage, safeSessionStorage as sessionStorage } from '../lib/safeStorage';
 

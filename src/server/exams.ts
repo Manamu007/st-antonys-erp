@@ -1,5 +1,5 @@
 import express from 'express';
-import { getDbAdmin } from './firebaseAdmin.js';
+import { getDbAdmin } from './db.js';
 import { sendMessage } from './whatsapp.js';
 import { normalizeIndianPhone, extractParentPhone } from './whatsappUtils.js';
 import { GoogleGenAI, Type } from "@google/genai";

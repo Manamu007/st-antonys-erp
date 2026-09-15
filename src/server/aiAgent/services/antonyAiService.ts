@@ -1,5 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
-import { getDbAdmin } from '../../firebaseAdmin.js';
+import { getDbAdmin } from '../../db.js';
 import { UserCredentials, validateRolePermission } from './antonyAiPermissionService.js';
 import { scanQuery, scanResponse } from './antonyAiPromptGuard.js';
 import { checkAndIncrementPersistentUsage } from './antonyAiRateLimitService.js';

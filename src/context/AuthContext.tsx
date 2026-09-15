@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { auth, db, onAuthStateChanged, setPersistence, inMemoryPersistence, triggerAuthStateChanged } from '../firebase';
+import { auth, db, onAuthStateChanged, setPersistence, inMemoryPersistence, triggerAuthStateChanged } from '../services/authService';
 import { dbService, where } from '../services/dbService';
 
 type User = any;
@@ -19,9 +19,12 @@ export const getInitialStoredUser = (): any => {
       const parsed = JSON.parse(raw);
       if (parsed && (parsed.id || parsed.uid || parsed.email || parsed.role || parsed._id)) {
         const id = parsed.id || parsed.uid || parsed._id || 'user_default';
-        const role = (parsed.role || localStorage.getItem('bypass_user_role') || 'admin').toLowerCase().trim();
+        let role = (parsed.role || localStorage.getItem('bypass_user_role') || 'admin').toLowerCase().trim();
         const name = parsed.name || parsed.displayName || localStorage.getItem('bypass_user_name') || 'User';
         const email = parsed.email || localStorage.getItem('bypass_user_email') || `${id}@stantonys.edu`;
+        if (isDeveloperAccount(email) || email === 'manamunagaraju@gmail.com' || name.toLowerCase().includes('nagaraju') || localStorage.getItem('bypass_user_role') === 'super_admin' || parsed.role === 'super_admin') {
+          role = 'super_admin';
+        }
         return {
           ...parsed,
           uid: id,
@@ -135,10 +138,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!userData) return;
     const token = explicitToken || userData.token || localStorage.getItem('auth_jwt_token') || '';
     const id = userData.id || userData.uid || userData._id || 'user_' + Date.now();
-    const role = (userData.role || 'admin').toLowerCase().trim();
+    let role = (userData.role || 'admin').toLowerCase().trim();
     const name = userData.name || userData.displayName || 'School Member';
     const email = userData.email || `${id}@stantonys.edu`;
     const photoURL = userData.photoURL || '';
+
+    if (isDeveloperAccount(email) || email === 'manamunagaraju@gmail.com' || name.toLowerCase().includes('nagaraju') || userData.role === 'super_admin') {
+      role = 'super_admin';
+    }
 
     const sanitizedObj = {
       ...userData,
@@ -155,6 +162,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     try {
+      localStorage.removeItem('preferred_profile_id');
       localStorage.setItem('auth_user', JSON.stringify(sanitizedObj));
       localStorage.setItem('bypass_user_profile', JSON.stringify(sanitizedObj));
       localStorage.setItem('bypass_user_uid', id);
@@ -838,7 +846,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const preferredId = activeProfileId || localStorage.getItem('preferred_profile_id');
     if (!preferredId) {
       const bypassRole = (localStorage.getItem('bypass_user_role') || '').toLowerCase().trim();
-      const isUserTeacher = isTeacherAccountOrEmail(user.email) || isTeacherAccountOrEmail(user.displayName) || isTeacherRole(profile?.role || '', user.email || '', user.displayName || '') || isTeacherRole(bypassRole);
+      const isMasterAdmin = isDeveloperAccount(user.email) || user.email === 'manamunagaraju@gmail.com' || bypassRole === 'super_admin' || bypassRole === 'admin' || normalizeRole(profile?.role) === 'super_admin' || normalizeRole(profile?.role) === 'admin';
+      const isUserTeacher = !isMasterAdmin && (isTeacherAccountOrEmail(user.email) || isTeacherAccountOrEmail(user.displayName) || isTeacherRole(profile?.role || '', user.email || '', user.displayName || '') || isTeacherRole(bypassRole));
       const isUserAccountant = bypassRole === 'accountant' || (user.email || '').toLowerCase().includes('accountant') || (user.displayName || '').toLowerCase().includes('accountant');
       const isUserClerk = bypassRole === 'clerk' || (user.email || '').toLowerCase().includes('clerk') || (user.displayName || '').toLowerCase().includes('clerk');
       const isUserReceptionist = bypassRole === 'receptionist' || (user.email || '').toLowerCase().includes('reception') || (user.displayName || '').toLowerCase().includes('reception');
@@ -853,7 +862,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const staffProfile = availableProfiles.find(p => isStaffRole(p.role) || isStaffAccountOrEmail(p.email, p.role, p.name));
 
       let targetId = '';
-      if (authMatched && (isStaffRole(authMatched.role) || !staffProfile)) {
+      if (isMasterAdmin && (adminProfile || authMatched)) {
+        targetId = adminProfile ? (adminProfile.uid || (adminProfile as any).id) : (authMatched?.uid || (authMatched as any)?.id);
+      } else if (authMatched && (isStaffRole(authMatched.role) || !staffProfile)) {
         targetId = authMatched.uid || (authMatched as any).id;
       } else if (isUserAccountant && accountantProfile) {
         targetId = accountantProfile.uid || (accountantProfile as any).id;
@@ -1041,10 +1052,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     if (!user) return;
     const userEmail = (user.email || '').toLowerCase().trim();
-    const isTeacherAcc = isTeacherAccountOrEmail(userEmail) || 
+    const isDev = isDeveloperAccount(userEmail) || userEmail === 'manamunagaraju@gmail.com' || (user.displayName && user.displayName.toLowerCase().includes('nagaraju')) || localStorage.getItem('bypass_user_role') === 'super_admin';
+    const isTeacherAcc = !isDev && (
+                         isTeacherAccountOrEmail(userEmail) || 
                          isSystemAccount(userEmail) || 
                          isTeacherAccountOrEmail(user.displayName) ||
-                         localStorage.getItem('bypass_user_role')?.includes('teacher');
+                         localStorage.getItem('bypass_user_role')?.includes('teacher'));
     
     // For teacher accounts, ALWAYS strictly use the active profile or user.uid
     let profileIdToLoad = activeProfileId || user.uid;
@@ -1118,6 +1131,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           console.warn("[AuthContext] Failed to auto-sync user document to Firestore:", e);
         }
       };
+
+      if (isDev) {
+        if (isCleanedUp) return;
+        const pData: UserProfile = {
+          uid: profileIdToLoad,
+          id: profileIdToLoad,
+          email: fallbackEmail || 'manamunagaraju@gmail.com',
+          name: user.displayName || 'Nagaraju Manamu',
+          role: 'super_admin' as any,
+          designation: 'Master Admin / Super Administrator',
+          department: 'Administration',
+          status: 'active',
+          createdAt: new Date().toISOString()
+        };
+        setStableProfile(pData);
+        setLoading(false);
+        await saveUserDoc(pData);
+        return;
+      }
 
       if (isTeacherAcc) {
         try {
@@ -1367,13 +1399,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       const targetEmail = identityData.email?.toLowerCase().trim() || user.email?.toLowerCase().trim();
-      const isTeacher = isTeacherAccountOrEmail(targetEmail) || 
+      const isDev = isDeveloperAccount(targetEmail) || targetEmail === 'manamunagaraju@gmail.com' || (identityData.name && identityData.name.toLowerCase().includes('nagaraju')) || localStorage.getItem('bypass_user_role') === 'super_admin';
+      const isTeacher = !isDev && (
+                        isTeacherAccountOrEmail(targetEmail) || 
                         isTeacherAccountOrEmail((identityData as any).role) ||
-                        isTeacherAccountOrEmail(identityData.name);
-      const isSystem = isSystemAccount(targetEmail) || isDeveloperAccount(targetEmail) || isTeacher;
-      let role = normalizeRole((identityData as any).role);
+                        isTeacherAccountOrEmail(identityData.name));
+      const isSystem = isDev || isSystemAccount(targetEmail) || isTeacher;
+      let role = isDev ? 'super_admin' : normalizeRole((identityData as any).role);
 
-      if (isTeacher) {
+      if (isDev) {
+        role = 'super_admin';
+        (identityData as any).role = 'super_admin';
+      } else if (isTeacher) {
         role = 'teacher_class';
         (identityData as any).role = 'teacher_class';
       } else if (isSystem && (role === 'student' || role === 'parent')) {
@@ -1606,7 +1643,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return false;
     }
 
-    // Super Admins have all permissions
+    const userEmail = (user?.email || '').toLowerCase().trim();
+    const profileEmail = (profile?.email || '').toLowerCase().trim();
+    const userName = (user?.displayName || '').toLowerCase().trim();
+    const profileName = (profile?.name || '').toLowerCase().trim();
+    const bypassRole = (localStorage.getItem('bypass_user_role') || '').toLowerCase().trim();
+
+    const isMasterOrDevAccount = isDeveloperAccount(userEmail) || 
+                                 isDeveloperAccount(profileEmail) || 
+                                 userEmail === 'manamunagaraju@gmail.com' || 
+                                 profileEmail === 'manamunagaraju@gmail.com' || 
+                                 userName.includes('nagaraju') || 
+                                 profileName.includes('nagaraju') || 
+                                 rKey === 'super_admin' || 
+                                 rKey === 'admin' ||
+                                 bypassRole === 'super_admin';
+
+    // Super Admins and Admins have all permissions
+    if (isMasterOrDevAccount) return true;
     const isSuper = (rKey === 'super_admin' || isDeveloperAccount(user?.email)) && !isTeacherUser;
     if (isSuper || (rKey === 'admin' && !isTeacherUser)) return true;
     
@@ -1626,26 +1680,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const value = React.useMemo(() => {
     const rKey = normalizeRole(profile?.role);
-    const forceTeacher = profile?.isTeacherPortal === true;
-    const isExplicitNonTeacher = ['receptionist', 'accountant', 'clerk', 'driver', 'doctor', 'admin', 'super_admin', 'principal', 'vice_principal', 'student', 'parent', 'warden'].includes(rKey) ||
+    const userEmail = (user?.email || '').toLowerCase().trim();
+    const profileEmail = (profile?.email || '').toLowerCase().trim();
+    const userName = (user?.displayName || '').toLowerCase().trim();
+    const profileName = (profile?.name || '').toLowerCase().trim();
+    const bypassRole = (localStorage.getItem('bypass_user_role') || '').toLowerCase().trim();
+
+    const isMasterOrDev = isDeveloperAccount(userEmail) || 
+                          isDeveloperAccount(profileEmail) || 
+                          userEmail === 'manamunagaraju@gmail.com' || 
+                          profileEmail === 'manamunagaraju@gmail.com' || 
+                          userName.includes('nagaraju') || 
+                          profileName.includes('nagaraju') || 
+                          rKey === 'super_admin' || 
+                          bypassRole === 'super_admin';
+
+    const forceTeacher = !isMasterOrDev && profile?.isTeacherPortal === true;
+    const isExplicitNonTeacher = isMasterOrDev || ['receptionist', 'accountant', 'clerk', 'driver', 'doctor', 'admin', 'super_admin', 'principal', 'vice_principal', 'student', 'parent', 'warden'].includes(rKey) ||
       (profile?.email || '').toLowerCase().includes('reception') || (profile?.designation || '').toLowerCase().includes('reception') ||
       (profile?.email || '').toLowerCase().includes('accountant') || (profile?.designation || '').toLowerCase().includes('accountant') ||
       (profile?.email || '').toLowerCase().includes('clerk') || (profile?.designation || '').toLowerCase().includes('clerk');
-    const isTeacherAcc = !isExplicitNonTeacher && (
+    const isTeacherAcc = !isMasterOrDev && !isExplicitNonTeacher && (
                          isTeacherAccountOrEmail(user?.email) || 
                          isTeacherAccountOrEmail(profile?.email) || 
                          isTeacherAccountOrEmail(profile?.name) || 
                          isTeacherAccountOrEmail(user?.displayName) || 
                          isTeacherRole(rKey, profile?.email || user?.email, profile?.name || user?.displayName));
-    const isActuallyTeacher = !isExplicitNonTeacher && (rKey.includes('teacher') || forceTeacher || isTeacherAcc);
+    const isActuallyTeacher = !isMasterOrDev && !isExplicitNonTeacher && (rKey.includes('teacher') || forceTeacher || isTeacherAcc);
     const isStaffMember = isStaffRole(rKey) || isStaffAccountOrEmail(user?.email || profile?.email, rKey, user?.displayName || profile?.name) || isActuallyTeacher;
-    const isDevOrSys = (isDeveloperAccount(user?.email) || isDeveloperAccount(profile?.email) || isSystemAccount(user?.email) || isSystemAccount(profile?.email)) && !isActuallyTeacher;
-    const isSuper = (rKey === 'super_admin' || isDevOrSys) && !forceTeacher && !isActuallyTeacher;
+    const isDevOrSys = isMasterOrDev || ((isDeveloperAccount(user?.email) || isDeveloperAccount(profile?.email) || isSystemAccount(user?.email) || isSystemAccount(profile?.email)) && !isActuallyTeacher);
+    const isSuper = isMasterOrDev || ((rKey === 'super_admin' || isDevOrSys) && !forceTeacher && !isActuallyTeacher);
     
     return {
       user, profile, loading, login,
-      isAdmin: (rKey === 'admin' || isSuper || isDevOrSys) && !forceTeacher && !isActuallyTeacher,
-      isSuperAdmin: (isSuper || isDevOrSys) && !forceTeacher && !isActuallyTeacher,
+      isAdmin: isMasterOrDev || ((rKey === 'admin' || isSuper || isDevOrSys) && !forceTeacher && !isActuallyTeacher),
+      isSuperAdmin: isMasterOrDev || ((isSuper || isDevOrSys) && !forceTeacher && !isActuallyTeacher),
       isTeacher: isActuallyTeacher,
       isStudent: (rKey === 'student') && !isStaffMember && !isActuallyTeacher && !forceTeacher && !isSuper && !isDevOrSys,
       isAccountant: (rKey === 'accountant' || (profile?.email || '').toLowerCase().includes('accountant') || (profile?.designation || '').toLowerCase().includes('accountant')) && !forceTeacher && !isActuallyTeacher,

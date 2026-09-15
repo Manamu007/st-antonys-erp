@@ -1,4 +1,4 @@
-import { getDbAdmin } from '../../server/firebaseAdmin.js';
+import { getDbAdmin } from '../../server/db.js';
 import { getMongoDb } from '../../server/mongoSession.js';
 import { normalizeIndianPhone } from '../../server/whatsappUtils.js';
 import { NodeType, ConditionField, ConditionOperator, ActionType, BotSession, BotWorkflow } from '../types';
@@ -944,7 +944,7 @@ async function queueBotMessage(phoneNumber: string, text: string, options: any =
       status: 'pending'
     });
 
-    const { isDatabaseDenied, getDbAdmin } = await import('../../server/firebaseAdmin.js');
+    const { isDatabaseDenied, getDbAdmin } = await import('../../server/db.js');
     if (!isDatabaseDenied()) {
       const dbAdmin = getDbAdmin();
       if (dbAdmin) {

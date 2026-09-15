@@ -1,6 +1,5 @@
 import { GoogleGenAI, Type, FunctionDeclaration } from "@google/genai";
-import { dbService } from "./dbService";
-import { where } from "firebase/firestore";
+import { dbService, where } from "./dbService";
 
 let ai: GoogleGenAI | null = null;
 

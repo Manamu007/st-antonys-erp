@@ -2,7 +2,7 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { GoogleGenAI, Type } from "@google/genai";
-import { getDbAdmin } from './firebaseAdmin.js';
+import { getDbAdmin } from './db.js';
 
 const router = express.Router();
 

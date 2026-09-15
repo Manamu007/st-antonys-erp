@@ -1,5 +1,5 @@
 import { AntonyAiSettings, AntonyAiHealth, AntonyAiResponse, AntonyAiLog } from '../types/antonyAiTypes';
-import { auth } from '../../../firebase';
+import { auth } from '../../../services/authService';
 import { safeStorage as localStorage } from '../../../lib/safeStorage';
 
 interface ClientCreds {

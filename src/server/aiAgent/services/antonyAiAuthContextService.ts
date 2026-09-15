@@ -1,4 +1,4 @@
-import { getDbAdmin, authAdmin } from '../../firebaseAdmin.js';
+import { getDbAdmin, authAdmin } from '../../db.js';
 
 export interface VerifiedAiUserContext {
   userId: string;

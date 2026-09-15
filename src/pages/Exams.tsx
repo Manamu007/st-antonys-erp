@@ -41,14 +41,13 @@ import {
   CheckCircle2,
   XCircle
 } from 'lucide-react';
-import { dbService } from '../services/dbService';
+import { dbService, where, limit } from '../services/dbService';
 import { Class10DailyExams } from '../components/Class10DailyExams';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
 import { toast } from 'sonner';
 import { isTeacherRole as checkIsTeacherRole, getTeacherAssignments, filterClassesForTeacher, filterBatchesForTeacher } from '../utils/teacherFilter';
 import { motion, AnimatePresence } from 'motion/react';
-import { where, limit } from 'firebase/firestore';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';

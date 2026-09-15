@@ -16,8 +16,7 @@ import {
   ClipboardList,
   Loader2
 } from 'lucide-react';
-import { where, orderBy, limit, QueryConstraint, collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { dbService } from '../services/dbService';
+import { where, orderBy, limit, QueryConstraint, collection, addDoc, serverTimestamp, dbService } from '../services/dbService';
 import { usePermissions } from '../hooks/usePermissions';
 import { useSettings } from '../context/SettingsContext';
 import { toast } from 'sonner';
@@ -25,7 +24,6 @@ import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
 import { parseLeaveRequest } from '../services/aiService';
 import { whatsappService } from '../services/whatsappService';
-import { db } from '../firebase';
 
 type LeaveStatus = 'pending' | 'approved' | 'rejected';
 type LeaveType = 'sick' | 'personal' | 'casual' | 'other';
@@ -300,7 +298,7 @@ const Leaves: React.FC = () => {
 
         // ఇన్-యాప్ డాష్‌బోర్డ్ అలర్ట్స్ సృష్టి
         const notificationPromises = uniqueUserIds.map(uid => 
-          addDoc(collection(db, 'notifications'), {
+          addDoc(collection('notifications'), {
             userId: uid,
             title: `New ${leaveData.applicantType === 'student' ? 'Student' : 'Staff'} Leave App`,
             message: `${leaveData.applicantName} has requested time off from ${leaveData.startDate} to ${leaveData.endDate}.`,
@@ -377,7 +375,7 @@ const Leaves: React.FC = () => {
       });
 
       // 1. ఇన్-యాప్ డాష్‌బోర్డ్ అలర్ట్ క్రియేషన్
-      await addDoc(collection(db, 'notifications'), {
+      await addDoc(collection('notifications'), {
         userId: leave.applicantId,
         title: `Leave Request ${status.toUpperCase()}`,
         message: `Your leave request from ${leave.startDate} to ${leave.endDate} has been ${status} by ${profile.name}.`,

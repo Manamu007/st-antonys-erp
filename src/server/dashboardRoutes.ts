@@ -1,125 +1,18 @@
 import { Router } from 'express';
 import { getMongoDb } from './mongoSession.js';
-import { getDbAdmin, isDatabaseDenied } from './firebaseAdmin.js';
+import { getDbAdmin } from './db.js';
 import { getWAStatus } from './whatsapp.js';
 
 const router = Router();
 
-// Fallback baseline metrics for initial state or offline mode
-const DEFAULT_STATS = {
-  students: 485,
-  teachers: 38,
-  attendance: 94,
-  presentCount: 456,
-  absentCount: 29,
-  fees: 85,
-  feesCollected: 1450000,
-  feesPending: 256000,
-  todayCollection: 42500,
-  totalExpenses: 195000,
-  recentPayments: [
-    { id: 'pay_1', studentName: 'Aarav Sharma', rollNo: 'STD-101', amount: 15000, date: new Date().toISOString(), status: 'paid', mode: 'online' },
-    { id: 'pay_2', studentName: 'Diya Patel', rollNo: 'STD-104', amount: 12000, date: new Date().toISOString(), status: 'paid', mode: 'cash' },
-    { id: 'pay_3', studentName: 'Rohan Verma', rollNo: 'STD-108', amount: 18500, date: new Date().toISOString(), status: 'paid', mode: 'upi' },
-    { id: 'pay_4', studentName: 'Ananya Reddy', rollNo: 'STD-112', amount: 20000, date: new Date().toISOString(), status: 'paid', mode: 'online' }
-  ],
-  pendingLeaves: 2,
-  revenueDetails: {
-    totalPayable: 1706000,
-    totalCollected: 1450000,
-    totalPending: 256000,
-    term1Collected: 580000,
-    term1Pending: 40000,
-    term2Collected: 520000,
-    term2Pending: 86000,
-    term3Collected: 350000,
-    term3Pending: 130000
-  },
-  waStats: {
-    total: 142,
-    delivered: 136,
-    processing: 2,
-    failed: 4
-  }
-};
-
-const DEFAULT_NOTICES = [
-  {
-    id: 'notice_1',
-    title: 'Mid-Term Examinations Schedule 2026',
-    content: 'The Mid-Term examinations for Classes I to XII commence from the 15th of this month. Detailed schedules and hall tickets are available under the Examinations section.',
-    priority: 'high',
-    createdAt: new Date(Date.now() - 3600000 * 4).toISOString(),
-    targetRoles: ['all', 'student', 'teacher', 'parent'],
-    isPublic: true
-  },
-  {
-    id: 'notice_2',
-    title: 'Annual Sports Day & Athletic Meet',
-    content: 'Registration for track and field events is now open. House captains should submit rosters to the Physical Education department by Friday.',
-    priority: 'medium',
-    createdAt: new Date(Date.now() - 3600000 * 24).toISOString(),
-    targetRoles: ['all', 'student', 'teacher', 'parent'],
-    isPublic: true
-  },
-  {
-    id: 'notice_3',
-    title: 'Parent-Teacher Conference (PTM) Reminder',
-    content: 'The quarterly PTM is scheduled for this coming Saturday from 9:00 AM to 1:30 PM. Parents are requested to adhere to their designated time slots.',
-    priority: 'critical',
-    createdAt: new Date(Date.now() - 3600000 * 48).toISOString(),
-    targetRoles: ['all', 'parent', 'teacher'],
-    isPublic: true
-  }
-];
-
-const DEFAULT_TIMELINE = [
-  {
-    id: 'act_1',
-    module: 'attendance',
-    action: 'Morning Attendance Sync',
-    userName: 'Class Teacher (Grade X-A)',
-    userRole: 'teacher',
-    timestamp: new Date(Date.now() - 1000 * 60 * 15).toISOString(),
-    details: 'Marked 42 present, 2 absent for Grade X-A'
-  },
-  {
-    id: 'act_2',
-    module: 'fees',
-    action: 'Fee Receipt Generated',
-    userName: 'Accounts Office',
-    userRole: 'accountant',
-    timestamp: new Date(Date.now() - 1000 * 60 * 45).toISOString(),
-    details: 'Received ₹15,000 for Aarav Sharma (Term-2 Tuition)'
-  },
-  {
-    id: 'act_3',
-    module: 'whatsapp',
-    action: 'Automated Attendance Alert',
-    userName: 'Spears Baileys Engine',
-    userRole: 'system',
-    timestamp: new Date(Date.now() - 1000 * 60 * 55).toISOString(),
-    details: 'Dispatched 2 WhatsApp absence alerts to registered parents'
-  },
-  {
-    id: 'act_4',
-    module: 'exams',
-    action: 'Question Paper Uploaded',
-    userName: 'Science Dept HOD',
-    userRole: 'teacher',
-    timestamp: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
-    details: 'Physics Model Paper Grade XII uploaded'
-  }
-];
-
 /**
  * GET /api/dashboard/stats
- * Aggregates all essential dashboard metrics strictly via local Express/MongoDB
+ * Aggregates essential dashboard metrics strictly via MongoDB
  */
 router.get('/stats', async (req, res) => {
   try {
     const mongo = await getMongoDb().catch(() => null);
-    const dbAdmin = (!isDatabaseDenied()) ? getDbAdmin() : null;
+    const dbAdmin = getDbAdmin();
 
     let studentsCount = 0;
     let staffCount = 0;
@@ -176,12 +69,9 @@ router.get('/stats', async (req, res) => {
           mode: f.paymentMode || 'online'
         }));
       } catch (mongoErr) {
-        console.warn('[DashboardStats] Mongo query failed, checking fallback:', mongoErr);
+        console.warn('[DashboardStats] Mongo query failed:', mongoErr);
       }
-    }
-
-    // If counts are 0, try Firestore Admin if accessible
-    if (studentsCount === 0 && dbAdmin) {
+    } else if (dbAdmin) {
       try {
         const [stSnap, sfSnap, lvSnap] = await Promise.all([
           dbAdmin.collection('students').limit(1000).get().catch(() => null),
@@ -209,33 +99,20 @@ router.get('/stats', async (req, res) => {
           pendingLeaves = lvSnap.size;
         }
       } catch {
-        // Silent fallback
+        // Continue with genuine counts
       }
     }
-
-    // Apply baseline defaults if zero
-    if (studentsCount === 0) studentsCount = DEFAULT_STATS.students;
-    if (staffCount === 0) staffCount = DEFAULT_STATS.teachers;
-    if (presentToday === 0 && absentToday === 0) {
-      presentToday = Math.round(studentsCount * 0.94);
-      absentToday = studentsCount - presentToday;
-    }
-    if (totalCollected === 0) totalCollected = DEFAULT_STATS.feesCollected;
-    if (totalPending === 0) totalPending = DEFAULT_STATS.feesPending;
-    if (todayCollection === 0) todayCollection = DEFAULT_STATS.todayCollection;
-    if (recentPayments.length === 0) recentPayments = DEFAULT_STATS.recentPayments;
 
     const totalStudentsMarked = presentToday + absentToday;
     const attendancePercentage = totalStudentsMarked > 0 
       ? Math.round((presentToday / totalStudentsMarked) * 100) 
-      : 94;
+      : 0;
 
     const totalFeePayable = totalCollected + totalPending;
     const feeCollectionPercent = totalFeePayable > 0 
       ? Math.round((totalCollected / totalFeePayable) * 100) 
-      : 85;
+      : 0;
 
-    // Get WhatsApp engine status from local Baileys socket
     const localWa = getWAStatus();
 
     const responseData = {
@@ -247,8 +124,8 @@ router.get('/stats', async (req, res) => {
       fees: feeCollectionPercent,
       feesCollected: totalCollected,
       feesPending: totalPending,
-      todayCollection: todayCollection,
-      totalExpenses: DEFAULT_STATS.totalExpenses,
+      todayCollection,
+      totalExpenses: 0,
       recentPayments,
       pendingLeaves,
       revenueDetails: {
@@ -263,10 +140,10 @@ router.get('/stats', async (req, res) => {
         term3Pending: Math.round(totalPending * 0.45)
       },
       waStats: {
-        total: DEFAULT_STATS.waStats.total,
-        delivered: DEFAULT_STATS.waStats.delivered,
-        processing: DEFAULT_STATS.waStats.processing,
-        failed: DEFAULT_STATS.waStats.failed
+        total: 0,
+        delivered: 0,
+        processing: 0,
+        failed: 0
       },
       waEngineStatus: localWa.status || 'close'
     };
@@ -280,8 +157,33 @@ router.get('/stats', async (req, res) => {
     console.error('[DashboardStats API Error]', error);
     res.json({
       success: true,
-      stats: DEFAULT_STATS,
-      ...DEFAULT_STATS
+      stats: {
+        students: 0,
+        teachers: 0,
+        attendance: 0,
+        presentCount: 0,
+        absentCount: 0,
+        fees: 0,
+        feesCollected: 0,
+        feesPending: 0,
+        todayCollection: 0,
+        totalExpenses: 0,
+        recentPayments: [],
+        pendingLeaves: 0,
+        revenueDetails: {
+          totalPayable: 0,
+          totalCollected: 0,
+          totalPending: 0,
+          term1Collected: 0,
+          term1Pending: 0,
+          term2Collected: 0,
+          term2Pending: 0,
+          term3Collected: 0,
+          term3Pending: 0
+        },
+        waStats: { total: 0, delivered: 0, processing: 0, failed: 0 },
+        waEngineStatus: 'close'
+      }
     });
   }
 });
@@ -301,37 +203,33 @@ router.get('/notices', async (req, res) => {
         .toArray()
         .catch(() => []);
 
-      if (notices.length > 0) {
-        return res.json({
-          success: true,
-          notices: notices.map((n: any) => ({
-            id: n._id?.toString() || n.id,
-            title: n.title,
-            content: n.content,
-            priority: n.priority || 'medium',
-            createdAt: n.createdAt || new Date().toISOString(),
-            targetRoles: n.targetRoles || ['all'],
-            isPublic: n.isPublic ?? true
-          }))
-        });
-      }
+      return res.json({
+        success: true,
+        notices: notices.map((n: any) => ({
+          id: n._id?.toString() || n.id,
+          title: n.title,
+          content: n.content,
+          priority: n.priority || 'medium',
+          createdAt: n.createdAt || new Date().toISOString(),
+          targetRoles: n.targetRoles || ['all'],
+          isPublic: n.isPublic ?? true
+        }))
+      });
     }
 
-    const dbAdmin = (!isDatabaseDenied()) ? getDbAdmin() : null;
-    if (dbAdmin) {
-      const snap = await dbAdmin.collection('notices').orderBy('createdAt', 'desc').limit(20).get().catch(() => null);
-      if (snap && !snap.empty) {
-        const notices = snap.docs.map((d: any) => ({
-          id: d.id,
-          ...d.data()
-        }));
-        return res.json({ success: true, notices });
-      }
+    const dbAdmin = getDbAdmin();
+    const snap = await dbAdmin.collection('notices').orderBy('createdAt', 'desc').limit(20).get().catch(() => null);
+    if (snap && !snap.empty) {
+      const notices = snap.docs.map((d: any) => ({
+        id: d.id,
+        ...d.data()
+      }));
+      return res.json({ success: true, notices });
     }
 
-    res.json({ success: true, notices: DEFAULT_NOTICES });
+    return res.json({ success: true, notices: [] });
   } catch (err: any) {
-    res.json({ success: true, notices: DEFAULT_NOTICES });
+    res.json({ success: true, notices: [] });
   }
 });
 
@@ -350,37 +248,33 @@ router.get('/timeline', async (req, res) => {
         .toArray()
         .catch(() => []);
 
-      if (activities.length > 0) {
-        return res.json({
-          success: true,
-          activities: activities.map((a: any) => ({
-            id: a._id?.toString() || a.id,
-            module: a.module || 'system',
-            action: a.action || 'Activity',
-            userName: a.userName || 'Staff Member',
-            userRole: a.userRole || 'staff',
-            timestamp: a.timestamp || new Date().toISOString(),
-            details: a.details || ''
-          }))
-        });
-      }
+      return res.json({
+        success: true,
+        activities: activities.map((a: any) => ({
+          id: a._id?.toString() || a.id,
+          module: a.module || 'system',
+          action: a.action || 'Activity',
+          userName: a.userName || 'Staff Member',
+          userRole: a.userRole || 'staff',
+          timestamp: a.timestamp || new Date().toISOString(),
+          details: a.details || ''
+        }))
+      });
     }
 
-    const dbAdmin = (!isDatabaseDenied()) ? getDbAdmin() : null;
-    if (dbAdmin) {
-      const snap = await dbAdmin.collection('user_activities').orderBy('timestamp', 'desc').limit(50).get().catch(() => null);
-      if (snap && !snap.empty) {
-        const activities = snap.docs.map((d: any) => ({
-          id: d.id,
-          ...d.data()
-        }));
-        return res.json({ success: true, activities });
-      }
+    const dbAdmin = getDbAdmin();
+    const snap = await dbAdmin.collection('user_activities').orderBy('timestamp', 'desc').limit(50).get().catch(() => null);
+    if (snap && !snap.empty) {
+      const activities = snap.docs.map((d: any) => ({
+        id: d.id,
+        ...d.data()
+      }));
+      return res.json({ success: true, activities });
     }
 
-    res.json({ success: true, activities: DEFAULT_TIMELINE });
+    return res.json({ success: true, activities: [] });
   } catch (err: any) {
-    res.json({ success: true, activities: DEFAULT_TIMELINE });
+    res.json({ success: true, activities: [] });
   }
 });
 

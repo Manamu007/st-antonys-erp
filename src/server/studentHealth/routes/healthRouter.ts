@@ -1,5 +1,5 @@
 import express from 'express';
-import { getDbAdmin } from '../../firebaseAdmin.js';
+import { getDbAdmin } from '../../db.js';
 import { processBillImage } from '../services/healthBillOcrService.js';
 import { findStudentMatches } from '../services/studentHealthMatchingService.js';
 import { processBillApprovalAndDeduction, processBillRejection } from '../services/healthCardLedgerService.js';

@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { CreditCard, Search, Plus, Filter, Download, FileText, Send, CheckCircle2, Bot, Calendar, UserPlus, Receipt, X, Printer, Eye, Trash2, Lock } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { dbService } from '../services/dbService';
-import { where, orderBy, limit as firestoreLimit } from 'firebase/firestore';
+import { dbService, where, orderBy, limit as firestoreLimit } from '../services/dbService';
 import { toast } from 'sonner';
 import { Expenditure } from '../types';
 import { motion, AnimatePresence } from 'motion/react';

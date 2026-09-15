@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { dbService } from '../services/dbService';
+import { dbService, where, collection, doc, setDoc, addDoc, serverTimestamp } from '../services/dbService';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
 import { 
@@ -39,8 +39,6 @@ import { motion, AnimatePresence } from 'motion/react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { safeStorage as localStorage } from '../lib/safeStorage';
-import { where, collection, doc, setDoc, addDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../firebase';
 import Papa from 'papaparse';
 import { sortAlphabetically } from '../lib/utils';
 import { SortAsc, SortDesc } from 'lucide-react';

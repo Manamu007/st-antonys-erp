@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import { getDbAdmin, isDatabaseDenied } from './firebaseAdmin.js';
+import { getDbAdmin, isDatabaseDenied } from './db.js';
 import { getMongoDb, saveSession, getSession, deleteSession, saveOtpRecord, getOtpRecord, markOtpUsed } from './mongoSession.js';
 import { sendMessage, getWASocket, checkSocketAlive } from './whatsapp.js';
 
@@ -39,19 +39,19 @@ export function sanitizeUserForClient(u: any): any {
 }
 
 const DEMO_ACCOUNTS_MAP: Record<string, any> = {
-  '8822269999': { id: 'aI2aVI9eclRb0SodNvKGbyJhkR12', uid: 'aI2aVI9eclRb0SodNvKGbyJhkR12', name: 'Nagaraju Manamu', role: 'admin', email: 'manamunagaraju@gmail.com', phone: '8822269999', status: 'active' },
+  '8822269999': { id: 'aI2aVI9eclRb0SodNvKGbyJhkR12', uid: 'aI2aVI9eclRb0SodNvKGbyJhkR12', name: 'Nagaraju Manamu', role: 'super_admin', designation: 'Master Admin / Super Administrator', email: 'manamunagaraju@gmail.com', phone: '8822269999', status: 'active' },
   '9876543210': { id: 'admin_demo', uid: 'admin_demo', name: 'School Administrator', role: 'admin', email: 'admin@stantonys.edu', phone: '9876543210', status: 'active' },
   '9999999999': { id: 'admin_sys', uid: 'admin_sys', name: 'System Administrator', role: 'super_admin', email: 'principal@stantonys.edu', phone: '9999999999', status: 'active' },
   '9876543211': { id: 'std_2', uid: 'std_2', name: 'Diya Patel', role: 'student', email: 'diya.patel@stantonys.edu', phone: '9876543211', status: 'active' },
   '9876543212': { id: 'parent_3', uid: 'parent_3', name: 'Rohan Verma (Parent)', role: 'parent', email: 'rohan.parent@stantonys.edu', phone: '9876543212', status: 'active' },
   '9876543213': { id: 'teacher_demo', uid: 'teacher_demo', name: 'Ananya Reddy (Teacher)', role: 'teacher_class', email: 'ananya@stantonys.edu', phone: '9876543213', status: 'active' },
   '9876543214': { id: 'std_5', uid: 'std_5', name: 'Vihaan Kumar', role: 'student', email: 'vihaan@stantonys.edu', phone: '9876543214', status: 'active' },
-  'manamunagaraju@gmail.com': { id: 'aI2aVI9eclRb0SodNvKGbyJhkR12', uid: 'aI2aVI9eclRb0SodNvKGbyJhkR12', name: 'Nagaraju Manamu', role: 'admin', email: 'manamunagaraju@gmail.com', phone: '8822269999', status: 'active' },
-  'nagaraju': { id: 'aI2aVI9eclRb0SodNvKGbyJhkR12', uid: 'aI2aVI9eclRb0SodNvKGbyJhkR12', name: 'Nagaraju Manamu', role: 'admin', email: 'manamunagaraju@gmail.com', phone: '8822269999', status: 'active' },
-  'admin': { id: 'aI2aVI9eclRb0SodNvKGbyJhkR12', uid: 'aI2aVI9eclRb0SodNvKGbyJhkR12', name: 'Nagaraju Manamu', role: 'admin', email: 'manamunagaraju@gmail.com', phone: '8822269999', status: 'active' },
-  'superadmin': { id: 'admin_sys', uid: 'admin_sys', name: 'System Administrator', role: 'super_admin', email: 'principal@stantonys.edu', phone: '9999999999', status: 'active' },
-  'mddesigns007': { id: 'aI2aVI9eclRb0SodNvKGbyJhkR12', uid: 'aI2aVI9eclRb0SodNvKGbyJhkR12', name: 'Nagaraju Manamu', role: 'admin', email: 'manamunagaraju@gmail.com', phone: '8822269999', status: 'active' },
-  'mddesigns007@gmail.com': { id: 'aI2aVI9eclRb0SodNvKGbyJhkR12', uid: 'aI2aVI9eclRb0SodNvKGbyJhkR12', name: 'Nagaraju Manamu', role: 'admin', email: 'manamunagaraju@gmail.com', phone: '8822269999', status: 'active' },
+  'manamunagaraju@gmail.com': { id: 'aI2aVI9eclRb0SodNvKGbyJhkR12', uid: 'aI2aVI9eclRb0SodNvKGbyJhkR12', name: 'Nagaraju Manamu', role: 'super_admin', designation: 'Master Admin / Super Administrator', email: 'manamunagaraju@gmail.com', phone: '8822269999', status: 'active' },
+  'nagaraju': { id: 'aI2aVI9eclRb0SodNvKGbyJhkR12', uid: 'aI2aVI9eclRb0SodNvKGbyJhkR12', name: 'Nagaraju Manamu', role: 'super_admin', designation: 'Master Admin / Super Administrator', email: 'manamunagaraju@gmail.com', phone: '8822269999', status: 'active' },
+  'admin': { id: 'aI2aVI9eclRb0SodNvKGbyJhkR12', uid: 'aI2aVI9eclRb0SodNvKGbyJhkR12', name: 'Nagaraju Manamu', role: 'super_admin', designation: 'Master Admin / Super Administrator', email: 'manamunagaraju@gmail.com', phone: '8822269999', status: 'active' },
+  'superadmin': { id: 'aI2aVI9eclRb0SodNvKGbyJhkR12', uid: 'aI2aVI9eclRb0SodNvKGbyJhkR12', name: 'Nagaraju Manamu', role: 'super_admin', designation: 'Master Admin / Super Administrator', email: 'manamunagaraju@gmail.com', phone: '8822269999', status: 'active' },
+  'mddesigns007': { id: 'aI2aVI9eclRb0SodNvKGbyJhkR12', uid: 'aI2aVI9eclRb0SodNvKGbyJhkR12', name: 'Nagaraju Manamu', role: 'super_admin', designation: 'Master Admin / Super Administrator', email: 'manamunagaraju@gmail.com', phone: '8822269999', status: 'active' },
+  'mddesigns007@gmail.com': { id: 'aI2aVI9eclRb0SodNvKGbyJhkR12', uid: 'aI2aVI9eclRb0SodNvKGbyJhkR12', name: 'Nagaraju Manamu', role: 'super_admin', designation: 'Master Admin / Super Administrator', email: 'manamunagaraju@gmail.com', phone: '8822269999', status: 'active' },
   'admin@stantonys.edu': { id: 'admin_demo', uid: 'admin_demo', name: 'School Administrator', role: 'admin', email: 'admin@stantonys.edu', phone: '9876543210', status: 'active' },
   'principal@stantonys.edu': { id: 'admin_sys', uid: 'admin_sys', name: 'System Administrator', role: 'super_admin', email: 'principal@stantonys.edu', phone: '9999999999', status: 'active' },
   'saikumari361@gmail.com': { id: 'vp_saikumari', uid: 'vp_saikumari', name: 'Sai Kumari (Vice Principal)', role: 'vice_principal', email: 'saikumari361@gmail.com', phone: '9876543213', status: 'active' }
@@ -590,7 +590,8 @@ router.post('/login', async (req, res) => {
         id: 'aI2aVI9eclRb0SodNvKGbyJhkR12',
         uid: 'aI2aVI9eclRb0SodNvKGbyJhkR12',
         name: 'Nagaraju Manamu',
-        role: 'admin',
+        role: 'super_admin',
+        designation: 'Master Admin / Super Administrator',
         email: 'manamunagaraju@gmail.com',
         phone: '8822269999',
         status: 'active'
@@ -604,7 +605,7 @@ router.post('/login', async (req, res) => {
           uid: masterId,
           id: masterId,
           phone: masterAccount.phone || '8822269999',
-          role: masterAccount.role || 'admin',
+          role: 'super_admin',
           email: masterAccount.email || 'manamunagaraju@gmail.com',
           name: masterAccount.name || 'Nagaraju Manamu'
         },
@@ -619,7 +620,8 @@ router.post('/login', async (req, res) => {
         _id: masterId,
         name: masterAccount.name || 'Nagaraju Manamu',
         displayName: masterAccount.name || 'Nagaraju Manamu',
-        role: 'admin',
+        role: 'super_admin',
+        designation: 'Master Admin / Super Administrator',
         email: masterAccount.email || 'manamunagaraju@gmail.com',
         phone: masterAccount.phone || '8822269999',
         status: 'active'
@@ -630,7 +632,7 @@ router.post('/login', async (req, res) => {
         token,
         userId: masterId,
         phone: '8822269999',
-        role: 'admin',
+        role: 'super_admin',
         email: 'manamunagaraju@gmail.com',
         name: 'Nagaraju Manamu',
         profile: sanitizedMaster,

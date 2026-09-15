@@ -61,11 +61,9 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
-import { where, limit, orderBy, query, collection, onSnapshot } from 'firebase/firestore';
-import { dbService } from '../services/dbService';
+import { where, limit, orderBy, query, collection, dbService } from '../services/dbService';
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
-import { db } from '../firebase';
 
 import { getBirthdayWish } from '../services/aiService';
 
@@ -326,80 +324,47 @@ This is an automated message.`
     }
   }, [showCommunitySettings, status]);
 
-  // Subscribe to WhatsApp Communities
-  useEffect(() => {
-    const q = collection(db, 'whatsapp_communities');
-    const unsub = onSnapshot(q, (snapshot) => {
-      const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setCommunities(items);
-    }, (error) => {
-      console.error("Communities Subscription Error:", error);
-    });
-    return () => unsub();
-  }, []);
+  // Fetch WhatsApp Communities via REST
+  const fetchCommunities = async () => {
+    try {
+      const items = await dbService.list('whatsapp_communities');
+      setCommunities(items || []);
+    } catch (e) {
+      console.warn("Could not fetch communities:", e);
+    }
+  };
 
-  useEffect(() => {
-    setIsQueueLoading(true);
-    let unsubQueue: (() => void) | null = null;
+  // Poll WhatsApp Queue and Logs via REST
+  const fetchQueueAndLogs = async () => {
+    try {
+      const [queueRes, logsRes] = await Promise.all([
+        fetch('/api/whatsapp/queue').then(r => r.json()).catch(() => ({ queue: [] })),
+        fetch('/api/whatsapp/logs').then(r => r.json()).catch(() => ({ logs: [] }))
+      ]);
 
-    const setupQueueSubscription = () => {
-      try {
-        const q = query(
-          collection(db, 'whatsapp_queue'),
-          orderBy('createdAt', 'desc'),
-          limit(100)
-        );
-
-        unsubQueue = onSnapshot(q, (snapshot) => {
-          const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-          setQueueItems(items);
-          setIsQueueLoading(false);
-        }, (error) => {
-          console.warn("Queue ordered subscription error, falling back to simple query:", error.message);
-          // Fallback query without orderBy to avoid index requirement failures
-          const fallbackQ = query(collection(db, 'whatsapp_queue'), limit(100));
-          unsubQueue = onSnapshot(fallbackQ, (snapshot) => {
-            const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            items.sort((a: any, b: any) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-            setQueueItems(items);
-            setIsQueueLoading(false);
-          }, (fbErr) => {
-            console.error("Queue Fallback Subscription Error:", fbErr);
-            setIsQueueLoading(false);
-          });
-        });
-      } catch (err: any) {
-        console.warn("Setup queue subscription exception:", err);
-        setIsQueueLoading(false);
+      if (queueRes && Array.isArray(queueRes.queue)) {
+        setQueueItems(queueRes.queue);
       }
-    };
+      setIsQueueLoading(false);
 
-    setupQueueSubscription();
+      if (logsRes && Array.isArray(logsRes.logs)) {
+        setMessageLogs(logsRes.logs);
+      }
+    } catch (err) {
+      console.warn("Error polling queue/logs:", err);
+      setIsQueueLoading(false);
+    }
+  };
 
-    // Subscribe to recent logs
-    const qLogs = query(
-      collection(db, 'whatsappLogs'),
-      orderBy('timestamp', 'desc'),
-      limit(50)
-    );
+  useEffect(() => {
+    fetchCommunities();
+    fetchQueueAndLogs();
 
-    const unsubLogs = onSnapshot(qLogs, (snapshot) => {
-      const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setMessageLogs(items);
-    }, (error) => {
-      console.warn("Logs Subscription Error, using fallback:", error.message);
-      const fallbackLogs = query(collection(db, 'whatsappLogs'), limit(50));
-      onSnapshot(fallbackLogs, (snap) => {
-        const items = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        items.sort((a: any, b: any) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
-        setMessageLogs(items);
-      });
-    });
+    const interval = setInterval(() => {
+      fetchQueueAndLogs();
+    }, 5000);
 
-    return () => {
-      if (unsubQueue) unsubQueue();
-      unsubLogs();
-    };
+    return () => clearInterval(interval);
   }, []);
 
   const fetchCelebrants = async () => {

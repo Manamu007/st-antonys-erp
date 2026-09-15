@@ -1,7 +1,5 @@
 import { useState, useEffect, useRef, type FC, type FormEvent, type ChangeEvent } from 'react';
-import { where, doc, onSnapshot } from 'firebase/firestore';
-import { db } from '../firebase';
-import { dbService } from '../services/dbService';
+import { dbService, where, doc, onSnapshot } from '../services/dbService';
 import { safeStorage as localStorage } from '../lib/safeStorage';
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
@@ -52,7 +50,6 @@ import {
   EyeOff
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { DataMigration } from '../components/DataMigration';
 import { uploadService } from '../services/uploadService';
 import { AntonyAiSettingsCard } from '../modules/antonyAiAgent/components/AntonyAiSettingsCard';
 import { AntonyAiHealthCard } from '../modules/antonyAiAgent/components/AntonyAiHealthCard';
@@ -60,11 +57,12 @@ import { normalizeUrl } from '../lib/utils';
 import { deduplicateAndPurgeClashes } from '../services/demoDataPurgeService';
 import { AuditTrails } from '../components/AuditTrails';
 import { ERPDatabaseFlow } from '../components/ERPDatabaseFlow';
+import { MongoDatabaseManager } from '../components/MongoDatabaseManager';
 
 const SchoolSettings: FC = () => {
   const { settings, updateSettings, siteConfig, updateSiteConfig } = useSettings();
   const { hasPermission, isAdmin, profile } = useAuth();
-  const [activeTab, setActiveTab] = useState<'profile' | 'promotion' | 'landing' | 'rules' | 'templates' | 'diagnostics' | 'audit' | 'aws'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'promotion' | 'landing' | 'rules' | 'templates' | 'diagnostics' | 'audit' | 'aws' | 'database'>('profile');
   const [rules, setRules] = useState<any[]>([]);
   const [templates, setTemplates] = useState<any[]>([]);
   const [isAddingRule, setIsAddingRule] = useState(false);
@@ -334,8 +332,8 @@ const SchoolSettings: FC = () => {
   const terminalEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    // Subscribe to live updates of the migration status document in Firestore
-    const statusRef = doc(db, 'settings', 'aws_migration_status');
+    // Subscribe to live updates of the migration status document
+    const statusRef = doc('settings', 'aws_migration_status');
     const unsubscribe = onSnapshot(statusRef, (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data();
@@ -1206,6 +1204,7 @@ const SchoolSettings: FC = () => {
             { id: 'promotion', icon: TrendingUp, label: 'Promotion' },
             { id: 'templates', icon: MessageSquare, label: 'Messages' },
             { id: 'rules', icon: ShieldCheck, label: 'School Rules' },
+            { id: 'database', icon: Database, label: 'MongoDB' },
             { id: 'diagnostics', icon: Wrench, label: 'Maintenance' },
             { id: 'audit', icon: FileClock, label: 'Audit Trail' },
             { id: 'aws', icon: Database, label: 'AWS Config' }
@@ -3272,6 +3271,13 @@ const SchoolSettings: FC = () => {
         </div>
       )}
 
+      {activeTab === 'database' && (
+        <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500 pb-20">
+          <MongoDatabaseManager />
+          <ERPDatabaseFlow />
+        </div>
+      )}
+
       {activeTab === 'diagnostics' && (
         <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500 pb-20">
           <div className="bg-white p-8 rounded-[2.5rem] border border-neutral-100 shadow-sm space-y-8">
@@ -3288,288 +3294,8 @@ const SchoolSettings: FC = () => {
             {/* Interactive Schema Data Flow */}
             <ERPDatabaseFlow />
 
-            {/* Database Index Error Resolution Section */}
-            <div className="p-8 bg-neutral-50 rounded-[2rem] border border-neutral-100 space-y-6">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-rose-100 text-rose-600 rounded-xl flex items-center justify-center shrink-0">
-                    <AlertTriangle className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-md font-extrabold uppercase tracking-tight text-sidebar">Database Index Monitor</h3>
-                    <p className="text-xs text-neutral-500">Track, verify, and resolve missing database composite indexes</p>
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <a
-                    href="https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/(default)/indexes"
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="px-5 py-2.5 bg-rose-500 hover:bg-rose-600 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md shadow-rose-500/20 flex items-center gap-2"
-                  >
-                    <Plus className="w-4 h-4" />
-                    Open Firebase Indexes Console
-                  </a>
-                  {indexErrors.length > 0 && (
-                    <button 
-                      onClick={handleClearAllIndexErrors}
-                      className="px-4 py-2 bg-neutral-200 hover:bg-rose-50 hover:text-rose-600 text-neutral-700 font-extrabold text-xs uppercase tracking-wider rounded-xl transition-all"
-                    >
-                      Clear All Logs
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Step-by-Step Educational Fix Guide */}
-              <div className="bg-white p-6 rounded-2xl border border-neutral-150/80 shadow-sm space-y-4">
-                <h4 className="text-xs font-black uppercase tracking-wider text-sidebar flex items-center gap-2">
-                  <Bot className="w-4 h-4 text-primary" />
-                  How to Fix or Create Composite Indexes
-                </h4>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-xs divide-y md:divide-y-0 md:divide-x divide-neutral-100 animate-in fade-in duration-300">
-                  <div className="space-y-1 md:pr-4">
-                    <p className="font-black text-rose-600 uppercase text-[10px] tracking-wider">Step 1: Get the Link</p>
-                    <p className="text-neutral-500 font-semibold leading-relaxed">
-                      Click the <span className="font-extrabold text-rose-600 uppercase">"Open Firebase Indexes Console"</span> button, click <span className="font-extrabold text-rose-600">"Create Index"</span> on logged errors, or paste a link from your developer console below.
-                    </p>
-                  </div>
-                  <div className="space-y-1 pt-3 md:pt-0 md:px-4">
-                    <p className="font-black text-amber-500 uppercase text-[10px] tracking-wider">Step 2: Confirm in Console</p>
-                    <p className="text-neutral-500 font-semibold leading-relaxed">
-                      The Firebase Console automatically maps fields. Click the blue <span className="font-extrabold">"Create index"</span> button to deploy it in Google Cloud.
-                    </p>
-                  </div>
-                  <div className="space-y-1 pt-3 md:pt-0 md:pl-4">
-                    <p className="font-black text-emerald-500 uppercase text-[10px] tracking-wider">Step 3: Wait & Refresh</p>
-                    <p className="text-neutral-500 font-semibold leading-relaxed">
-                      Google Cloud takes 2-3 minutes to build. Once status shows <span className="font-extrabold text-emerald-600">Active</span>, refresh this ERP app and everything works perfectly!
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Manual/Pastable Index Link Helper */}
-              <div className="bg-white p-6 rounded-2xl border border-neutral-150/80 shadow-sm space-y-4">
-                <div className="flex items-center gap-2 text-rose-500">
-                  <Sparkles className="w-4 h-4 animate-pulse" />
-                  <h4 className="text-xs font-black uppercase tracking-wider text-sidebar">
-                    Quick-Add Missing Index from Console Error
-                  </h4>
-                </div>
-                <p className="text-xs text-neutral-500 leading-relaxed font-medium">
-                  If you see an index error anywhere else, copy the Firestore error URL or error message from your browser console, paste it below, and we will create an instant clickable shortcut for you.
-                </p>
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <input
-                    type="text"
-                    placeholder="Paste your Firebase Console index creation link or error message here..."
-                    className="flex-1 px-4 py-3 bg-neutral-50 border border-neutral-200 rounded-xl text-xs font-medium focus:bg-white focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 outline-none"
-                    id="manual-index-input"
-                    onKeyDown={async (e) => {
-                      if (e.key === 'Enter') {
-                        const val = (e.currentTarget as HTMLInputElement).value.trim();
-                        if (!val) return;
-                        const match = val.match(/https:\/\/console\.firebase\.google\.com[^\s']+/);
-                        const url = match ? match[0] : (val.startsWith('http') ? val : '');
-                        if (!url) {
-                          toast.error("Could not find a valid Firebase link. Please copy and paste the entire error text.");
-                          return;
-                        }
-                        try {
-                          const docId = url.split('create_composite=')[1]?.slice(0, 100).replace(/[^a-zA-Z0-9_-]/g, '_') || String(Date.now());
-                          await dbService.set('index_errors', docId, {
-                            id: docId,
-                            message: `Pasted manual error: ${val.substring(0, 100)}${val.length > 100 ? '...' : ''}`,
-                            url,
-                            timestamp: new Date().toISOString(),
-                            location: 'Manual Registration'
-                          });
-                          toast.success("Index shortcut successfully added!");
-                          (e.currentTarget as HTMLInputElement).value = '';
-                          fetchIndexErrors();
-                        } catch (err) {
-                          toast.error("Failed to add index shortcut.");
-                        }
-                      }
-                    }}
-                  />
-                  <button
-                    onClick={async () => {
-                      const input = document.getElementById('manual-index-input') as HTMLInputElement;
-                      const val = input?.value.trim() || '';
-                      if (!val) {
-                        toast.error("Please paste the link or error text first.");
-                        return;
-                      }
-                      const match = val.match(/https:\/\/console\.firebase\.google\.com[^\s']+/);
-                      const url = match ? match[0] : (val.startsWith('http') ? val : '');
-                      if (!url) {
-                        toast.error("Could not find a valid Firebase link. Please copy and paste the entire error text.");
-                        return;
-                      }
-                      try {
-                        const docId = url.split('create_composite=')[1]?.slice(0, 100).replace(/[^a-zA-Z0-9_-]/g, '_') || String(Date.now());
-                        await dbService.set('index_errors', docId, {
-                          id: docId,
-                          message: `Pasted manual error: ${val.substring(0, 100)}${val.length > 100 ? '...' : ''}`,
-                          url,
-                          timestamp: new Date().toISOString(),
-                          location: 'Manual Registration'
-                        });
-                        toast.success("Index shortcut successfully added!");
-                        input.value = '';
-                        fetchIndexErrors();
-                      } catch (err) {
-                        toast.error("Failed to add index shortcut.");
-                      }
-                    }}
-                    className="px-5 py-3 bg-neutral-900 hover:bg-neutral-800 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-sm"
-                  >
-                    Generate Link
-                  </button>
-                </div>
-              </div>
-
-              {/* Recommended Composite Indexes Quick-Links Section */}
-              <div className="bg-white p-6 rounded-2xl border border-neutral-150/80 shadow-sm space-y-4">
-                <h4 className="text-xs font-black uppercase tracking-wider text-sidebar flex items-center gap-2">
-                  <Database className="w-4 h-4 text-indigo-500" />
-                  Recommended Common Composite Indexes
-                </h4>
-                <p className="text-xs text-neutral-500 leading-relaxed font-medium">
-                  Below are the most common database queries across the ERP that use sorting or compound filters. If any screen loads slowly or crashes, click these to create the indexes directly in your Firebase Console:
-                </p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="p-4 bg-neutral-50 rounded-xl border border-neutral-100 flex flex-col justify-between gap-3">
-                    <div>
-                      <span className="text-[9px] uppercase font-black text-indigo-600 tracking-wider">Attendance Queries</span>
-                      <h5 className="text-xs font-bold text-neutral-800 uppercase mt-0.5">studentId + date</h5>
-                      <p className="text-[10px] text-neutral-400 mt-1 font-medium leading-relaxed">Required to query attendance logs filtered by student and sorted by date.</p>
-                    </div>
-                    <a
-                      href="https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/(default)/indexes"
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      className="text-xs font-extrabold text-primary hover:text-indigo-600 transition-colors uppercase tracking-wider flex items-center gap-1 self-start"
-                    >
-                      Configure Index <ArrowRight className="w-3.5 h-3.5" />
-                    </a>
-                  </div>
-
-                  <div className="p-4 bg-neutral-50 rounded-xl border border-neutral-100 flex flex-col justify-between gap-3">
-                    <div>
-                      <span className="text-[9px] uppercase font-black text-rose-600 tracking-wider">Fee Records</span>
-                      <h5 className="text-xs font-bold text-neutral-800 uppercase mt-0.5">studentId + academicYear</h5>
-                      <p className="text-[10px] text-neutral-400 mt-1 font-medium leading-relaxed">Required to pull fee payments filtered by student and sorted by academic year.</p>
-                    </div>
-                    <a
-                      href="https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/(default)/indexes"
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      className="text-xs font-extrabold text-primary hover:text-rose-600 transition-colors uppercase tracking-wider flex items-center gap-1 self-start"
-                    >
-                      Configure Index <ArrowRight className="w-3.5 h-3.5" />
-                    </a>
-                  </div>
-
-                  <div className="p-4 bg-neutral-50 rounded-xl border border-neutral-100 flex flex-col justify-between gap-3">
-                    <div>
-                      <span className="text-[9px] uppercase font-black text-emerald-600 tracking-wider">Payments & Receipts</span>
-                      <h5 className="text-xs font-bold text-neutral-800 uppercase mt-0.5">studentId + timestamp</h5>
-                      <p className="text-[10px] text-neutral-400 mt-1 font-medium leading-relaxed">Required to view invoice list sorted chronologically for 360 profile views.</p>
-                    </div>
-                    <a
-                      href="https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/(default)/indexes"
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      className="text-xs font-extrabold text-primary hover:text-emerald-600 transition-colors uppercase tracking-wider flex items-center gap-1 self-start"
-                    >
-                      Configure Index <ArrowRight className="w-3.5 h-3.5" />
-                    </a>
-                  </div>
-
-                  <div className="p-4 bg-neutral-50 rounded-xl border border-neutral-100 flex flex-col justify-between gap-3">
-                    <div>
-                      <span className="text-[9px] uppercase font-black text-amber-600 tracking-wider">Audit History</span>
-                      <h5 className="text-xs font-bold text-neutral-800 uppercase mt-0.5">action + timestamp</h5>
-                      <p className="text-[10px] text-neutral-400 mt-1 font-medium leading-relaxed">Required to filter audit trails by type and display them chronologically.</p>
-                    </div>
-                    <a
-                      href="https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/(default)/indexes"
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      className="text-xs font-extrabold text-primary hover:text-amber-600 transition-colors uppercase tracking-wider flex items-center gap-1 self-start"
-                    >
-                      Configure Index <ArrowRight className="w-3.5 h-3.5" />
-                    </a>
-                  </div>
-                </div>
-              </div>
-
-              {loadingIndexErrors ? (
-                <div className="flex items-center justify-center py-6 text-neutral-400 text-xs">
-                  <RefreshCw className="w-4 h-4 animate-spin mr-2" />
-                  Checking database index status...
-                </div>
-              ) : indexErrors.length === 0 ? (
-                <div className="p-6 bg-white rounded-2xl border border-neutral-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                  <div className="flex items-center gap-4">
-                    <div className="w-8 h-8 rounded-full bg-emerald-50 text-emerald-500 flex items-center justify-center shrink-0">
-                      <CheckCircle2 className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <p className="text-xs font-extrabold text-sidebar uppercase">Database Queries Healthy</p>
-                      <p className="text-[10px] text-neutral-400">No composite index errors have been reported by client sessions yet.</p>
-                    </div>
-                  </div>
-                  <div className="text-[10px] text-neutral-400 font-semibold uppercase tracking-wider italic">
-                    All current active queries loaded correctly
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100 text-amber-800 text-xs font-semibold leading-relaxed">
-                    ⚠️ <span className="font-extrabold">Warning:</span> Some query filters require custom composite indexes in Google Cloud Firestore. Click the links below to generate them instantly inside the Firebase Console.
-                  </div>
-                  <div className="divide-y divide-neutral-100 bg-white rounded-2xl border border-neutral-100 overflow-hidden">
-                    {indexErrors.map((err) => (
-                      <div key={err.id} className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-neutral-50/40 transition-colors animate-in fade-in duration-200">
-                        <div className="space-y-1.5 flex-1 min-w-0">
-                          <p className="text-xs font-extrabold text-rose-600 uppercase tracking-tight">Missing Composite Index Detected</p>
-                          <p className="text-xs text-neutral-600 font-medium break-words leading-relaxed">
-                            {err.message || 'Firestore query error'}
-                          </p>
-                          <div className="flex items-center gap-3 text-[10px] text-neutral-400 font-semibold uppercase tracking-wider">
-                            <span>Detected: {err.timestamp ? format(new Date(err.timestamp), 'PPP p') : 'Unknown Time'}</span>
-                            <span>•</span>
-                            <span className="truncate max-w-xs" title={err.location}>Route: {err.location || 'N/A'}</span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <a
-                            href={err.url}
-                            target="_blank"
-                            rel="noreferrer noopener"
-                            className="px-4 py-2.5 bg-rose-500 hover:bg-rose-600 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md shadow-rose-500/10 flex items-center gap-2"
-                          >
-                            <Plus className="w-4 h-4" />
-                            Create Index
-                          </a>
-                          <button
-                            onClick={() => handleDeleteIndexError(err.id)}
-                            className="p-2.5 text-neutral-400 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all"
-                            title="Dismiss Error Log"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
+            {/* MongoDB Database Manager & Collection Explorer */}
+            <MongoDatabaseManager />
 
             <div className="grid grid-cols-1 gap-6">
               {/* ERP Application Backup & System Restore Points */}
@@ -3581,7 +3307,7 @@ const SchoolSettings: FC = () => {
                       <h3 className="text-lg font-black uppercase tracking-tight text-sidebar">App Backup & Restore Points</h3>
                     </div>
                     <p className="text-xs text-neutral-500 font-medium">
-                      Back up the complete application including backend routing logic, all modules, frontend components, configuration files, and Firestore database records. Easily roll back to clean states to recover from errors of failed feature developments.
+                      Back up the complete application including backend routing logic, all modules, frontend components, configuration files, and MongoDB database records. Easily roll back to clean states to recover from errors of failed feature developments.
                     </p>
                   </div>
                 </div>

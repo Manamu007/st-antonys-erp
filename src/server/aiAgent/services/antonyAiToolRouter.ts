@@ -1,4 +1,4 @@
-import { getDbAdmin } from '../../firebaseAdmin.js';
+import { getDbAdmin } from '../../db.js';
 import { UserCredentials, enforceIsolationFilters } from './antonyAiPermissionService.js';
 import { redactObject } from '../utils/antonyAiRedactionUtils.js';
 

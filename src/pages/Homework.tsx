@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { where, orderBy, limit } from 'firebase/firestore';
-import { dbService } from '../services/dbService';
+import { dbService, where, orderBy, limit } from '../services/dbService';
 import { useAuth } from '../context/AuthContext';
 import { 
   BookOpen, 

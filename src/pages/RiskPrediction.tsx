@@ -10,11 +10,10 @@ import {
   ResponsiveContainer, Cell, PieChart, Pie, RadarChart, 
   PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar 
 } from 'recharts';
-import { dbService } from '../services/dbService';
+import { dbService, where } from '../services/dbService';
 import { getRiskPrediction } from '../services/aiService';
 import { useAuth } from '../context/AuthContext';
 import { toast } from 'sonner';
-import { where } from 'firebase/firestore';
 
 const RiskPrediction: React.FC = () => {
   const { profile, hasPermission, isAdmin } = useAuth();

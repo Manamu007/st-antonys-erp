@@ -1,5 +1,5 @@
 import express from 'express';
-import { getDbAdmin, isDatabaseDenied, setDatabaseDenied } from './firebaseAdmin.js';
+import { getDbAdmin, isDatabaseDenied, setDatabaseDenied } from './db.js';
 import { sendMessage } from './whatsapp.js';
 import { extractParentPhone } from './whatsappUtils.js';
 

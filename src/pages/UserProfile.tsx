@@ -9,12 +9,11 @@ import {
 import { normalizeUrl, getGravatarUrl } from '../lib/utils';
 import { useAuth } from '../context/AuthContext';
 import { usePermissions } from '../hooks/usePermissions';
-import { dbService } from '../services/dbService';
+import { dbService, where, limit } from '../services/dbService';
 import { uploadService } from '../services/uploadService';
 import CameraModal from '../components/CameraModal';
 import { normalizeRole } from '../lib/profileUtils';
 import { toast } from 'sonner';
-import { where, limit } from 'firebase/firestore';
 import { safeStorage as localStorage } from '../lib/safeStorage';
 
 const UserProfile: React.FC = () => {

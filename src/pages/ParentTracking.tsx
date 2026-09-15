@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { doc, onSnapshot } from 'firebase/firestore';
-import { db } from '../firebase';
+import { doc, onSnapshot } from '../services/dbService';
 import { Bus, Navigation, Phone, ShieldCheck, MapPin, Clock } from 'lucide-react';
 import { motion } from 'motion/react';
 
@@ -26,7 +25,7 @@ const ParentTracking: React.FC = () => {
   useEffect(() => {
     if (!busId) return;
     
-    const unsub = onSnapshot(doc(db, 'buses', busId), (doc) => {
+    const unsub = onSnapshot(doc('buses', busId), (doc) => {
       if (doc.exists()) {
         setBus({ id: doc.id, ...doc.data() });
       }

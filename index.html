@@ -17,18 +17,129 @@
     <link rel="apple-touch-icon" href="/school_logo.svg" />
     <link rel="icon" type="image/svg+xml" href="/school_logo.svg" />
 
+    <!-- AI Studio Sandbox Fetch & Storage Polyfill -->
+    <script>
+      (function() {
+        // 1. Guard against "Cannot set property fetch of #<Window> which has only a getter"
+        // In AI Studio iframes, platform scripts wrap window.fetch using Object.defineProperty with only a getter.
+        // If any library subsequently assigns window.fetch, strict mode throws an Uncaught TypeError.
+        var origDefineProperty = Object.defineProperty;
+        try {
+          Object.defineProperty = function(target, prop, descriptor) {
+            if (
+              target &&
+              (target === window || (typeof globalThis !== 'undefined' && target === globalThis) || (typeof self !== 'undefined' && target === self)) &&
+              prop === 'fetch' &&
+              descriptor
+            ) {
+              var currentGetter = descriptor.get;
+              var currentSetter = descriptor.set;
+              var activeFetch = currentGetter ? null : descriptor.value;
+
+              var safeDescriptor = {
+                get: function() {
+                  if (currentGetter) {
+                    try {
+                      return currentGetter.call(this);
+                    } catch (e) {
+                      return activeFetch || window.fetch;
+                    }
+                  }
+                  return activeFetch;
+                },
+                set: function(val) {
+                  activeFetch = val;
+                  if (currentSetter) {
+                    try {
+                      currentSetter.call(this, val);
+                    } catch (e) {}
+                  } else {
+                    currentGetter = function() { return val; };
+                  }
+                },
+                configurable: true,
+                enumerable: true
+              };
+              return origDefineProperty.call(Object, target, prop, safeDescriptor);
+            }
+            return origDefineProperty.apply(Object, arguments);
+          };
+        } catch (e) {}
+
+        // Ensure window.fetch has both a getter and setter from the start
+        try {
+          var initialNativeFetch = window.fetch;
+          var localFetch = initialNativeFetch;
+          origDefineProperty.call(Object, window, 'fetch', {
+            get: function() { return localFetch; },
+            set: function(fn) { localFetch = fn; },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {}
+
+        // 2. Cross-origin iframe storage polyfill for sandboxed preview iframes
+        var storageAvailable = false;
+        try {
+          if (typeof window !== 'undefined' && window.localStorage) {
+            var testKey = '__sb_test__';
+            window.localStorage.setItem(testKey, '1');
+            window.localStorage.removeItem(testKey);
+            storageAvailable = true;
+          }
+        } catch (e) {
+          storageAvailable = false;
+        }
+
+        if (!storageAvailable) {
+          function createSafeStorage() {
+            var store = {};
+            return {
+              getItem: function(key) {
+                return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null;
+              },
+              setItem: function(key, val) {
+                store[key] = String(val);
+              },
+              removeItem: function(key) {
+                delete store[key];
+              },
+              clear: function() {
+                store = {};
+              },
+              key: function(idx) {
+                return Object.keys(store)[idx] || null;
+              },
+              get length() {
+                return Object.keys(store).length;
+              }
+            };
+          }
+          try {
+            var memLocal = createSafeStorage();
+            var memSession = createSafeStorage();
+            origDefineProperty.call(Object, window, 'localStorage', { value: memLocal, configurable: true, writable: true });
+            origDefineProperty.call(Object, window, 'sessionStorage', { value: memSession, configurable: true, writable: true });
+            console.log('[Applet] Activated sandboxed memory storage fallback for cross-origin preview.');
+          } catch (polyErr) {
+            console.warn('[Applet] Could not override window.localStorage:', polyErr);
+          }
+        }
+      })();
+    </script>
+
     <!-- Preconnect to Font Servers for optimal loading speed -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <script>
-      // Block benign ResizeObserver and rate-limit error loop notifications from triggering iframe and console alerts
+      // Block benign ResizeObserver & sandbox getter notifications from triggering dev alerts
       window.addEventListener('error', function(e) {
         var msg = (e && e.message) || '';
         if (
           msg.indexOf('ResizeObserver') !== -1 ||
           msg.indexOf('loop limit exceeded') !== -1 ||
-          msg.indexOf('Rate exceeded') !== -1 ||
-          msg.indexOf("Unexpected token 'R'") !== -1
+          msg.indexOf('Cannot set property fetch') !== -1 ||
+          msg.indexOf('which has only a getter') !== -1
         ) {
           e.preventDefault();
           e.stopImmediatePropagation();
@@ -40,163 +151,18 @@
         if (
           msg.indexOf('ResizeObserver') !== -1 ||
           msg.indexOf('loop limit exceeded') !== -1 ||
-          msg.indexOf('Rate exceeded') !== -1 ||
-          msg.indexOf("Unexpected token 'R'") !== -1
+          msg.indexOf('Cannot set property fetch') !== -1 ||
+          msg.indexOf('which has only a getter') !== -1
         ) {
           e.preventDefault();
           e.stopImmediatePropagation();
         }
       }, true);
-
-      // Resilient Response.prototype.json to prevent "Rate exceeded." or HTML error responses from crashing with SyntaxError
-      (function() {
-        try {
-          if (typeof Response !== 'undefined' && Response.prototype && Response.prototype.json) {
-            var rawJson = Response.prototype.json;
-            Response.prototype.json = async function() {
-              try {
-                var text = await this.text();
-                if (!text || !text.trim()) {
-                  return {};
-                }
-                try {
-                  return JSON.parse(text);
-                } catch (syntaxErr) {
-                  var trimmed = text.trim();
-                  if (trimmed.indexOf('Rate exceeded') !== -1 || trimmed.startsWith('<!doctype') || trimmed.startsWith('<html')) {
-                    console.warn('[Safe Response.json] Intercepted non-JSON response (' + trimmed.slice(0, 40) + '...), returning safe fallback');
-                    return { success: false, error: trimmed, rateLimited: true, status: this.status || 429 };
-                  }
-                  return { success: false, error: syntaxErr.message, raw: trimmed };
-                }
-              } catch (e) {
-                return {};
-              }
-            };
-          }
-        } catch (respErr) {}
-      })();
-
-      // Polyfill/shim writable fetch property for sandbox environments where window.fetch has only a getter
-      (function() {
-        try {
-          var originalFetch = typeof window !== 'undefined' ? window.fetch : null;
-          var customFetch = originalFetch;
-
-          function smartFetch(input, init) {
-            var targetFetch = customFetch || originalFetch;
-            if (typeof targetFetch === 'function') {
-              return targetFetch.call(this, input, init);
-            }
-            return Promise.reject(new Error('Fetch API not available'));
-          }
-
-          function makeWritableFetch(target) {
-            if (!target) return;
-            try {
-              Object.defineProperty(target, 'fetch', {
-                get: function() {
-                  return smartFetch;
-                },
-                set: function(fn) {
-                  customFetch = fn;
-                },
-                configurable: true,
-                enumerable: true
-              });
-            } catch (e) {}
-          }
-          makeWritableFetch(window);
-          if (typeof Window !== 'undefined' && Window.prototype) {
-            makeWritableFetch(Window.prototype);
-          }
-          if (typeof self !== 'undefined' && self !== window) {
-            makeWritableFetch(self);
-          }
-          if (typeof globalThis !== 'undefined') {
-            makeWritableFetch(globalThis);
-          }
-        } catch (fetchErr) {}
-      })();
-
-      // Install safe fallback proxy for window.localStorage and window.sessionStorage in sandboxed context where third-party state access is blocked
-      (function() {
-        try {
-          function makeMemoryStorage() {
-            var store = {};
-            return {
-              getItem: function(key) { return store[key] !== undefined ? store[key] : null; },
-              setItem: function(key, val) { store[key] = String(val); },
-              removeItem: function(key) { delete store[key]; },
-              clear: function() { store = {}; },
-              key: function(i) { return Object.keys(store)[i] || null; },
-              get length() { return Object.keys(store).length; }
-            };
-          }
-
-          var testLocal;
-          try {
-            testLocal = window.localStorage;
-            if (testLocal) {
-              testLocal.setItem('__storage_test__', '1');
-              testLocal.removeItem('__storage_test__');
-            } else {
-              throw new Error("No localStorage");
-            }
-          } catch (e) {
-            var mockLocal = makeMemoryStorage();
-            try {
-              Object.defineProperty(window, 'localStorage', {
-                get: function() { return mockLocal; },
-                configurable: true,
-                enumerable: true
-              });
-            } catch (err) {
-              try {
-                Object.defineProperty(Window.prototype, 'localStorage', {
-                  get: function() { return mockLocal; },
-                  configurable: true,
-                  enumerable: true
-                });
-              } catch (err2) {}
-            }
-          }
-
-          var testSession;
-          try {
-            testSession = window.sessionStorage;
-            if (testSession) {
-              testSession.setItem('__session_test__', '1');
-              testSession.removeItem('__session_test__');
-            } else {
-              throw new Error("No sessionStorage");
-            }
-          } catch (e) {
-            var mockSession = makeMemoryStorage();
-            try {
-              Object.defineProperty(window, 'sessionStorage', {
-                get: function() { return mockSession; },
-                configurable: true,
-                enumerable: true
-              });
-            } catch (err) {
-              try {
-                Object.defineProperty(Window.prototype, 'sessionStorage', {
-                  get: function() { return mockSession; },
-                  configurable: true,
-                  enumerable: true
-                });
-              } catch (err2) {}
-            }
-          }
-        } catch (globalStorageErr) {}
-      })();
     </script>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
-    <script async defer src="https://checkout.razorpay.com/v1/checkout.js"></script>
   </body>
 </html>
 

@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type, FunctionDeclaration } from "@google/genai";
 console.log("[AIBot] Loading module...");
-import { getDbAdmin, initializationPromise } from "./firebaseAdmin.js";
+import { getDbAdmin, initializationPromise } from "./db.js";
 import { createLeaveActionTokens } from "./whatsappUtils.js";
 
 let ai: GoogleGenAI | null = null;

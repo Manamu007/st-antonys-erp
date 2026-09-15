@@ -65,35 +65,13 @@ export class ErrorBoundary extends React.Component<Props, State> {
   };
 
   public componentDidMount() {
-    const handleChunkError = (message: string) => {
-      if (
-        message.includes('Failed to fetch dynamically imported module') ||
-        message.includes('Loading chunk') ||
-        message.includes('ChunkLoadError') ||
-        message.includes('dynamic') ||
-        message.includes('Importing a module script failed') ||
-        message.includes('module script')
-      ) {
-        const lastReload = sessionStorage.getItem('chunk_error_reload_timestamp');
-        const now = Date.now();
-        
-        // Auto-reload at most once every 15 seconds to prevent loops
-        if (!lastReload || now - parseInt(lastReload, 10) > 15000) {
-          sessionStorage.setItem('chunk_error_reload_timestamp', now.toString());
-          console.warn('Global handler caught dynamic chunk load error. Automatically reloading page to fetch latest build...', message);
-          this.forceHardReload();
-        }
-      }
-    };
-
     this._onError = (e: ErrorEvent) => {
-      handleChunkError(e.message || '');
+      console.warn('ErrorBoundary captured global error:', e.message);
     };
 
     this._onUnhandledRejection = (e: PromiseRejectionEvent) => {
       const reason = e.reason;
-      const message = reason instanceof Error ? reason.message : String(reason);
-      handleChunkError(message);
+      console.warn('ErrorBoundary captured unhandled rejection:', reason instanceof Error ? reason.message : String(reason));
     };
 
     window.addEventListener('error', this._onError);
@@ -111,26 +89,6 @@ export class ErrorBoundary extends React.Component<Props, State> {
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('ErrorBoundary caught an error', error, errorInfo);
-    
-    const errorMsg = error?.message || '';
-    const isChunkError = 
-      errorMsg.includes('Failed to fetch dynamically imported module') || 
-      errorMsg.includes('Loading chunk') || 
-      errorMsg.includes('dynamic') ||
-      errorMsg.includes('Importing a module script failed') ||
-      errorMsg.includes('module script') ||
-      error.name === 'ChunkLoadError';
-
-    if (isChunkError) {
-      const lastReload = sessionStorage.getItem('chunk_error_reload_timestamp');
-      const now = Date.now();
-      
-      if (!lastReload || now - parseInt(lastReload, 10) > 15000) {
-        sessionStorage.setItem('chunk_error_reload_timestamp', now.toString());
-        console.warn('React boundary caught dynamic chunk load error. Automatically reloading page to fetch latest build...', error);
-        this.forceHardReload();
-      }
-    }
   }
 
   public handleReload = () => {

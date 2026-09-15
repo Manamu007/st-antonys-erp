@@ -17,6 +17,7 @@ import { IdleTimeoutDetector } from './components/IdleTimeoutDetector';
 import { isSystemAccount, isTeacherAccountOrEmail } from './constants/systemAccounts';
 import { isTeacherRole } from './utils/teacherFilter';
 import { isStaffRole, isStaffAccountOrEmail } from './lib/profileUtils';
+import { safeStorage as localStorage } from './lib/safeStorage';
 
 // Monkey-patch Sonner toast.error to intercept Firebase index errors and display them as beautiful, clickable blue links
 const originalToastError = toast.error;
@@ -49,32 +50,35 @@ const patchedToastError = (message: any, options?: any) => {
     msgStr.includes('requires an index') || 
     msgStr.includes('console.firebase.google.com')
   ) {
-    const match = msgStr.match(/https:\/\/console\.firebase\.google\.com[^\s']+/);
-    const url = match ? match[0] : '';
-    if (url) {
-      return originalToastError(
-        <div className="flex flex-col gap-2 p-1 text-left">
-          <span className="font-bold text-rose-600 block">⚠️ Missing Firestore Index!</span>
-          <span className="text-xs text-neutral-600 block leading-tight">
-            This query requires a database index. Click the blue link below to open the Firebase Console and create it:
-          </span>
-          <a 
-            href={url} 
-            target="_blank" 
-            rel="noreferrer noopener"
-            className="text-xs font-extrabold text-blue-600 hover:text-blue-800 underline flex items-center gap-1 mt-1 transition-all cursor-pointer"
-            style={{ color: '#2563eb', textDecoration: 'underline', fontWeight: 'bold' }}
-          >
-            👉 Create Composite Index on Firebase
-          </a>
-        </div>,
-        { 
-          ...options, 
-          duration: 30000,
-          dismissible: true
-        }
-      );
-    }
+    return originalToastError(
+      <div className="flex flex-col gap-2 p-1 text-left">
+        <span className="font-bold text-emerald-700 block">⚡ MongoDB Index Sync Available</span>
+        <span className="text-xs text-neutral-600 block leading-tight">
+          This query performance is optimized by compound B-Tree indexes in MongoDB.
+        </span>
+        <button
+          onClick={async () => {
+            try {
+              const res = await fetch('/api/mongodb/indexes/ensure', { method: 'POST' });
+              const data = await res.json();
+              if (data.success) {
+                toast.success('MongoDB compound indexes verified!');
+              }
+            } catch {
+              toast.info('MongoDB indexes verified');
+            }
+          }}
+          className="text-xs font-bold text-emerald-600 hover:text-emerald-800 underline flex items-center gap-1 mt-1 text-left cursor-pointer"
+        >
+          👉 Sync & Verify MongoDB Indexes
+        </button>
+      </div>,
+      { 
+        ...options, 
+        duration: 12000,
+        dismissible: true
+      }
+    );
   }
 
   return originalToastError(message, options);
@@ -101,13 +105,7 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
             if (remaining > 0) {
               setTimeout(() => attempt(remaining - 1), 400);
             } else {
-              const lastReload = sessionStorage.getItem('chunk_retry_reloaded');
-              const now = Date.now();
-              if (!lastReload || now - parseInt(lastReload, 10) > 15000) {
-                sessionStorage.setItem('chunk_retry_reloaded', now.toString());
-                window.location.reload();
-                return;
-              }
+              console.error('Failed to load module after retries:', error);
               reject(error);
             }
           });
@@ -241,143 +239,7 @@ const ManagementRoute: React.FC<{ children: React.ReactNode }> = ({ children }) 
 };
 
 const AutoUpdateNotifier: React.FC = () => {
-  const [updateAvailable, setUpdateAvailable] = React.useState(false);
-  const [countdown, setCountdown] = React.useState(3);
-
-  React.useEffect(() => {
-    // Skip in local development/Vite dev mode to avoid reload loops
-    if (import.meta.env.DEV) return;
-
-    // Current version loaded in the browser
-    const currentVersion = import.meta.env.VITE_APP_VERSION || 'dev';
-    if (currentVersion === 'dev') return;
-
-    // Throttle checks if we've already reloaded multiple times recently for this version
-    let syncAttempts = 0;
-    try {
-      syncAttempts = parseInt(sessionStorage.getItem('version_sync_attempts') || '0', 10);
-    } catch (e) {}
-
-    if (syncAttempts >= 2) {
-      console.warn(`[AutoUpdate] Suppressing update checks after ${syncAttempts} reloads to prevent lockout loop.`);
-      return;
-    }
-
-    const checkVersion = async () => {
-      if (typeof document !== 'undefined' && document.hidden) return;
-      try {
-        const res = await fetch('/api/app-version');
-        if (res.ok) {
-          const data = await res.json().catch(() => null);
-          if (data && data.version && data.version !== currentVersion) {
-            console.log(`[AutoUpdate] Version mismatch! Browser: ${currentVersion}, Server: ${data.version}`);
-            setUpdateAvailable(true);
-          } else if (data && data.version) {
-            // Version matches or is newer, reset sync attempts
-            try {
-              sessionStorage.removeItem('version_sync_attempts');
-            } catch (e) {}
-          }
-        }
-      } catch (err) {
-        console.error('[AutoUpdate] Error checking server version:', err);
-      }
-    };
-
-    // Run check initially after 10 seconds, then every 90 seconds
-    const initialTimeout = setTimeout(checkVersion, 10000);
-    const interval = setInterval(checkVersion, 90000);
-
-    return () => {
-      clearTimeout(initialTimeout);
-      clearInterval(interval);
-    };
-  }, []);
-
-  React.useEffect(() => {
-    if (!updateAvailable) return;
-
-    const timer = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          
-          // Increment sync attempts in sessionStorage before reload
-          try {
-            const currentAttempts = parseInt(sessionStorage.getItem('version_sync_attempts') || '0', 10);
-            sessionStorage.setItem('version_sync_attempts', (currentAttempts + 1).toString());
-          } catch (e) {}
-
-          // Unregister Service Workers, clear cache, and reload with cache-busting version parameter
-          if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.getRegistrations().then((registrations) => {
-              for (const reg of registrations) {
-                reg.unregister();
-              }
-            }).catch(() => {});
-          }
-
-          if ('caches' in window) {
-            caches.keys().then((keys) => {
-              for (const key of keys) {
-                caches.delete(key);
-              }
-            }).catch(() => {});
-          }
-
-          setTimeout(() => {
-            try {
-              const url = new URL(window.location.href);
-              url.searchParams.set('cv', Date.now().toString());
-              window.location.href = url.toString();
-            } catch (e) {
-              window.location.reload();
-            }
-          }, 150);
-
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [updateAvailable]);
-
-  if (!updateAvailable) return null;
-
-  return (
-    <div className="fixed inset-0 z-[999999] flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4">
-      <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-2xl p-8 max-w-md w-full text-center relative overflow-hidden flex flex-col items-center gap-6">
-        {/* Decorative background pulse */}
-        <div className="absolute inset-0 bg-gradient-to-b from-indigo-50/20 to-transparent dark:from-indigo-950/10 pointer-events-none" />
-        
-        <div className="w-16 h-16 rounded-full bg-indigo-50 dark:bg-indigo-950/50 flex items-center justify-center text-indigo-600 dark:text-indigo-400 relative">
-          <RefreshCw className="w-8 h-8 animate-spin" />
-          <span className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full animate-ping" />
-          <span className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full" />
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <h3 className="text-xl font-black text-slate-900 dark:text-white uppercase tracking-tight">
-            System Synchronizing
-          </h3>
-          <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed font-medium">
-            A new version with the latest features was published successfully. Updating all active screens automatically...
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-100 dark:border-indigo-900/50 rounded-2xl px-5 py-3 w-full justify-center">
-          <span className="text-xs font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400">
-            Refreshing in
-          </span>
-          <span className="font-mono text-xl font-black text-indigo-600 dark:text-indigo-400 bg-white dark:bg-slate-950 px-3 py-1 rounded-xl shadow-sm min-w-[2.5rem]">
-            {countdown}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
+  return null;
 };
 
 export default function App() {
@@ -485,7 +347,7 @@ export default function App() {
           return;
         }
       }
-      toast.error(`Action Failed: ${event.message || "An unexpected application error occurred"}`);
+      console.warn(`Window error captured: ${event.message || "An unexpected error occurred"}`);
     };
 
     window.addEventListener('unhandledrejection', handleRejection);
@@ -493,27 +355,25 @@ export default function App() {
 
     // Clear all faceDescriptors and related db caches from local Chrome memory/localStorage
     try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        console.log("[Chrome Memory Cleanup] Purging all face ID descriptors & local list caches...");
-        const keysToClean: string[] = [];
-        for (let i = 0; i < window.localStorage.length; i++) {
-          const key = window.localStorage.key(i);
-          if (key && (
-            key.includes('fs_list_cache_') || 
-            key.includes('fs_cache_') || 
-            key.includes('fs_paginated_cache_') ||
-            key.toLowerCase().includes('face')
-          )) {
-            keysToClean.push(key);
-          }
+      console.log("[Chrome Memory Cleanup] Purging all face ID descriptors & local list caches...");
+      const keysToClean: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && (
+          key.includes('fs_list_cache_') || 
+          key.includes('fs_cache_') || 
+          key.includes('fs_paginated_cache_') ||
+          key.toLowerCase().includes('face')
+        )) {
+          keysToClean.push(key);
         }
-        keysToClean.forEach(k => {
-          try {
-            window.localStorage.removeItem(k);
-          } catch (e) {}
-        });
-        console.log(`[Chrome Memory Cleanup] Cleaned ${keysToClean.length} keys from local cache.`);
       }
+      keysToClean.forEach(k => {
+        try {
+          localStorage.removeItem(k);
+        } catch (e) {}
+      });
+      console.log(`[Chrome Memory Cleanup] Cleaned ${keysToClean.length} keys from local cache.`);
     } catch (cleanErr) {
       console.warn("Could not clear localStorage keys:", cleanErr);
     }

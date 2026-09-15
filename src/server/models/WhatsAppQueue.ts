@@ -105,38 +105,11 @@ export const WhatsAppQueue: Model<IWhatsAppQueue> =
   (mongoose.models.WhatsAppQueue as Model<IWhatsAppQueue>) ||
   mongoose.model<IWhatsAppQueue>('WhatsAppQueue', WhatsAppQueueSchema);
 
-// Local fallback store for offline/local sandbox environments
-const localDataDir = path.join(process.cwd(), '.local_db');
-const localQueueFile = path.join(localDataDir, 'whatsapp_queue.json');
-
+// In-memory queue when MongoDB is offline
 const memoryQueue = new Map<string, any>();
 
-try {
-  if (!fs.existsSync(localDataDir)) {
-    fs.mkdirSync(localDataDir, { recursive: true });
-  }
-  if (fs.existsSync(localQueueFile)) {
-    const raw = fs.readFileSync(localQueueFile, 'utf-8');
-    const list: any[] = JSON.parse(raw);
-    list.forEach(item => {
-      memoryQueue.set(String(item._id), {
-        ...item,
-        createdAt: new Date(item.createdAt),
-        sentAt: item.sentAt ? new Date(item.sentAt) : undefined
-      });
-    });
-  }
-} catch (err) {
-  // Silent fallback initialization
-}
-
 function persistLocalQueue() {
-  try {
-    const items = Array.from(memoryQueue.values());
-    fs.writeFileSync(localQueueFile, JSON.stringify(items, null, 2));
-  } catch (err) {
-    // Ignore file write error
-  }
+  // Pure MongoDB architecture: no local file persistence
 }
 
 /**

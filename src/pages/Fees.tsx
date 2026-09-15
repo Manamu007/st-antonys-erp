@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { dbService } from '../services/dbService';
-import { auth } from '../firebase';
+import { dbService, where, limit, startAfter, orderBy } from '../services/dbService';
+import { auth } from '../services/authService';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
 import { 
@@ -36,7 +36,6 @@ import { toast } from 'sonner';
 import { getTeacherAssignments, filterClassesForTeacher, filterBatchesForTeacher, checkIsTeacherAccount } from '../utils/teacherFilter';
 import Papa from 'papaparse';
 import { FeeStructure, FeeConcession, FeeRecord, PaymentRecord, Expenditure } from '../types';
-import { where, limit, startAfter, orderBy } from 'firebase/firestore';
 import { calculateStudentFee, normalizeYear } from '../lib/feeUtils';
 import StudentPortalFees from '../components/fees/StudentPortalFees';
 import { AdminFeesView } from '../components/fees/AdminFeesView';

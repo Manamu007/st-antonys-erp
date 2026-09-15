@@ -26,10 +26,9 @@ import {
   Check,
   Activity
 } from 'lucide-react';
-import { dbService } from '../services/dbService';
+import { dbService, where, orderBy, limit as firestoreLimit } from '../services/dbService';
 import { whatsappService } from '../services/whatsappService';
 import { useAuth } from '../context/AuthContext';
-import { where, orderBy, limit as firestoreLimit } from 'firebase/firestore';
 import { toast } from 'sonner';
 
 export default function OutingPermission() {

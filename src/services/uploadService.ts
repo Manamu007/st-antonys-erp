@@ -1,5 +1,4 @@
-import { storage } from '../firebase';
-import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+// Pure client upload service - uploads directly to backend Express storage
 
 export const uploadService = {
   processProfileImage: async (file: File): Promise<File> => {
@@ -168,28 +167,24 @@ export const uploadService = {
       processedFile = await uploadService.compressImage(file);
     }
 
-    // Generate a unique filename or use path naming convention
-    const timestamp = Date.now();
-    const cleanName = processedFile.name.replace(/[^a-zA-Z0-9.]/g, '_');
-    const folder = isTemporary ? 'temp' : 'uploads';
-    const filePath = `${folder}/${timestamp}_${cleanName}`;
-    
-    const storageRef = ref(storage, filePath);
-    const uploadTask = uploadBytesResumable(storageRef, processedFile);
-
-    return new Promise((resolve, reject) => {
-      uploadTask.on(
-        'state_changed',
-        null,
-        (error) => {
-          console.error('[UploadService] Upload failed:', error);
-          reject(error);
-        },
-        async () => {
-          const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-          resolve(downloadURL);
-        }
-      );
-    });
+    try {
+      const formData = new FormData();
+      formData.append('file', processedFile);
+      const res = await fetch(`/api/upload?purpose=${isTemporary ? 'communication' : 'permanent'}`, {
+        method: 'POST',
+        body: formData
+      });
+      if (!res.ok) {
+        throw new Error(`Upload failed with status ${res.status}`);
+      }
+      const data = await res.json();
+      if (data.url) {
+        return data.url;
+      }
+      throw new Error(data.error || 'Upload failed');
+    } catch (err) {
+      console.error('[UploadService] Upload error:', err);
+      throw err;
+    }
   }
 };

@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { limit } from 'firebase/firestore';
-import { dbService } from '../services/dbService';
+import { dbService, limit } from '../services/dbService';
 import { useAuth } from '../context/AuthContext';
 import { 
   Library as LibraryIcon, 

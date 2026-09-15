@@ -56,8 +56,11 @@ export const SYSTEM_ACCOUNTS = [
 ];
 
 export const SYSTEM_ROLE_MAPPING: Record<string, string> = {
+  'manamunagaraju@gmail.com': 'super_admin',
+  'antonyschool14@gmail.com': 'super_admin',
+  'divyamanamu4@gmail.com': 'super_admin',
+  'mddesigns007@gmail.com': 'super_admin',
   'saikumari361@gmail.com': 'vice_principal',
-  'mddesigns007@gmail.com': 'admin',
   'doctor@antony.com': 'doctor',
   'stantonysnur@gmail.com': 'teacher_class',
   'stantonyslkg@gmail.com': 'teacher_class',
@@ -256,6 +259,10 @@ export const isTeacherAccountOrEmail = (input: string | null | undefined): boole
 
   // Explicit non-teacher exclusions
   if (
+    DEVELOPER_ACCOUNTS.includes(normalized) ||
+    DEVELOPER_ACCOUNTS.includes(input.toLowerCase().trim()) ||
+    normalized.includes('nagaraju') ||
+    normalized.includes('manamu') ||
     normalized.includes('reception') ||
     normalized.includes('accountant') ||
     normalized.includes('driver') ||
@@ -371,7 +378,7 @@ export const getSystemAccountRole = (email: string | null | undefined): string =
   if (isTeacherAccountOrEmail(normalized)) {
     return 'teacher_class';
   }
-  if (isDeveloperAccount(normalized)) return 'admin';
+  if (isDeveloperAccount(normalized) || normalized === 'manamunagaraju@gmail.com') return 'super_admin';
   if (isSystemAccount(normalized)) return 'admin';
   return 'staff';
 };

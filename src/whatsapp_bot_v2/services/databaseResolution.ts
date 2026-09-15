@@ -1,4 +1,4 @@
-import { getDbAdmin } from '../../server/firebaseAdmin.js';
+import { getDbAdmin } from '../../server/db.js';
 
 export interface ResolvedContext {
   studentName: string;

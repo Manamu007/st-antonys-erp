@@ -5,8 +5,7 @@ import {
   ArrowUpRight, ArrowDownRight, Minus, AlertCircle, FileText, Check, X, Users, Plus,
   Hash, User, CalendarCheck, ArrowUpDown, Target, BarChart2, Filter, Trash2
 } from 'lucide-react';
-import { dbService } from '../services/dbService';
-import { where, limit } from 'firebase/firestore';
+import { dbService, where, limit } from '../services/dbService';
 import { toast } from 'sonner';
 import { format, subDays, parseISO } from 'date-fns';
 

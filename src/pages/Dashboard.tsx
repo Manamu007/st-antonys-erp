@@ -775,9 +775,11 @@ const Dashboard: React.FC = () => {
     ];
   }, [stats?.fees]);
 
+  const isSuperOrAdmin = isSuperAdmin || isAdmin || profile?.role === 'super_admin' || profile?.role === 'admin';
   const showFinancials = hasPermission('fees_view') && !isVicePrincipal;
-  const isTeacherUser = isTeacher || profile?.isTeacherPortal === true || profile?.role === 'teacher' || profile?.role === 'teacher_class' || profile?.role === 'teacher_subject' || (profile as any)?.staffType === 'teaching';
-  const isManagement = (isAdmin || isPrincipal || isVicePrincipal || isSuperAdmin) && !isTeacherUser;
+  const isTeacherUser = !isSuperOrAdmin && (isTeacher || profile?.isTeacherPortal === true || profile?.role === 'teacher' || profile?.role === 'teacher_class' || profile?.role === 'teacher_subject' || (profile as any)?.staffType === 'teaching');
+  const isActualTeacher = isTeacherUser && !isSuperOrAdmin;
+  const isManagement = isSuperOrAdmin || ((isAdmin || isPrincipal || isVicePrincipal) && !isTeacherUser);
 
   return (
     <motion.div 
@@ -824,14 +826,14 @@ const Dashboard: React.FC = () => {
         {(!isStudent && !isParent) && (
           <StatCard 
             icon={Users} 
-            label={isTeacher ? "Assigned Students" : "Students"} 
+            label={isActualTeacher ? "Assigned Students" : "Students"} 
             value={stats.students} 
-            trend={isTeacher ? "Roster" : "+12/mo"} 
+            trend={isActualTeacher ? "Roster" : "+12/mo"} 
             variant="indigo"
             delay={0.1}
           />
         )}
-        {(isTeacher && (batches || []).some(b => b.classTeacherId === profile?.uid)) && (
+        {(isActualTeacher && (batches || []).some(b => b.classTeacherId === profile?.uid)) && (
           <>
             <StatCard 
               icon={UserCheck} 
@@ -851,7 +853,7 @@ const Dashboard: React.FC = () => {
             />
           </>
         )}
-        {(!isTeacher && !isStudent && !isParent) && (
+        {(!isActualTeacher && !isStudent && !isParent) && (
           <StatCard 
             icon={GraduationCap} 
             label="Staff" 
@@ -863,7 +865,7 @@ const Dashboard: React.FC = () => {
         )}
         <StatCard 
           icon={Activity} 
-          label={(isTeacher || isStudent || isParent) ? "My Attendance" : "Attendance"} 
+          label={(isActualTeacher || isStudent || isParent) ? "My Attendance" : "Attendance"} 
           value={typeof stats.attendance === 'number' ? `${stats.attendance}%` : stats.attendance} 
           trend={stats.attendance === 'N/A' ? 'Locked' : stats.attendance === 'Holiday' ? 'Holiday' : 'Upward'} 
           variant="emerald"
@@ -893,7 +895,7 @@ const Dashboard: React.FC = () => {
       </div>
 
       {/* Live Timetable Widget - Special Row for Teachers/Students */}
-      {(isTeacher || isStudent) && (
+      {(isActualTeacher || isStudent) && (
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -963,7 +965,7 @@ const Dashboard: React.FC = () => {
       )}
 
       {/* Main Tactical Grid: Notice Board, Timeline, and Financial Stream in one line */}
-      <div className={`grid grid-cols-1 ${isTeacher ? 'lg:grid-cols-2' : 'lg:grid-cols-3'} gap-8 pb-6`}>
+      <div className={`grid grid-cols-1 ${isActualTeacher ? 'lg:grid-cols-2' : 'lg:grid-cols-3'} gap-8 pb-6`}>
         {/* Notice Board (Pulse Feedback) */}
         <div className="h-full">
           <NoticeBoard />
@@ -1030,8 +1032,8 @@ const Dashboard: React.FC = () => {
         </motion.div>
 
         {/* Financial Stream - Now in the same line with Pulse Feedback and Timeline */}
-        {!isTeacher && (
-          (showFinancials && (isAdmin || isPrincipal || isAccountant)) ? (
+        {!isActualTeacher && (
+          (showFinancials && (isAdmin || isSuperAdmin || isPrincipal || isAccountant)) ? (
             <motion.div 
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
@@ -1154,7 +1156,7 @@ const Dashboard: React.FC = () => {
       </div>
 
       {/* AI Intelligence Hub - Decision Support System */}
-      {(isAdmin || isPrincipal || isVicePrincipal) && !isTeacherUser && (
+      {(isAdmin || isSuperAdmin || isPrincipal || isVicePrincipal) && !isTeacherUser && (
         <motion.div 
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}

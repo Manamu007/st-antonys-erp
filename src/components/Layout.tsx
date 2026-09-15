@@ -8,7 +8,7 @@ import { format } from 'date-fns';
 import { NotificationCenter } from './NotificationCenter';
 import { usePermissions } from '../hooks/usePermissions';
 import { useAuth } from '../context/AuthContext';
-import { auth } from '../firebase';
+import { auth } from '../services/authService';
 import { dbService } from '../services/dbService';
 import { normalizeUrl } from '../lib/utils';
 import { toast } from 'sonner';

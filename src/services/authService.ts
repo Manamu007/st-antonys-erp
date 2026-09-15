@@ -1,8 +1,7 @@
-// Disconnected client-side Firebase SDK to exclusively use local Express backend + MongoDB API.
-// No remote Firebase/Firestore SDK initializations, billing checks, or network calls are made from the frontend.
+import { safeStorage as localStorage } from '../lib/safeStorage';
 
-export const db: any = {};
-export const storage: any = {};
+// Pure client-side Authentication Service (JWT & REST)
+// Completely free from Firebase SDKs
 
 export const isBackendUnreachable = false;
 export const onUnreachableChange = (callback: (status: boolean) => void) => {
@@ -58,60 +57,53 @@ export const onAuthStateChanged = (first: any, second?: any) => {
 export const auth: any = {
   get currentUser() {
     if (typeof window === 'undefined') return null;
-    const raw = localStorage.getItem('auth_user') || localStorage.getItem('bypass_user_profile');
-    if (!raw) return null;
     try {
-      const p = JSON.parse(raw);
-      const uid = p.id || p.uid || p._id || 'user';
-      return {
-        uid,
-        id: uid,
-        email: p.email || '',
-        displayName: p.name || p.displayName || 'School Member',
-        photoURL: p.photoURL || '',
-        emailVerified: true,
-        isAnonymous: false,
-        tenantId: null,
-        providerData: [],
-        getIdToken: async () => localStorage.getItem('auth_jwt_token') || 'bypass_token'
-      };
-    } catch {
-      return null;
-    }
-  },
-  onAuthStateChanged: (first: any, second?: any) => onAuthStateChanged(first, second),
-  setPersistence: async () => {},
-  signOut: async () => {
-    if (typeof window !== 'undefined') {
-      const token = localStorage.getItem('auth_jwt_token');
-      if (token) {
-        fetch('/api/auth/logout', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${token}` }
-        }).catch(() => {});
+      const raw = localStorage.getItem('auth_user') || localStorage.getItem('bypass_user_profile');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && (parsed.id || parsed.uid || parsed.email || parsed.role || parsed._id)) {
+          const id = parsed.id || parsed.uid || parsed._id || 'user_default';
+          const role = (parsed.role || localStorage.getItem('bypass_user_role') || 'admin').toLowerCase().trim();
+          const name = parsed.name || parsed.displayName || localStorage.getItem('bypass_user_name') || 'User';
+          const email = parsed.email || localStorage.getItem('bypass_user_email') || `${id}@stantonys.edu`;
+          return {
+            ...parsed,
+            uid: id,
+            id: id,
+            _id: parsed._id || id,
+            role,
+            name,
+            displayName: name,
+            email,
+            photoURL: parsed.photoURL || localStorage.getItem('bypass_user_photo') || '',
+            emailVerified: true,
+            status: parsed.status || 'active',
+            getIdToken: async () => localStorage.getItem('auth_jwt_token') || 'local_token'
+          };
+        }
       }
+    } catch (_) {}
+    return null;
+  },
+  signOut: async () => {
+    try {
       localStorage.removeItem('auth_user');
       localStorage.removeItem('auth_jwt_token');
+      localStorage.removeItem('bypass_user_profile');
+      localStorage.removeItem('bypass_user_role');
       localStorage.removeItem('bypass_user_email');
-      localStorage.removeItem('bypass_user_uid');
       localStorage.removeItem('bypass_user_name');
       localStorage.removeItem('bypass_user_photo');
-      localStorage.removeItem('bypass_user_role');
-      localStorage.removeItem('bypass_user_profile');
-      localStorage.removeItem('auth_current_user_role');
-      localStorage.removeItem('auth_user_email');
-      localStorage.removeItem('auth_allowed_profile_ids');
-      triggerAuthStateChanged();
-    }
+    } catch (_) {}
+    triggerAuthStateChanged();
   }
 };
 
-export const inMemoryPersistence = 'inMemory';
 export const setPersistence = async (_auth: any, _persistence: any) => {};
+export const inMemoryPersistence = {};
+export const browserLocalPersistence = {};
 
-const app = {
-  name: '[DEFAULT]',
-  options: {}
-} as any;
+export const db: any = {};
+export const storage: any = {};
 
-export default app;
+export default auth;

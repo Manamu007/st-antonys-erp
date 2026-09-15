@@ -21,14 +21,13 @@ import {
   ArrowUpDown,
   Lock
 } from 'lucide-react';
-import { dbService } from '../services/dbService';
+import { dbService, where, orderBy, limit } from '../services/dbService';
 import { ClassRecord, BatchRecord, SubjectRecord, UserProfile, FeeRecord, StudentDetails } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
 import { PERMISSIONS } from '../constants/permissions';
 import { toast } from 'sonner';
 import { getTeacherAssignments, filterClassesForTeacher, filterBatchesForTeacher, filterSubjectsForTeacher, checkIsTeacherAccount, TeacherAssignments } from '../utils/teacherFilter';
-import { where, orderBy, limit } from 'firebase/firestore';
 import { sortAlphabetically, getStaffDisplayName, getPersonDisplayName, formatNameFromEmail } from '../lib/utils';
 
 import { motion } from 'motion/react';

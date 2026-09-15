@@ -2,8 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import { HardDrive, Trash2, File, Calendar, Database, AlertCircle, RefreshCw, ExternalLink, Cloud } from 'lucide-react';
 import { toast } from 'sonner';
-import { storage } from '../firebase';
-import { ref, listAll, getMetadata, getDownloadURL, deleteObject } from 'firebase/storage';
 
 interface FileInfo {
   name: string;
@@ -22,53 +20,30 @@ const StorageManagement: React.FC = () => {
   const fetchFiles = async () => {
     setLoading(true);
     try {
-      const folders = ['uploads', 'temp'];
-      let allFiles: FileInfo[] = [];
-
-      for (const folder of folders) {
-        const listRef = ref(storage, folder);
-        try {
-          const res = await listAll(listRef);
-          
-          const filePromises = res.items.map(async (item) => {
-            const [metadata, url] = await Promise.all([
-              getMetadata(item),
-              getDownloadURL(item)
-            ]);
-            
-            return {
-              name: item.name,
-              path: item.fullPath,
-              url: url,
-              size: metadata.size,
-              createdAt: metadata.timeCreated
-            };
-          });
-
-          const folderFiles = await Promise.all(filePromises);
-          allFiles = [...allFiles, ...folderFiles];
-        } catch (e) {
-          console.warn(`Could not list files in ${folder}:`, e);
-        }
+      const res = await fetch('/api/maintenance/storage');
+      const data = await res.json();
+      if (data.success && Array.isArray(data.files)) {
+        setFiles(data.files.sort((a: FileInfo, b: FileInfo) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+      } else {
+        setFiles([]);
       }
-
-      setFiles(allFiles.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
     } catch (error) {
-      console.error('Error fetching from Firebase Storage:', error);
-      toast.error('Error connecting to Firebase Storage');
+      console.error('Error fetching storage:', error);
+      toast.error('Error loading storage files');
     } finally {
       setLoading(false);
     }
   };
 
   const handleClearAll = async () => {
-    if (!window.confirm('WARNING: This will delete ALL users uploads from Firebase Storage. This cannot be undone. Are you sure?')) return;
+    if (!window.confirm('WARNING: This will delete files from uploads. This cannot be undone. Are you sure?')) return;
     
     setClearing(true);
     try {
-      const deletePromises = files.map(file => deleteObject(ref(storage, file.path)));
-      await Promise.all(deletePromises);
-      toast.success('All cloud storage files cleared');
+      for (const file of files) {
+        await fetch(`/api/maintenance/storage?path=${encodeURIComponent(file.path)}`, { method: 'DELETE' });
+      }
+      toast.success('All storage files cleared');
       fetchFiles();
     } catch (error) {
       toast.error('Failed to clear some files from storage');
@@ -86,10 +61,14 @@ const StorageManagement: React.FC = () => {
   const handleDelete = async (filePath: string) => {
     setDeleting(filePath);
     try {
-      const fileRef = ref(storage, filePath);
-      await deleteObject(fileRef);
-      toast.success('File deleted from cloud storage');
-      fetchFiles();
+      const res = await fetch(`/api/maintenance/storage?path=${encodeURIComponent(filePath)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        toast.success('File deleted from storage');
+        fetchFiles();
+      } else {
+        throw new Error(data.error || 'Failed to delete');
+      }
     } catch (error) {
       toast.error('Error deleting file');
     } finally {
@@ -145,14 +124,14 @@ const StorageManagement: React.FC = () => {
         </div>
       </header>
 
-      <div className="bg-amber-50 border border-amber-200 p-6 rounded-3xl flex gap-4 items-start shadow-sm">
-        <div className="bg-amber-100 p-2 rounded-xl text-amber-600">
+      <div className="bg-blue-50 border border-blue-200 p-6 rounded-3xl flex gap-4 items-start shadow-sm">
+        <div className="bg-blue-100 p-2 rounded-xl text-blue-600">
           <AlertCircle className="w-6 h-6" />
         </div>
         <div>
-          <h3 className="text-amber-900 font-bold mb-1 tracking-tight">Cloud Storage Mode</h3>
-          <p className="text-amber-700/80 text-sm leading-relaxed font-medium">
-            The application is now using <span className="font-bold">Firebase Storage</span> for all user uploads. Files listed here are stored in the cloud. Temporary files in the <code className="bg-white/50 px-1 rounded font-mono">temp/</code> folder should be monitored.
+          <h3 className="text-blue-900 font-bold mb-1 tracking-tight">Application Storage</h3>
+          <p className="text-blue-700/80 text-sm leading-relaxed font-medium">
+            Media and documents uploaded to the system are stored in the server uploads repository. Communication files in <code className="bg-white/50 px-1 rounded font-mono">comm/</code> are maintained automatically.
           </p>
         </div>
       </div>

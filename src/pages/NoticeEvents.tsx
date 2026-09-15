@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
-import { orderBy, limit } from 'firebase/firestore';
-import { dbService } from '../services/dbService';
+import { dbService, orderBy, limit } from '../services/dbService';
 import { useAuth } from '../context/AuthContext';
 import { 
   Plus, 

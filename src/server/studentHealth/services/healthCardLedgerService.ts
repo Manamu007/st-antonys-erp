@@ -1,4 +1,4 @@
-import { getDbAdmin } from '../../firebaseAdmin.js';
+import { getDbAdmin } from '../../db.js';
 import { StudentHealthAccount, StudentHealthBill, StudentHealthLedgerEntry } from '../../../modules/studentHealth/types/index.js';
 
 export async function processBillApprovalAndDeduction(

@@ -1,5 +1,5 @@
 import express from 'express';
-import { getDbAdmin } from '../../firebaseAdmin.js';
+import { getDbAdmin } from '../../db.js';
 import { processAgentChat } from '../services/antonyAiService.js';
 import { verifyAndDeriveContext, VerifiedAiUserContext } from '../services/antonyAiAuthContextService.js';
 import { writeSecurityAuditLog } from '../services/antonyAiAuditService.js';

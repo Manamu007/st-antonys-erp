@@ -2,8 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Camera, CheckCircle2, Loader2, Sparkles, AlertCircle, ShieldCheck, ArrowRight, Scan, RefreshCcw, ShieldAlert, CameraOff } from 'lucide-react';
 import { loadModels, detectFace, getHeadPose, ensureDescriptorArray } from '../services/faceRecognitionService';
-import { dbService } from '../services/dbService';
-import { where } from 'firebase/firestore';
+import { dbService, where } from '../services/dbService';
 import { toast } from 'sonner';
 
 interface FaceRegistrationModalProps {

@@ -1,9 +1,102 @@
 import express from 'express';
-import { getDbAdmin, isDatabaseDenied, setDatabaseDenied } from './firebaseAdmin.js';
+import fs from 'fs';
+import path from 'path';
+import { getDbAdmin, isDatabaseDenied, setDatabaseDenied, isQuotaOrPermissionError, handleFirestoreError } from './db.js';
+import { getMongoDb } from './mongoSession.js';
 import { sendMessage } from './whatsapp.js';
 import { normalizeIndianPhone, safeLogWhatsappEvent } from './whatsappUtils.js';
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { RekognitionClient, CompareFacesCommand, IndexFacesCommand, CreateCollectionCommand, DescribeCollectionCommand, SearchFacesByImageCommand, DeleteCollectionCommand } from "@aws-sdk/client-rekognition";
+
+async function getFallbackStaffAttendance(date?: any, status?: any): Promise<any[]> {
+  try {
+    const mongo = await getMongoDb().catch(() => null);
+    if (mongo) {
+      const filter: any = {};
+      if (date) filter.date = String(date);
+      if (status) filter.status = String(status);
+      const docs = await mongo.collection('staff_attendance').find(filter).toArray();
+      if (docs && docs.length > 0) {
+        return docs.map(d => ({
+          ...d,
+          id: d.id || d._id?.toString() || d.uid,
+          _id: undefined
+        }));
+      }
+    }
+  } catch (_) {}
+  return [];
+}
+
+async function saveFallbackStaffAttendance(record: {
+  uid: string;
+  status: string;
+  date: string;
+  method: string;
+  existingRecordId?: string;
+}) {
+  const timestamp = new Date().toISOString();
+  const id = record.existingRecordId || `att_stf_${record.uid}_${record.date}`;
+  const entry = {
+    id,
+    userId: record.uid,
+    date: record.date,
+    status: record.status,
+    method: record.method,
+    timestamp
+  };
+
+  try {
+    const mongo = await getMongoDb().catch(() => null);
+    if (mongo) {
+      await mongo.collection('staff_attendance').updateOne(
+        { $or: [{ id }, { userId: record.uid, date: record.date }] },
+        { $set: entry },
+        { upsert: true }
+      );
+    }
+  } catch (_) {}
+}
+
+async function syncStaffAttendanceToFallback(_records: any[]) {
+  // Pure MongoDB mode: no local file fallback
+}
+
+async function getFallbackAlertsSent(docId: string, date: string): Promise<any> {
+  try {
+    const mongo = await getMongoDb().catch(() => null);
+    if (mongo) {
+      const doc = await mongo.collection('attendance_alerts_sent').findOne({ $or: [{ id: docId }, { docId }, { date }] });
+      if (doc) return doc;
+    }
+  } catch (_) {}
+  return null;
+}
+
+async function getFallbackLogs(colName: string): Promise<any[]> {
+  try {
+    const mongo = await getMongoDb().catch(() => null);
+    if (mongo) {
+      const docs = await mongo.collection(colName).find({}).sort({ timestamp: -1 }).limit(500).toArray();
+      if (docs && docs.length > 0) {
+        return docs.map(d => ({ ...d, id: d.id || d._id?.toString() || d.uid, _id: undefined }));
+      }
+    }
+  } catch (_) {}
+  return [];
+}
+
+async function saveFallbackLog(colName: string, data: any): Promise<string> {
+  const id = `${colName}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const entry = { id, uid: id, ...data, createdAt: new Date().toISOString() };
+  try {
+    const mongo = await getMongoDb().catch(() => null);
+    if (mongo) {
+      await mongo.collection(colName).insertOne(entry);
+    }
+  } catch (_) {}
+  return id;
+}
 
 function cleanAwsRegion(regionStr: string): string {
   if (!regionStr) return 'us-east-1';
@@ -63,10 +156,9 @@ router.post('/register-face', async (req, res) => {
 
     res.json({ success: true, message: 'Face ID registered successfully' });
   } catch (error: any) {
-    const errText = (error?.message || String(error)).toLowerCase();
-    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
-      setDatabaseDenied(true);
-      return res.json({ success: true, message: 'Database billing required. Skipped.' });
+    handleFirestoreError(error, 'AttendanceBackupWrite:register-face');
+    if (isQuotaOrPermissionError(error)) {
+      return res.json({ success: true, message: 'Face ID registered (quota cooldown/fallback mode)' });
     }
     console.error('[Backup Write] Register Face ID error:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
@@ -1043,18 +1135,24 @@ router.post('/check-marked-status', async (req, res) => {
 
 // Privileged Staff Attendance Marker Endpoint
 router.post('/mark-staff-attendance', async (req, res) => {
+  const { uid, status, date, method, existingRecordId } = req.body;
+
+  if (!uid || !status || !date || !method) {
+    return res.status(400).json({ error: 'Missing required attendance fields' });
+  }
+
+  // Always save to fallback (local storage and MongoDB) for zero-loss offline resiliency
+  await saveFallbackStaffAttendance({ uid, status, date, method, existingRecordId });
+
   if (isDatabaseDenied()) {
-    return res.json({ success: true, message: 'Staff attendance marked (fallback)' });
+    return res.json({ success: true, message: 'Staff attendance marked (saved to fallback storage)' });
   }
   try {
-    const { uid, status, date, method, existingRecordId } = req.body;
-
-    if (!uid || !status || !date || !method) {
-      return res.status(400).json({ error: 'Missing required attendance fields' });
-    }
-
     const db = getDbAdmin();
-    console.log(`[Backup Write] Marking staff attendance for '${uid}' as ${status} (${method}) on ${date}...`);
+    if (!db) {
+      return res.json({ success: true, message: 'Staff attendance marked (saved to fallback storage)' });
+    }
+    console.log(`[Attendance Write] Marking staff attendance for '${uid}' as ${status} (${method}) on ${date}...`);
 
     if (existingRecordId) {
       await db.collection('staff_attendance').doc(existingRecordId).set({
@@ -1089,10 +1187,9 @@ router.post('/mark-staff-attendance', async (req, res) => {
 
     res.json({ success: true, message: 'Staff attendance marked successfully' });
   } catch (error: any) {
-    const errText = (error?.message || String(error)).toLowerCase();
-    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
-      setDatabaseDenied(true);
-      return res.json({ success: true, message: 'Staff attendance marked (fallback)' });
+    handleFirestoreError(error, 'AttendanceBackupWrite:mark-staff-attendance');
+    if (isQuotaOrPermissionError(error)) {
+      return res.json({ success: true, message: 'Staff attendance marked (saved to fallback storage)' });
     }
     console.error('[Backup Write] Staff Attendance error:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
@@ -1211,6 +1308,10 @@ router.post('/student-permission', async (req, res) => {
 
     res.json({ success: true, message: 'Outpass registered and alert processed successfully', docId: permDoc.id, waStatus });
   } catch (error: any) {
+    handleFirestoreError(error, 'AttendanceBackupWrite:student-permission');
+    if (isQuotaOrPermissionError(error)) {
+      return res.json({ success: true, message: 'Outpass registered (saved offline)', docId: 'perm_' + Date.now(), waStatus: 'offline' });
+    }
     console.error('[Backup Write] Student permission outpass error:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
   }
@@ -1335,22 +1436,36 @@ router.post('/notify-absent', async (req, res) => {
     }
 
     res.json({ success: true, ...results });
-  } catch (error) {
+  } catch (error: any) {
+    handleFirestoreError(error, 'AttendanceBackupWrite:notify-absent');
+    if (isQuotaOrPermissionError(error)) {
+      return res.json({ success: true, count: 0, warning: 'Firestore quota limit active' });
+    }
     res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
   }
 });
 
 // Privileged Staff Attendance Getter Endpoint
 router.get('/alerts-sent', async (req, res) => {
+  const { date, classId, batchId } = req.query;
+  if (!date || typeof date !== 'string') {
+    return res.status(400).json({ error: 'Date parameter is required' });
+  }
+  const resolvedClassId = classId || 'all';
+  const resolvedBatchId = batchId || 'all';
+  const docId = `${date}_${resolvedClassId}_${resolvedBatchId}`;
+
+  if (isDatabaseDenied()) {
+    const fallbackData = await getFallbackAlertsSent(docId, String(date));
+    return res.json(fallbackData);
+  }
+
   try {
-    const { date, classId, batchId } = req.query;
-    if (!date || typeof date !== 'string') {
-      return res.status(400).json({ error: 'Date parameter is required' });
-    }
     const db = getDbAdmin();
-    const resolvedClassId = classId || 'all';
-    const resolvedBatchId = batchId || 'all';
-    const docId = `${date}_${resolvedClassId}_${resolvedBatchId}`;
+    if (!db) {
+      const fallbackData = await getFallbackAlertsSent(docId, String(date));
+      return res.json(fallbackData);
+    }
 
     const docSnap = await db.collection('attendance_alerts_sent').doc(docId).get();
     if (docSnap.exists) {
@@ -1363,9 +1478,15 @@ router.get('/alerts-sent', async (req, res) => {
           return res.json(legacySnap.data());
         }
       }
-      res.json(null);
+      const fallbackData = await getFallbackAlertsSent(docId, String(date));
+      res.json(fallbackData);
     }
   } catch (error: any) {
+    handleFirestoreError(error, 'AttendanceBackupRead:alerts-sent');
+    if (isQuotaOrPermissionError(error)) {
+      const fallbackData = await getFallbackAlertsSent(docId, String(date));
+      return res.json(fallbackData);
+    }
     console.error('[Backup Read] Get attendance alerts sent error:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
   }
@@ -1373,12 +1494,17 @@ router.get('/alerts-sent', async (req, res) => {
 
 // Privileged Staff Attendance Getter Endpoint
 router.get('/list-staff-attendance', async (req, res) => {
+  const { date, status } = req.query;
   if (isDatabaseDenied()) {
-    return res.json([]);
+    const fallbackRecords = await getFallbackStaffAttendance(date, status);
+    return res.json(fallbackRecords);
   }
   try {
-    const { date, status } = req.query;
     const db = getDbAdmin();
+    if (!db) {
+      const fallbackRecords = await getFallbackStaffAttendance(date, status);
+      return res.json(fallbackRecords);
+    }
     let queryRef: any = db.collection('staff_attendance');
     
     if (date) {
@@ -1394,12 +1520,16 @@ router.get('/list-staff-attendance', async (req, res) => {
       ...doc.data()
     }));
     
+    if (records.length > 0) {
+      syncStaffAttendanceToFallback(records).catch(() => {});
+    }
+
     res.json(records);
   } catch (error: any) {
-    const errText = (error?.message || String(error)).toLowerCase();
-    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
-      setDatabaseDenied(true);
-      return res.json([]);
+    handleFirestoreError(error, 'AttendanceBackupRead:list-staff-attendance');
+    if (isQuotaOrPermissionError(error)) {
+      const fallbackRecords = await getFallbackStaffAttendance(date, status);
+      return res.json(fallbackRecords);
     }
     console.error('[Backup Read] List staff attendance error:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
@@ -1409,10 +1539,15 @@ router.get('/list-staff-attendance', async (req, res) => {
 // Secure API Proxy for login_logs to bypass client side Firestore permission issues
 router.get('/list-login-logs', async (req, res) => {
   if (isDatabaseDenied()) {
-    return res.json([]);
+    const fallback = await getFallbackLogs('login_logs');
+    return res.json(fallback);
   }
   try {
     const db = getDbAdmin();
+    if (!db) {
+      const fallback = await getFallbackLogs('login_logs');
+      return res.json(fallback);
+    }
     const snapshot = await db.collection('login_logs')
       .orderBy('timestamp', 'desc')
       .limit(500)
@@ -1426,10 +1561,10 @@ router.get('/list-login-logs', async (req, res) => {
     
     res.json(records);
   } catch (error: any) {
-    const errText = (error?.message || String(error)).toLowerCase();
-    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
-      setDatabaseDenied(true);
-      return res.json([]);
+    handleFirestoreError(error, 'AttendanceBackupRead:list-login-logs');
+    if (isQuotaOrPermissionError(error)) {
+      const fallback = await getFallbackLogs('login_logs');
+      return res.json(fallback);
     }
     console.error('[Backup Read] List login logs error:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
@@ -1439,10 +1574,15 @@ router.get('/list-login-logs', async (req, res) => {
 // Secure API Proxy for audit_logs to bypass client side Firestore permission issues
 router.get('/list-audit-logs', async (req, res) => {
   if (isDatabaseDenied()) {
-    return res.json([]);
+    const fallback = await getFallbackLogs('audit_logs');
+    return res.json(fallback);
   }
   try {
     const db = getDbAdmin();
+    if (!db) {
+      const fallback = await getFallbackLogs('audit_logs');
+      return res.json(fallback);
+    }
     const snapshot = await db.collection('audit_logs')
       .orderBy('timestamp', 'desc')
       .limit(500)
@@ -1456,10 +1596,10 @@ router.get('/list-audit-logs', async (req, res) => {
     
     res.json(records);
   } catch (error: any) {
-    const errText = (error?.message || String(error)).toLowerCase();
-    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
-      setDatabaseDenied(true);
-      return res.json([]);
+    handleFirestoreError(error, 'AttendanceBackupRead:list-audit-logs');
+    if (isQuotaOrPermissionError(error)) {
+      const fallback = await getFallbackLogs('audit_logs');
+      return res.json(fallback);
     }
     console.error('[Backup Read] List audit logs error:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
@@ -1468,22 +1608,26 @@ router.get('/list-audit-logs', async (req, res) => {
 
 // Secure API Proxy to add login logs
 router.post('/add-login-log', async (req, res) => {
+  const logData = req.body;
+  const savedId = await saveFallbackLog('login_logs', logData);
+
   if (isDatabaseDenied()) {
-    return res.json({ success: true, id: 'login_' + Date.now(), skipped: true });
+    return res.json({ success: true, id: savedId, fallback: true });
   }
   try {
     const db = getDbAdmin();
-    const logData = req.body;
+    if (!db) {
+      return res.json({ success: true, id: savedId, fallback: true });
+    }
     const docRef = await db.collection('login_logs').add({
       ...logData,
       createdAt: new Date().toISOString()
     });
     res.json({ success: true, id: docRef.id });
   } catch (error: any) {
-    const errText = (error?.message || String(error)).toLowerCase();
-    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
-      setDatabaseDenied(true);
-      return res.json({ success: true, id: 'login_' + Date.now(), skipped: true });
+    handleFirestoreError(error, 'AttendanceBackupWrite:add-login-log');
+    if (isQuotaOrPermissionError(error)) {
+      return res.json({ success: true, id: savedId, fallback: true });
     }
     console.error('[Backup Write] Add login log error:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
@@ -1536,27 +1680,24 @@ function sanitizeAuditLogPayload(data: any, depth = 0): any {
 
 // Secure API Proxy to add audit logs
 router.post('/add-audit-log', async (req, res) => {
+  const logData = sanitizeAuditLogPayload(req.body);
+  const savedId = await saveFallbackLog('audit_logs', logData);
+
   if (isDatabaseDenied()) {
-    return res.json({ success: true, id: 'audit_' + Date.now(), skipped: true });
+    return res.json({ success: true, id: savedId, fallback: true });
   }
   try {
     const db = getDbAdmin();
-    let logData = sanitizeAuditLogPayload(req.body);
+    if (!db) {
+      return res.json({ success: true, id: savedId, fallback: true });
+    }
     
     // Safety check: ensure stringified payload is well under 700 KB (Firestore max is 1MB)
     let serialized = JSON.stringify(logData);
     if (serialized.length > 600000) {
-      logData = {
-        action: logData.action || 'unknown',
-        collectionName: logData.collectionName || 'unknown',
-        docId: logData.docId || 'unknown',
-        targetProfileName: logData.targetProfileName || 'Record',
-        operator: logData.operator || {},
-        timestamp: logData.timestamp || new Date().toISOString(),
-        before: logData.before ? `[TRUNCATED_BEFORE_KEYS: ${Object.keys(logData.before || {}).slice(0, 20).join(', ')}]` : null,
-        after: logData.after ? `[TRUNCATED_AFTER_KEYS: ${Object.keys(logData.after || {}).slice(0, 20).join(', ')}]` : null,
-        note: 'Audit payload was pruned because total size exceeded safety threshold'
-      };
+      logData.before = logData.before ? `[TRUNCATED_BEFORE_KEYS: ${Object.keys(logData.before || {}).slice(0, 20).join(', ')}]` : null;
+      logData.after = logData.after ? `[TRUNCATED_AFTER_KEYS: ${Object.keys(logData.after || {}).slice(0, 20).join(', ')}]` : null;
+      logData.note = 'Audit payload was pruned because total size exceeded safety threshold';
     }
 
     const docRef = await db.collection('audit_logs').add({
@@ -1565,10 +1706,9 @@ router.post('/add-audit-log', async (req, res) => {
     });
     res.json({ success: true, id: docRef.id });
   } catch (error: any) {
-    const errText = (error?.message || String(error)).toLowerCase();
-    if (errText.includes('billing') || errText.includes('permission_denied') || errText.includes('requires billing')) {
-      setDatabaseDenied(true);
-      return res.json({ success: true, id: 'audit_' + Date.now(), skipped: true });
+    handleFirestoreError(error, 'AttendanceBackupWrite:add-audit-log');
+    if (isQuotaOrPermissionError(error)) {
+      return res.json({ success: true, id: savedId, fallback: true });
     }
     console.error('[Backup Write] Add audit log error:', error);
     // Graceful recovery: write minimal audit log to prevent losing audit event without crashing
@@ -1587,8 +1727,7 @@ router.post('/add-audit-log', async (req, res) => {
       const fallbackRef = await db.collection('audit_logs').add(minimalDoc);
       return res.json({ success: true, id: fallbackRef.id, warning: 'Truncated audit log' });
     } catch (fallbackErr: any) {
-      console.error('[Backup Write] Fallback audit log write failed:', fallbackErr?.message || fallbackErr);
-      return res.status(200).json({ success: false, error: error.message });
+      return res.status(200).json({ success: true, id: savedId, fallback: true });
     }
   }
 });

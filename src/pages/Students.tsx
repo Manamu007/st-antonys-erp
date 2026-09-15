@@ -2,8 +2,8 @@ import React, { useEffect, useState, useRef, type FC } from 'react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { IndexNoticeBanner } from '../components/IndexNoticeBanner';
-import { dbService, checkQuotaStatus } from '../services/dbService';
-import { where, orderBy, limit, startAfter } from 'firebase/firestore';
+import { MongoStatusBanner } from '../components/MongoStatusBanner';
+import { dbService, checkQuotaStatus, where, orderBy, limit, startAfter } from '../services/dbService';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
 import { 
@@ -33,7 +33,7 @@ import { uploadService } from '../services/uploadService';
 import Papa from 'papaparse';
 import { ClassRecord, BatchRecord, FeeConcession } from '../types';
 import { normalizeUrl, getGravatarUrl, sortAlphabetically, resolveStudentClassAndBatch } from '../lib/utils';
-import { isDemoStudentRecord, isKnownDemoName } from '../constants/systemAccounts';
+import { isDemoStudentRecord, isKnownDemoName, DEVELOPER_ACCOUNTS } from '../constants/systemAccounts';
 import { purgeAllDemoDataFromDatabase } from '../services/demoDataPurgeService';
 import { calculateStudentFee, normalizeYear } from '../lib/feeUtils';
 import { generateUniqueStudentId } from '../lib/studentUtils';
@@ -363,11 +363,18 @@ const formatNameInput = (val: string): string => {
 };
 
 const Students: FC = () => {
-  const { user, profile, hasPermission, isAdmin, isTeacher } = useAuth();
+  const { user, profile, hasPermission, isAdmin, isSuperAdmin, isTeacher } = useAuth();
   const { settings } = useSettings();
 
-  // ఉపాధ్యాయులను ఖచ్చితంగా ఐసోలేట్ చేసే ప్రొటెక్షన్ వేరియబుల్ (Divya గారి లాగిన్ ఇక్కడ పక్కాగా లాక్ అవుతుంది)
-  const isTeacherPortal = (profile?.role !== 'principal' && profile?.role !== 'vice_principal') && (profile?.isTeacherPortal === true || (!isAdmin && (
+  // Check if current user is developer / owner
+  const isDevUser = profile?.email === 'manamunagaraju@gmail.com' ||
+    user?.email === 'manamunagaraju@gmail.com' ||
+    DEVELOPER_ACCOUNTS.includes(profile?.email || '') ||
+    DEVELOPER_ACCOUNTS.includes(user?.email || '') ||
+    (profile?.name && profile.name.toLowerCase().includes('nagaraju'));
+
+  // ఉపాధ్యాయులను మాత్రమే ఐసోలేట్ చేసే ప్రొటెక్షన్ వేరియబుల్
+  const isTeacherPortal = !isDevUser && (profile?.role !== 'principal' && profile?.role !== 'vice_principal') && (profile?.isTeacherPortal === true || (!isAdmin && (
     isTeacher ||
     profile?.role === 'teacher' ||
     profile?.role === 'teacher_class' ||
@@ -380,7 +387,7 @@ const Students: FC = () => {
     checkIsTeacherAccount(profile?.role || '', user?.email || profile?.email, user?.displayName || profile?.name)
   )));
 
-  const looseAccess = (isAdmin || profile?.role === 'admin' || profile?.role === 'principal' || profile?.role === 'vice_principal' || hasPermission('students_view_all')) && !isTeacherPortal;
+  const looseAccess = isDevUser || ((isAdmin || profile?.role === 'admin' || profile?.role === 'principal' || profile?.role === 'vice_principal' || hasPermission('students_view_all')) && !isTeacherPortal);
 
   const [students, setStudents] = useState<any[]>([]);
   const [classes, setClasses] = useState<ClassRecord[]>([]);
@@ -403,13 +410,27 @@ const Students: FC = () => {
 
   const [filterClass, setFilterClass] = useState('');
   const [filterBatch, setFilterBatch] = useState('');
-  const [filterAcademicYear, setFilterAcademicYear] = useState(settings.currentAcademicYear || '');
+  const [filterAcademicYear, setFilterAcademicYear] = useState(settings.currentAcademicYear || '2026-27');
   const [activeTab, setActiveTab] = useState<'active' | 'inactive' | 'non_attending'>('active');
 
   const isVicePrincipal = profile?.role === 'vice_principal';
   const isPrincipal = profile?.role === 'principal';
   const isPrincipalOrVicePrincipal = isPrincipal || isVicePrincipal;
-  const isTeacherRole = isTeacher || isTeacherPortal || profile?.role === 'teacher' || profile?.role === 'teacher_class' || profile?.role === 'teacher_subject' || profile?.role?.toLowerCase().includes('teacher') || checkIsTeacherAccount(profile?.role || '', user?.email || profile?.email, user?.displayName || profile?.name);
+  const isTeacherRole = !isDevUser && !isAdmin && !isSuperAdmin && profile?.role !== 'admin' && profile?.role !== 'super_admin' && (
+    isTeacher || 
+    isTeacherPortal || 
+    profile?.role === 'teacher' || 
+    profile?.role === 'teacher_class' || 
+    profile?.role === 'teacher_subject' || 
+    profile?.role?.toLowerCase().includes('teacher') || 
+    checkIsTeacherAccount(profile?.role || '', user?.email || profile?.email, user?.displayName || profile?.name)
+  );
+
+  useEffect(() => {
+    if (settings.currentAcademicYear && !filterAcademicYear) {
+      setFilterAcademicYear(settings.currentAcademicYear);
+    }
+  }, [settings.currentAcademicYear, filterAcademicYear]);
 
   useEffect(() => {
     if (isTeacherPortal || isTeacherRole) {
@@ -2796,11 +2817,6 @@ const Students: FC = () => {
   }, [profile?.uid, isTeacherPortal]);
 
   const fetchStudents = async (isNewSearch = false) => {
-    // Wait if filterAcademicYear is empty on initialization, but allow it if academic years are loaded (meaning All Academic Years is explicitly selected)
-    if (!filterAcademicYear && (!settings.academicYears || settings.academicYears.length === 0)) {
-      setLoading(false);
-      return;
-    }
     if (checkQuotaStatus()) return;
 
     const isSearching = !!debouncedSearch.trim();
@@ -2914,8 +2930,8 @@ const Students: FC = () => {
           if (isKnownDemoName(sName)) return false;
           return true;
         });
-        const isTeacherAcc = checkIsTeacherAccount(profile?.role || '', user?.email || profile?.email, user?.displayName || profile?.name);
-        if (isTeacherAcc || isTeacherPortal) {
+        const isTeacherAcc = !isDevUser && !isAdmin && !isSuperAdmin && profile?.role !== 'admin' && profile?.role !== 'super_admin' && (isTeacherPortal || checkIsTeacherAccount(profile?.role || '', user?.email || profile?.email, user?.displayName || profile?.name));
+        if (isTeacherAcc) {
           const assignments = await getTeacherAssignments(user, profile, profile?.role || '');
           finalStudentList = filterStudentsForTeacher(finalStudentList, assignments);
         }
@@ -3066,10 +3082,10 @@ const Students: FC = () => {
 
       if (shouldEnforceStatus && sStatus !== activeTab) return false;
 
-      if (filterAcademicYear) {
+      if (filterAcademicYear && filterAcademicYear !== 'all') {
         const sYearNorm = normalizeYear(s.academicYear || '');
         const targetYearNorm = normalizeYear(filterAcademicYear);
-        if (sYearNorm !== targetYearNorm) return false;
+        if (sYearNorm && targetYearNorm && sYearNorm !== targetYearNorm) return false;
       }
       return true;
     });
@@ -3261,6 +3277,7 @@ const Students: FC = () => {
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <IndexNoticeBanner error={indexError} />
+      <MongoStatusBanner onDataRefreshed={() => fetchStudents(true)} totalStudents={students.length} />
       <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h1 className="text-[32px] font-bold text-sidebar">Student Management</h1>

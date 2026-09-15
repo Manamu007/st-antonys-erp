@@ -1,4 +1,4 @@
-import { getDbAdmin } from '../../firebaseAdmin.js';
+import { getDbAdmin } from '../../db.js';
 
 export interface AiSecurityAuditLog {
   schoolId: string;

@@ -139,7 +139,7 @@ const SettingsContext = createContext<SettingsContextType | undefined>(undefined
 export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [siteConfig, setSiteConfig] = useState<SiteConfig | null>(defaultSiteConfig);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     const safetyTimeout = setTimeout(() => {
@@ -162,7 +162,18 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         });
         
         if (settingsData) {
-          setSettings(settingsData as Settings);
+          setSettings(prev => ({
+            ...defaultSettings,
+            ...prev,
+            ...settingsData,
+            currentAcademicYear: settingsData.currentAcademicYear || prev.currentAcademicYear || defaultSettings.currentAcademicYear || '2026-27',
+            academicYears: (settingsData.academicYears && settingsData.academicYears.length > 0)
+              ? settingsData.academicYears
+              : (prev.academicYears && prev.academicYears.length > 0 ? prev.academicYears : defaultSettings.academicYears),
+            academicYearDetails: (settingsData.academicYearDetails && settingsData.academicYearDetails.length > 0)
+              ? settingsData.academicYearDetails
+              : (prev.academicYearDetails && prev.academicYearDetails.length > 0 ? prev.academicYearDetails : defaultSettings.academicYearDetails)
+          }));
         }
 
         const configData = await dbService.get('siteConfig', 'home').catch(err => {

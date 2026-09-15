@@ -864,8 +864,7 @@ const IDCardFlowDesignerModal: React.FC<IDCardFlowDesignerModalProps> = ({ isOpe
       </div>
     </div>
   );
-};import { dbService } from '../services/dbService';
-import { where } from 'firebase/firestore';
+};import { dbService, where } from '../services/dbService';
 import { uploadService } from '../services/uploadService';
 import { normalizeUrl } from '../lib/utils';
 import { toast } from 'sonner';

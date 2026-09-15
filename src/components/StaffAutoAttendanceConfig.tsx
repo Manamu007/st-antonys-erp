@@ -14,8 +14,7 @@ import {
   ChevronDown,
   ChevronUp
 } from 'lucide-react';
-import { dbService } from '../services/dbService';
-import { limit, orderBy, where } from 'firebase/firestore';
+import { dbService, limit, orderBy, where } from '../services/dbService';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 import { getStaffDisplayName } from '../lib/utils';

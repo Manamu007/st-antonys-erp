@@ -1519,10 +1519,10 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
 
     requestConfirm(
       'Purge All Fee Structures',
-      `Are you absolutely sure you want to delete ALL (${feeStructures.length}) fee structures? This will delete all structures from the database with their Firebase IDs, reset calculations, and cannot be undone.`,
+      `Are you absolutely sure you want to delete ALL (${feeStructures.length}) fee structures? This will delete all structures from the database with their MongoDB Object IDs, reset calculations, and cannot be undone.`,
       async () => {
         try {
-          toast.loading('Deleting all fee structures from Firebase...', { id: 'delete-all' });
+          toast.loading('Deleting all fee structures from MongoDB...', { id: 'delete-all' });
           const idsToPurge = new Set<string>();
           feeStructures.forEach(fs => {
             if (fs.id) idsToPurge.add(fs.id);

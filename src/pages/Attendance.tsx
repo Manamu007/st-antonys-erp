@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { dbService } from '../services/dbService';
+import { dbService, where, limit } from '../services/dbService';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
 import { 
@@ -36,7 +36,6 @@ import { format } from 'date-fns';
 import Papa from 'papaparse';
 import SmartAttendanceModal from '../components/SmartAttendanceModal';
 import StaffAutoAttendanceConfig from '../components/StaffAutoAttendanceConfig';
-import { where, limit } from 'firebase/firestore';
 import { sortAlphabetically, getPersonDisplayName, getStaffDisplayName, isSyntheticOrMailName, resolveStudentClassAndBatch } from '../lib/utils';
 import { normalizeYear } from '../lib/feeUtils';
 import { motion } from 'motion/react';

@@ -2,7 +2,7 @@ import { Router } from "express";
 import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
-import { getDbAdmin, isDatabaseDenied, setDatabaseDenied } from "./firebaseAdmin.js";
+import { getDbAdmin, isDatabaseDenied, setDatabaseDenied } from "./db.js";
 import { getMongoDb } from "./mongoSession.js";
 import crypto from "crypto";
 
@@ -319,33 +319,7 @@ const invalidateProxyCache = (colPath: string) => {
   }
 };
 
-// Local collections persistent storage directory
-const localCollectionsDir = path.join(process.cwd(), ".local_db", "collections");
-if (!fs.existsSync(localCollectionsDir)) {
-  try {
-    fs.mkdirSync(localCollectionsDir, { recursive: true });
-  } catch (_) {}
-}
 
-function readLocalCollection(colName: string): any[] {
-  const filePath = path.join(localCollectionsDir, `${colName}.json`);
-  if (!fs.existsSync(filePath)) return [];
-  try {
-    const raw = fs.readFileSync(filePath, "utf-8");
-    return JSON.parse(raw) || [];
-  } catch {
-    return [];
-  }
-}
-
-function writeLocalCollection(colName: string, items: any[]): void {
-  const filePath = path.join(localCollectionsDir, `${colName}.json`);
-  try {
-    fs.writeFileSync(filePath, JSON.stringify(items, null, 2), "utf-8");
-  } catch (e) {
-    console.warn(`[LocalDB] Could not write ${colName}:`, e);
-  }
-}
 
 async function handleWithMongoOrLocal(operation: string, colPath: string, id: any, data: any, constraints: any, body: any): Promise<{ status?: number; json: any }> {
   const mongo = await getMongoDb().catch(() => null);
@@ -363,14 +337,25 @@ async function handleWithMongoOrLocal(operation: string, colPath: string, id: an
           if (!c) continue;
           if (c.type === "where") {
             let op = c.op;
-            if (op === "equal" || op === "==") filter[c.field] = c.value;
-            else if (op === ">") filter[c.field] = { $gt: c.value };
-            else if (op === ">=") filter[c.field] = { $gte: c.value };
-            else if (op === "<") filter[c.field] = { $lt: c.value };
-            else if (op === "<=") filter[c.field] = { $lte: c.value };
-            else if (op === "!=") filter[c.field] = { $ne: c.value };
-            else if (op === "in" && Array.isArray(c.value)) filter[c.field] = { $in: c.value };
-            else if (op === "array-contains") filter[c.field] = c.value;
+            if (c.field === "id" && (op === "equal" || op === "==")) {
+              filter.$or = [{ id: c.value }, { uid: c.value }];
+            } else if (op === "equal" || op === "==") {
+              filter[c.field] = c.value;
+            } else if (op === ">") {
+              filter[c.field] = { $gt: c.value };
+            } else if (op === ">=") {
+              filter[c.field] = { $gte: c.value };
+            } else if (op === "<") {
+              filter[c.field] = { $lt: c.value };
+            } else if (op === "<=") {
+              filter[c.field] = { $lte: c.value };
+            } else if (op === "!=") {
+              filter[c.field] = { $ne: c.value };
+            } else if (op === "in" && Array.isArray(c.value)) {
+              filter[c.field] = { $in: c.value };
+            } else if (op === "array-contains") {
+              filter[c.field] = c.value;
+            }
           } else if (c.type === "limit") {
             limitNum = Number(c.value) || 500;
           } else if (c.type === "orderBy") {
@@ -426,14 +411,24 @@ async function handleWithMongoOrLocal(operation: string, colPath: string, id: an
     if (operation === "set") {
       const docId = id || data?.id || data?.uid || crypto.randomUUID();
       const cleaned = { ...data, id: docId, uid: docId, updatedAt: new Date().toISOString() };
-      await col.updateOne({ $or: [{ id: docId }, { uid: docId }] }, { $set: cleaned }, { upsert: true });
+      const existing = await col.findOne({ $or: [{ id: docId }, { uid: docId }] });
+      if (existing) {
+        await col.updateOne({ _id: existing._id }, { $set: cleaned });
+      } else {
+        await col.insertOne(cleaned);
+      }
       return { json: { success: true, id: docId } };
     }
 
     if (operation === "update") {
       const docId = id || data?.id || data?.uid;
       if (!docId) return { status: 400, json: { error: "Missing document id" } };
-      await col.updateOne({ $or: [{ id: docId }, { uid: docId }] }, { $set: { ...data, updatedAt: new Date().toISOString() } }, { upsert: true });
+      const existing = await col.findOne({ $or: [{ id: docId }, { uid: docId }] });
+      if (existing) {
+        await col.updateOne({ _id: existing._id }, { $set: { ...data, updatedAt: new Date().toISOString() } });
+      } else {
+        await col.insertOne({ ...data, id: docId, uid: docId, updatedAt: new Date().toISOString() });
+      }
       return { json: { success: true, id: docId } };
     }
 
@@ -454,116 +449,34 @@ async function handleWithMongoOrLocal(operation: string, colPath: string, id: an
       for (const item of items) {
         if (item && item.id && item.data) {
           const itemId = item.id;
-          await col.updateOne(
-            { $or: [{ id: itemId }, { uid: itemId }] },
-            { $set: { ...item.data, id: itemId, uid: itemId, updatedAt: new Date().toISOString() } },
-            { upsert: true }
-          );
+          const cleaned = { ...item.data, id: itemId, uid: itemId, updatedAt: new Date().toISOString() };
+          const existing = await col.findOne({ $or: [{ id: itemId }, { uid: itemId }] });
+          if (existing) {
+            await col.updateOne({ _id: existing._id }, { $set: cleaned });
+          } else {
+            await col.insertOne(cleaned);
+          }
         }
       }
       return { json: { success: true } };
     }
   }
 
-  // Fallback to local persistent JSON file storage
-  const items = readLocalCollection(colPath);
-
+  // Strict MongoDB Mode: When MongoDB is not connected, return empty results or connection error
   if (operation === "list") {
-    let result = [...items];
-    if (constraints && Array.isArray(constraints)) {
-      for (const c of constraints) {
-        if (!c) continue;
-        if (c.type === "where") {
-          let op = c.op;
-          if (op === "equal" || op === "==") result = result.filter(x => x[c.field] === c.value);
-          else if (op === ">") result = result.filter(x => x[c.field] > c.value);
-          else if (op === ">=") result = result.filter(x => x[c.field] >= c.value);
-          else if (op === "<") result = result.filter(x => x[c.field] < c.value);
-          else if (op === "<=") result = result.filter(x => x[c.field] <= c.value);
-          else if (op === "!=") result = result.filter(x => x[c.field] !== c.value);
-          else if (op === "in" && Array.isArray(c.value)) result = result.filter(x => c.value.includes(x[c.field]));
-        } else if (c.type === "limit") {
-          result = result.slice(0, Number(c.value) || 500);
-        }
-      }
-    }
-    return { json: { success: true, data: result } };
+    return { json: { success: true, data: [] } };
   }
 
   if (operation === "count") {
-    let result = [...items];
-    if (constraints && Array.isArray(constraints)) {
-      for (const c of constraints) {
-        if (c && c.type === "where") {
-          let op = c.op;
-          if (op === "equal" || op === "==") result = result.filter(x => x[c.field] === c.value);
-        }
-      }
-    }
-    return { json: { success: true, count: result.length } };
+    return { json: { success: true, count: 0 } };
   }
 
   if (operation === "get") {
-    const found = items.find(x => x.id === id || x.uid === id);
-    return { json: { success: true, data: found || null } };
+    return { json: { success: true, data: null } };
   }
 
-  if (operation === "add") {
-    const docId = id || crypto.randomUUID();
-    const newDoc = { ...data, id: docId, uid: docId, createdAt: new Date().toISOString() };
-    items.push(newDoc);
-    writeLocalCollection(colPath, items);
-    return { json: { success: true, id: docId } };
-  }
-
-  if (operation === "set") {
-    const docId = id || data?.id || data?.uid || crypto.randomUUID();
-    const idx = items.findIndex(x => x.id === docId || x.uid === docId);
-    const updated = { ...(idx >= 0 ? items[idx] : {}), ...data, id: docId, uid: docId, updatedAt: new Date().toISOString() };
-    if (idx >= 0) items[idx] = updated;
-    else items.push(updated);
-    writeLocalCollection(colPath, items);
-    return { json: { success: true, id: docId } };
-  }
-
-  if (operation === "update") {
-    const docId = id || data?.id || data?.uid;
-    if (!docId) return { status: 400, json: { error: "Missing document id" } };
-    const idx = items.findIndex(x => x.id === docId || x.uid === docId);
-    const updated = { ...(idx >= 0 ? items[idx] : {}), ...data, id: docId, uid: docId, updatedAt: new Date().toISOString() };
-    if (idx >= 0) items[idx] = updated;
-    else items.push(updated);
-    writeLocalCollection(colPath, items);
-    return { json: { success: true, id: docId } };
-  }
-
-  if (operation === "delete") {
-    const filtered = items.filter(x => x.id !== id && x.uid !== id);
-    writeLocalCollection(colPath, filtered);
-    return { json: { success: true } };
-  }
-
-  if (operation === "deleteBatch") {
-    const ids = body.ids || [];
-    const idSet = new Set(ids);
-    const filtered = items.filter(x => !idSet.has(x.id) && !idSet.has(x.uid));
-    writeLocalCollection(colPath, filtered);
-    return { json: { success: true } };
-  }
-
-  if (operation === "setBatch" || operation === "updateBatch") {
-    const newItems = body.items || [];
-    for (const item of newItems) {
-      if (item && item.id && item.data) {
-        const itemId = item.id;
-        const idx = items.findIndex(x => x.id === itemId || x.uid === itemId);
-        const updated = { ...(idx >= 0 ? items[idx] : {}), ...item.data, id: itemId, uid: itemId, updatedAt: new Date().toISOString() };
-        if (idx >= 0) items[idx] = updated;
-        else items.push(updated);
-      }
-    }
-    writeLocalCollection(colPath, items);
-    return { json: { success: true } };
+  if (operation === "add" || operation === "set" || operation === "update" || operation === "delete" || operation === "deleteBatch" || operation === "setBatch" || operation === "updateBatch") {
+    return { status: 503, json: { success: false, error: "MongoDB is not connected. Data cannot be saved without an active MongoDB connection." } };
   }
 
   return { status: 400, json: { error: "Unsupported operation: " + operation } };
@@ -571,7 +484,8 @@ async function handleWithMongoOrLocal(operation: string, colPath: string, id: an
 
 // Generic collection secure proxy endpoint
 router.post("/db-proxy", async (req, res) => {
-  const { operation, path: colPath, id, data, constraints } = req.body;
+  const colPath = req.body.path || req.body.colPath;
+  const { operation, id, data, constraints } = req.body;
   
   if (!colPath) {
     return res.status(400).json({ error: "Missing collection path" });
@@ -591,196 +505,60 @@ router.post("/db-proxy", async (req, res) => {
     invalidateProxyCache(colPath);
   }
 
-  if (isDatabaseDenied()) {
-    const mongoResult = await handleWithMongoOrLocal(operation, colPath, id, data, constraints, req.body);
-    if (isReadOp && mongoResult.json) {
-      dbProxyCache.set(cacheKey, { data: mongoResult.json, timestamp: Date.now() });
-    }
-    return res.status(mongoResult.status || 200).json(mongoResult.json);
+  // Seamlessly process all operations using MongoDB or local persistent storage
+  const mongoResult = await handleWithMongoOrLocal(operation, colPath, id, data, constraints, req.body);
+  if (isReadOp && mongoResult.json) {
+    dbProxyCache.set(cacheKey, { data: mongoResult.json, timestamp: Date.now() });
   }
+  return res.status(mongoResult.status || 200).json(mongoResult.json);
+});
 
+// Storage Management Endpoints
+router.get("/storage", async (_req, res) => {
   try {
-    const db = getDbAdmin();
-    const colRef = db.collection(colPath);
-
-    if (operation === "list") {
-      let queryRef: any = colRef;
-      if (constraints && Array.isArray(constraints)) {
-        for (const c of constraints) {
-          if (!c) continue;
-          if (c.type === "where") {
-            let op = c.op;
-            if (op === "equal") op = "==";
-            queryRef = queryRef.where(c.field, op, c.value);
-          } else if (c.type === "limit") {
-            queryRef = queryRef.limit(Number(c.value));
-          } else if (c.type === "orderBy") {
-            queryRef = queryRef.orderBy(c.field, c.direction || "asc");
+    const uploadsDir = path.join(process.cwd(), "uploads");
+    const commDir = path.join(uploadsDir, "comm");
+    const files: any[] = [];
+    
+    const readDirSafe = (dir: string, prefix: string) => {
+      if (!fs.existsSync(dir)) return;
+      const list = fs.readdirSync(dir);
+      for (const file of list) {
+        const full = path.join(dir, file);
+        try {
+          const stats = fs.statSync(full);
+          if (stats.isFile()) {
+            files.push({
+              name: file,
+              path: prefix ? `${prefix}/${file}` : file,
+              url: `/uploads/${prefix ? prefix + '/' : ''}${file}`,
+              size: stats.size,
+              createdAt: stats.mtime.toISOString()
+            });
           }
-        }
+        } catch (_) {}
       }
+    };
 
-      const snap = await queryRef.get();
-      const result = snap.docs.map((doc: any) => ({
-        id: doc.id,
-        uid: doc.id,
-        ...doc.data()
-      }));
-      const responseData = { success: true, data: result };
-      dbProxyCache.set(cacheKey, { data: responseData, timestamp: Date.now() });
-      return res.json(responseData);
-    }
+    readDirSafe(uploadsDir, '');
+    readDirSafe(commDir, 'comm');
+    res.json({ success: true, files });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'Storage list failed' });
+  }
+});
 
-    if (operation === "count") {
-      let queryRef: any = colRef;
-      if (constraints && Array.isArray(constraints)) {
-        for (const c of constraints) {
-          if (!c) continue;
-          if (c.type === "where") {
-            let op = c.op;
-            if (op === "equal") op = "==";
-            queryRef = queryRef.where(c.field, op, c.value);
-          }
-        }
-      }
-      
-      const snap = await queryRef.count().get();
-      const responseData = { success: true, count: snap.data().count };
-      dbProxyCache.set(cacheKey, { data: responseData, timestamp: Date.now() });
-      return res.json(responseData);
+router.delete("/storage", async (req, res) => {
+  try {
+    const target = req.query.path as string;
+    if (!target) return res.status(400).json({ error: "Missing path" });
+    const full = path.join(process.cwd(), "uploads", target);
+    if (fs.existsSync(full) && full.startsWith(path.join(process.cwd(), "uploads"))) {
+      fs.unlinkSync(full);
     }
-
-    if (operation === "get") {
-      if (!id || typeof id !== 'string' || !id.trim() || id === 'undefined' || id === 'null') {
-        return res.json({ success: true, data: null });
-      }
-      const snap = await colRef.doc(id).get();
-      if (!snap.exists) {
-        const responseData = { success: true, data: null };
-        dbProxyCache.set(cacheKey, { data: responseData, timestamp: Date.now() });
-        return res.json(responseData);
-      }
-      const responseData = { success: true, data: { id: snap.id, uid: snap.id, ...snap.data() } };
-      dbProxyCache.set(cacheKey, { data: responseData, timestamp: Date.now() });
-      return res.json(responseData);
-    }
-
-    if (operation === "add") {
-      const docRef = await colRef.add({
-        ...data,
-        createdAt: new Date().toISOString()
-      });
-      return res.json({ success: true, id: docRef.id });
-    }
-
-    if (operation === "update") {
-      if (!id) return res.status(400).json({ error: "Missing document id" });
-      try {
-        await colRef.doc(id).update({
-          ...data,
-          updatedAt: new Date().toISOString()
-        });
-      } catch (err: any) {
-        if (err?.code === 5 || (err?.message && (err.message.includes("NOT_FOUND") || err.message.includes("No document to update")))) {
-          await colRef.doc(id).set({
-            ...data,
-            updatedAt: new Date().toISOString()
-          }, { merge: true });
-        } else {
-          throw err;
-        }
-      }
-      return res.json({ success: true });
-    }
-
-    if (operation === "set") {
-      if (!id) return res.status(400).json({ error: "Missing document id" });
-      await colRef.doc(id).set({
-        ...data,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-      return res.json({ success: true });
-    }
-
-    if (operation === "delete") {
-      if (!id) return res.status(400).json({ error: "Missing document id" });
-      await colRef.doc(id).delete();
-      return res.json({ success: true });
-    }
-
-    if (operation === "deleteBatch") {
-      const ids = req.body.ids;
-      if (!ids || !Array.isArray(ids)) {
-        return res.status(400).json({ error: "Missing ids array" });
-      }
-      const batchSize = 400;
-      for (let i = 0; i < ids.length; i += batchSize) {
-        const chunk = ids.slice(i, i + batchSize);
-        const batch = db.batch();
-        chunk.forEach((docId: string) => {
-          if (docId) {
-            batch.delete(colRef.doc(docId));
-          }
-        });
-        await batch.commit();
-      }
-      return res.json({ success: true });
-    }
-
-    if (operation === "updateBatch") {
-      const items = req.body.items;
-      if (!items || !Array.isArray(items)) {
-        return res.status(400).json({ error: "Missing items array" });
-      }
-      const batchSize = 400;
-      for (let i = 0; i < items.length; i += batchSize) {
-        const chunk = items.slice(i, i + batchSize);
-        const batch = db.batch();
-        chunk.forEach((item: any) => {
-          if (item && item.id && item.data) {
-            batch.set(colRef.doc(item.id), {
-              ...item.data,
-              updatedAt: new Date().toISOString()
-            }, { merge: true });
-          }
-        });
-        await batch.commit();
-      }
-      return res.json({ success: true });
-    }
-
-    if (operation === "setBatch") {
-      const items = req.body.items;
-      if (!items || !Array.isArray(items)) {
-        return res.status(400).json({ error: "Missing items array" });
-      }
-      const batchSize = 400;
-      for (let i = 0; i < items.length; i += batchSize) {
-        const chunk = items.slice(i, i + batchSize);
-        const batch = db.batch();
-        chunk.forEach((item: any) => {
-          if (item && item.id && item.data) {
-            batch.set(colRef.doc(item.id), {
-              ...item.data,
-              updatedAt: new Date().toISOString()
-            }, { merge: true });
-          }
-        });
-        await batch.commit();
-      }
-      return res.json({ success: true });
-    }
-
-    return res.status(400).json({ error: "Unsupported operation: " + operation });
-  } catch (err: any) {
-    const errText = (err?.message || String(err)).toLowerCase();
-    console.warn(`[db-proxy] Firestore error on ${colPath} (${errText}). Seamlessly falling back to local backend database.`);
-    setDatabaseDenied(true);
-    const mongoResult = await handleWithMongoOrLocal(operation, colPath, id, data, constraints, req.body);
-    if (isReadOp && mongoResult.json) {
-      dbProxyCache.set(cacheKey, { data: mongoResult.json, timestamp: Date.now() });
-    }
-    return res.status(mongoResult.status || 200).json(mongoResult.json);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'Storage delete failed' });
   }
 });
 

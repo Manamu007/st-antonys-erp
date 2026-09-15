@@ -28,8 +28,7 @@ import {
   PieChart,
   Pie
 } from 'recharts';
-import { dbService } from '../services/dbService';
-import { where } from 'firebase/firestore';
+import { dbService, where } from '../services/dbService';
 import { GoogleGenAI } from '@google/genai';
 import { motion, AnimatePresence } from 'motion/react';
 import { UserProfile, AttendanceRecord, ResultRecord, FeeRecord, SubjectRecord, FeeStructure, FeeConcession } from '../types';

@@ -1,4 +1,4 @@
-import { getDbAdmin, initializationPromise, isDatabaseDenied, setDatabaseDenied, isQuotaOrPermissionError, handleFirestoreError } from '../../server/firebaseAdmin.js';
+import { getDbAdmin, initializationPromise, isDatabaseDenied, setDatabaseDenied, isQuotaOrPermissionError, handleFirestoreError } from '../../server/db.js';
 import { sendMessage } from '../../server/whatsapp.js';
 
 /**

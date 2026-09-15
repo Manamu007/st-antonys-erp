@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { auth } from '../firebase';
+import { auth } from '../services/authService';
 import { motion, AnimatePresence } from 'motion/react';
 import { ShieldAlert, Clock, LogOut, ShieldCheck } from 'lucide-react';
 import { safeStorage as localStorage } from '../lib/safeStorage';

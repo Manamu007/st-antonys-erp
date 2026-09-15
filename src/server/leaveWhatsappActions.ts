@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getDbAdmin } from './firebaseAdmin.js';
+import { getDbAdmin } from './db.js';
 import { sendMessage } from './whatsapp.js';
 import { normalizeIndianPhone, safeLogWhatsappEvent } from './whatsappUtils.js';
 

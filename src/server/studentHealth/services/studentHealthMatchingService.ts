@@ -1,4 +1,4 @@
-import { getDbAdmin } from '../../firebaseAdmin.js';
+import { getDbAdmin } from '../../db.js';
 import { StudentMatchResult } from '../../../modules/studentHealth/types/index.js';
 
 // Simple Levenshtein or string similarity helper

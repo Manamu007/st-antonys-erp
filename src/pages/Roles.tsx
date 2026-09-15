@@ -16,12 +16,11 @@ import {
   Users,
   Check
 } from 'lucide-react';
-import { dbService } from '../services/dbService';
+import { dbService, where } from '../services/dbService';
 import { PERMISSIONS, ROLE_PERMISSIONS, Permission } from '../constants/permissions';
 import { useAuth } from '../context/AuthContext';
 import { syncDefaultRoles } from '../services/roleService';
 import { toast } from 'sonner';
-import { where } from 'firebase/firestore';
 
 export default function Roles() {
   const { isAdmin } = useAuth();

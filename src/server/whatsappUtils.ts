@@ -1,6 +1,5 @@
 import crypto from 'crypto';
-import { getDbAdmin } from './firebaseAdmin.js';
-import admin from './firebaseAdmin.js';
+import { getDbAdmin, admin } from './db.js';
 
 /**
  * Cascadingly extracts the best available parent or student contact phone number from a record.

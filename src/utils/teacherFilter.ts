@@ -1,5 +1,4 @@
-import { limit } from 'firebase/firestore';
-import { dbService } from '../services/dbService';
+import { dbService, limit } from '../services/dbService';
 import { isTeacherAccountOrEmail, getSystemTeacherProfile, SYSTEM_TEACHER_PROFILES } from '../constants/systemAccounts';
 import { isSyntheticOrMailName } from '../lib/utils';
 

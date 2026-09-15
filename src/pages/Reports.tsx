@@ -35,15 +35,14 @@ import {
   onSnapshot, 
   collection, 
   query,
-  doc
-} from 'firebase/firestore';
-import { db } from '../firebase';
+  doc,
+  dbService
+} from '../services/dbService';
 import { motion } from 'motion/react';
 import Papa from 'papaparse';
 import { toast } from 'sonner';
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
-import { dbService } from '../services/dbService';
 import { whatsappService } from '../services/whatsappService';
 
 const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444'];
@@ -118,7 +117,7 @@ const Reports: React.FC = () => {
 
     // Real-time stats subscription
     const unsubscribeStats = onSnapshot(
-      doc(db, 'whatsapp_stats', 'summary'),
+      doc('settings', 'whatsapp_stats_summary'),
       (snapshot) => {
         if (snapshot.exists()) {
           const data = snapshot.data();
@@ -142,7 +141,7 @@ const Reports: React.FC = () => {
 
     if (filterStatus === 'processing') {
       const q = query(
-        collection(db, 'whatsapp_queue'),
+        collection('whatsapp_queue'),
         orderBy('createdAt', 'desc'),
         limit(500)
       );
@@ -168,7 +167,7 @@ const Reports: React.FC = () => {
       });
     } else {
       const q = query(
-        collection(db, 'whatsappLogs'),
+        collection('whatsappLogs'),
         orderBy('timestamp', 'desc'),
         limit(1000)
       );

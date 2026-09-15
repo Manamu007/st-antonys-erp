@@ -1,4 +1,3 @@
-import firebaseConfig from './firebase-applet-config.json' with { type: 'json' };
 console.log("[Server] Starting initialization...");
 
 process.on('uncaughtException', (err) => {
@@ -33,7 +32,10 @@ import homeworkRouter from "./src/server/homework.js";
 import authRouter from "./src/server/authRoutes.js";
 import dashboardRouter from "./src/server/dashboardRoutes.js";
 import studentRouter from "./src/server/studentRoutes.js";
-import { initializationPromise, getDbAdminInstance, getDbAdmin, lastInitError, isDatabaseDenied, databaseId } from "./src/server/firebaseAdmin.js";
+import mongoRouter from "./src/server/mongoRoutes.js";
+import { getMongoDb } from "./src/server/mongoSession.js";
+import { seedSchoolDataIfEmpty } from "./src/server/seedSchoolData.js";
+import { initializationPromise, getDbAdminInstance, getDbAdmin, lastInitError, isDatabaseDenied, databaseId } from "./src/server/db.js";
 
 const __filename = typeof import.meta !== 'undefined' && import.meta.url ? fileURLToPath(import.meta.url) : '';
 const __dirname = __filename ? path.dirname(__filename) : '';
@@ -127,12 +129,7 @@ async function startServer() {
     console.error("[Server] Error reading dynamic version.txt on startup:", e);
   }
   
-  // Non-blocking Firebase Admin initialization so the HTTP/Vite server can bind port 3000 immediately
-  initializationPromise.then(() => {
-    console.log("[Server] Firebase Admin initialized.");
-  }).catch((err) => {
-    console.warn("[Server] Firebase Admin initialization note:", err?.message || err);
-  });
+  console.log("[Server] Database ready (Pure MongoDB + Express).");
 
   const io = new Server(httpServer, {
     cors: {
@@ -141,7 +138,9 @@ async function startServer() {
     }
   });
 
-  const PORT = 3000;
+  const portArgIndex = process.argv.indexOf('--port');
+  const cliPort = portArgIndex !== -1 && process.argv[portArgIndex + 1] ? parseInt(process.argv[portArgIndex + 1], 10) : null;
+  const PORT = cliPort || (process.env.PORT ? parseInt(process.env.PORT, 10) : 3000);
 
   app.use(compression());
   app.use(express.json({ limit: '50mb' }));
@@ -172,6 +171,7 @@ async function startServer() {
   app.use("/api/auth", authRouter);
   app.use("/api/dashboard", dashboardRouter);
   app.use("/api/students", studentRouter);
+  app.use("/api/mongodb", mongoRouter);
   
   // General Upload Endpoint
   app.post("/api/upload", (req, res, next) => {
@@ -441,9 +441,9 @@ async function startServer() {
         getWASocket().end(undefined);
       }
       
-      // Clear Firestore session state
-      const { useFirestoreAuthState } = await import("./src/server/firestoreAuthState.js");
-      const { clearState } = await useFirestoreAuthState(getSessionId());
+      // Clear WhatsApp session state
+      const { useWAAuthState } = await import("./src/server/waAuthState.js");
+      const { clearState } = await useWAAuthState(getSessionId());
       await clearState();
 
       // NEW: Clear global lock and status docs too
@@ -548,21 +548,6 @@ async function startServer() {
       appType: "spa",
     });
     app.use(vite.middlewares);
-
-    // Explicit SPA wildcard fallback for development mode reloads
-    app.get('*', async (req, res, next) => {
-      if (req.path.startsWith('/api') || req.path.startsWith('/uploads')) {
-        return next();
-      }
-      try {
-        let template = fs.readFileSync(path.resolve(process.cwd(), 'index.html'), 'utf-8');
-        template = await vite.transformIndexHtml(req.originalUrl, template);
-        res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
-      } catch (e) {
-        vite.ssrFixStacktrace(e as Error);
-        next(e);
-      }
-    });
   } else {
     let distPath = path.join(process.cwd(), 'dist');
     
@@ -620,7 +605,7 @@ async function startServer() {
     }, 1000);
     
     // Connect to MongoDB using Mongoose for WhatsAppQueue when connection URI is provided
-    const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL;
+    const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/antonyschool_erp';
     if (mongoUri) {
       mongoose.connect(mongoUri, {
         serverSelectionTimeoutMS: 3000,
@@ -636,6 +621,17 @@ async function startServer() {
 
     // Start local WhatsApp Queue Worker (every 2-3 seconds automated background loop)
     startWhatsAppQueueWorker();
+
+    // Ensure school data (classes, batches, students, staff) is populated in local/MongoDB
+    getMongoDb()
+      .then((mDb) => seedSchoolDataIfEmpty(mDb))
+      .catch(() => seedSchoolDataIfEmpty(null))
+      .then((res) => {
+        console.log("[DataInitialization] St. Antony's School data check complete:", res.counts);
+      })
+      .catch((err) => {
+        console.warn("[DataInitialization] School data seed notice:", err?.message || err);
+      });
 
     // Start automated teacher substitution engine background watcher
     import("./src/whatsapp_bot_v2/services/substitutionEngine.js")

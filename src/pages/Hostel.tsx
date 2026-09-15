@@ -8,10 +8,9 @@ import {
 import Papa from 'papaparse';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
-import { dbService } from '../services/dbService';
+import { dbService, where } from '../services/dbService';
 import { whatsappService } from '../services/whatsappService';
 import { toast } from 'sonner';
-import { where } from 'firebase/firestore';
 import SmartKioskModal from '../components/SmartKioskModal';
 import { safeStorage as localStorage } from '../lib/safeStorage';
 

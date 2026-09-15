@@ -44,10 +44,9 @@ import {
   Scatter,
   ZAxis
 } from 'recharts';
-import { dbService } from '../services/dbService';
+import { dbService, where } from '../services/dbService';
 import { useAuth } from '../context/AuthContext';
 import { toast } from 'sonner';
-import { where } from 'firebase/firestore';
 
 // Mock data reflecting images
 const PERFORMANCE_BUCKETS = [

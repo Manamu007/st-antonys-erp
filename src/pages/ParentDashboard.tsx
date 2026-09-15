@@ -1,8 +1,7 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { normalizeRole } from '../lib/profileUtils';
-import { dbService } from '../services/dbService';
-import { where, orderBy, limit } from 'firebase/firestore';
+import { dbService, where, orderBy, limit } from '../services/dbService';
 import { useSettings } from '../context/SettingsContext';
 import { 
   Users, 

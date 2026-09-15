@@ -2,8 +2,7 @@ import React, { useEffect, useState, useRef, type FC, type FormEvent, type Chang
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { IndexNoticeBanner } from '../components/IndexNoticeBanner';
-import { dbService, checkQuotaStatus } from '../services/dbService';
-import { where, orderBy, limit, startAfter } from 'firebase/firestore';
+import { dbService, checkQuotaStatus, where, orderBy, limit, startAfter } from '../services/dbService';
 import { useAuth } from '../context/AuthContext';
 import { 
   UserSquare2, 
@@ -51,7 +50,8 @@ import { UserProfile } from '../types';
 import Papa from 'papaparse';
 import { uploadService } from '../services/uploadService';
 import { normalizeUrl, getGravatarUrl, sortAlphabetically, getStaffDisplayName, getPersonDisplayName, cleanPersonName, isSyntheticOrMailName } from '../lib/utils';
-import { isKnownDemoName, isDemoStaffRecord } from '../constants/systemAccounts';
+import { isKnownDemoName, isDemoStaffRecord, isDeveloperAccount } from '../constants/systemAccounts';
+import MongoStatusBanner from '../components/MongoStatusBanner';
 import { purgeAllDemoDataFromDatabase, deduplicateAndPurgeClashes, resolveSingleClash } from '../services/demoDataPurgeService';
 import { getAssignedClassTeacherBatch } from '../utils/teacherFilter';
 import CameraModal from '../components/CameraModal';
@@ -81,16 +81,17 @@ export const formatStaffRole = (role?: string) => {
 };
 
 const Staff: FC = () => {
-  const { hasPermission, profile, isAdmin, isVicePrincipal } = useAuth();
-  const isTeacherRole = profile?.role === 'teacher' || profile?.role === 'teacher_class' || profile?.role === 'teacher_subject';
+  const { user, hasPermission, profile, isAdmin, isVicePrincipal } = useAuth();
+  const isDevUser = (user?.email && isDeveloperAccount(user.email)) || (profile?.email && isDeveloperAccount(profile.email));
+  const isTeacherRole = !isDevUser && (profile?.role === 'teacher' || profile?.role === 'teacher_class' || profile?.role === 'teacher_subject');
   const isVicePrincipalRole = isVicePrincipal || profile?.role === 'vice_principal' || profile?.role === 'principal';
-  const isSuperAdmin = profile?.email === 'manamunagaraju@gmail.com';
-  const isFullAdmin = isAdmin || profile?.role === 'admin' || profile?.role === 'superadmin' || isSuperAdmin;
+  const isSuperAdmin = isDevUser || profile?.email === 'manamunagaraju@gmail.com';
+  const isFullAdmin = isDevUser || isAdmin || profile?.role === 'admin' || profile?.role === 'superadmin' || isSuperAdmin;
   
-  const canCreateStaff = (hasPermission('staff_create') || isAdmin || isVicePrincipalRole) && !isTeacherRole;
-  const canEditStaff = (hasPermission('staff_edit') || isAdmin || isVicePrincipalRole) && !isTeacherRole;
-  const canDeleteStaff = (hasPermission('staff_delete') || isAdmin || isSuperAdmin || isVicePrincipalRole) && !isTeacherRole;
-  const canManageStaff = (hasPermission('staff_manage') || isAdmin || isSuperAdmin || isVicePrincipalRole);
+  const canCreateStaff = (hasPermission('staff_create') || isAdmin || isVicePrincipalRole || isFullAdmin) && !isTeacherRole;
+  const canEditStaff = (hasPermission('staff_edit') || isAdmin || isVicePrincipalRole || isFullAdmin) && !isTeacherRole;
+  const canDeleteStaff = (hasPermission('staff_delete') || isAdmin || isSuperAdmin || isVicePrincipalRole || isFullAdmin) && !isTeacherRole;
+  const canManageStaff = (hasPermission('staff_manage') || isAdmin || isSuperAdmin || isVicePrincipalRole || isFullAdmin);
 
   const [staff, setStaff] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1916,7 +1917,7 @@ const Staff: FC = () => {
     setShowConfirmModal(true);
   };
 
-  if (!hasPermission('staff_view')) {
+  if (!isFullAdmin && !hasPermission('staff_view')) {
     return (
       <div className="flex flex-col items-center justify-center p-12 bg-white rounded-3xl border border-neutral-100 shadow-sm">
         <UserSquare2 className="w-12 h-12 text-primary mb-4" />
@@ -1930,6 +1931,7 @@ const Staff: FC = () => {
 
   return (
     <div className="space-y-6">
+      <MongoStatusBanner />
       <IndexNoticeBanner error={indexError} />
       {showDuplicateScan && (duplicateList.length > 0 || repairableList.length > 0) && (
         <div className="bg-amber-50 border-2 border-amber-200 p-6 rounded-3xl animate-in slide-in-from-top-4 duration-500 shadow-xl shadow-amber-500/5 max-h-[600px] overflow-y-auto">

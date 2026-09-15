@@ -30,59 +30,35 @@ let mongoDb: Db | null = null;
 let sessionsCollection: Collection<any> | null = null;
 let otpCollection: Collection<any> | null = null;
 
-// Local persistent fallback for sessions and OTPs when MongoDB is offline or not configured
-const localDataDir = path.join(process.cwd(), '.local_db');
-const localSessionFile = path.join(localDataDir, 'sessions.json');
-const localOtpFile = path.join(localDataDir, 'otps.json');
-
 const memorySessions = new Map<string, AuthSession>();
 const memoryOtps = new Map<string, OtpRecord>();
 
-// Ensure local directory exists
-try {
-  if (!fs.existsSync(localDataDir)) {
-    fs.mkdirSync(localDataDir, { recursive: true });
-  }
-  if (fs.existsSync(localSessionFile)) {
-    const raw = fs.readFileSync(localSessionFile, 'utf-8');
-    const list: AuthSession[] = JSON.parse(raw);
-    const now = Date.now();
-    list.forEach(s => {
-      if (new Date(s.expiresAt).getTime() > now) {
-        memorySessions.set(s.token, s);
-      }
-    });
-  }
-} catch (e) {
-  // Silent fallback
-}
-
 function persistLocalSessions() {
-  try {
-    const active = Array.from(memorySessions.values()).filter(
-      s => new Date(s.expiresAt).getTime() > Date.now()
-    );
-    fs.writeFileSync(localSessionFile, JSON.stringify(active, null, 2));
-  } catch (e) {}
+  // Pure MongoDB mode: no local file writes
 }
 
 let mongoFailedUntil = 0;
+let lastPingLatency: number | null = null;
 
 export async function getMongoDb(): Promise<Db | null> {
   if (mongoDb) return mongoDb;
   if (Date.now() < mongoFailedUntil) return null;
 
-  const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL;
+  const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/antonyschool_erp';
   if (!mongoUri) {
     return null;
   }
 
   try {
+    const start = Date.now();
     const client = new MongoClient(mongoUri, {
-      serverSelectionTimeoutMS: 800,
-      connectTimeoutMS: 800,
+      serverSelectionTimeoutMS: 2000,
+      connectTimeoutMS: 2000,
     });
     await client.connect();
+    await client.db().command({ ping: 1 });
+    lastPingLatency = Date.now() - start;
+
     mongoClient = client;
     mongoDb = client.db();
     
@@ -96,13 +72,113 @@ export async function getMongoDb(): Promise<Db | null> {
       await sessionsCollection.createIndex({ token: 1 }, { unique: true });
     } catch (idxErr) {}
 
-    console.log('[MongoDB] Connected successfully to auth_sessions store.');
+    console.log(`[MongoDB] Connected successfully to database: ${mongoDb.databaseName} (${lastPingLatency}ms)`);
     return mongoDb;
   } catch (err: any) {
-    // Graceful fallback to local in-memory/json store - prevent retry for 2 minutes
-    mongoFailedUntil = Date.now() + 120000;
+    // Graceful fallback to local persistent store
+    mongoFailedUntil = Date.now() + 45000;
     return null;
   }
+}
+
+export function getLastPingLatency(): number | null {
+  return lastPingLatency;
+}
+
+/**
+ * Connect dynamically to a user-provided MongoDB URI (e.g. MongoDB Atlas)
+ */
+export async function connectMongo(uri: string): Promise<{ success: boolean; database?: string; latencyMs?: number; error?: string }> {
+  if (!uri || typeof uri !== 'string' || (!uri.startsWith('mongodb://') && !uri.startsWith('mongodb+srv://'))) {
+    return { success: false, error: 'Invalid MongoDB connection URI. Must start with mongodb:// or mongodb+srv://' };
+  }
+
+  try {
+    console.log('[MongoDB] Testing connection to provided URI...');
+    const start = Date.now();
+    const client = new MongoClient(uri, {
+      serverSelectionTimeoutMS: 8000,
+      connectTimeoutMS: 8000,
+    });
+
+    await client.connect();
+    const db = client.db();
+    await db.command({ ping: 1 });
+    const latency = Date.now() - start;
+    lastPingLatency = latency;
+
+    // Disconnect previous client if different
+    if (mongoClient) {
+      try {
+        await mongoClient.close();
+      } catch (_) {}
+    }
+
+    mongoClient = client;
+    mongoDb = db;
+    process.env.MONGODB_URI = uri;
+    mongoFailedUntil = 0;
+
+    sessionsCollection = mongoDb.collection('auth_sessions');
+    otpCollection = mongoDb.collection('auth_otps');
+
+    try {
+      await sessionsCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+      await otpCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+      await sessionsCollection.createIndex({ token: 1 }, { unique: true });
+    } catch (_) {}
+
+    // Save to .env file for persistence across server restarts
+    try {
+      const envPath = path.join(process.cwd(), '.env');
+      let envContent = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
+      if (/MONGODB_URI=.*/.test(envContent)) {
+        envContent = envContent.replace(/MONGODB_URI=.*/g, `MONGODB_URI="${uri}"`);
+      } else {
+        envContent += `\nMONGODB_URI="${uri}"\n`;
+      }
+      fs.writeFileSync(envPath, envContent, 'utf8');
+      console.log('[MongoDB] Persisted updated MONGODB_URI to .env');
+    } catch (envErr) {
+      console.warn('[MongoDB] Could not persist to .env:', envErr);
+    }
+
+    // Auto-sync any initial local files to MongoDB
+    await syncLocalToMongo(db);
+
+    console.log(`[MongoDB] Successfully connected to ${db.databaseName} (${latency}ms)`);
+    return { success: true, database: db.databaseName, latencyMs: latency };
+  } catch (err: any) {
+    console.error('[MongoDB] Connection attempt failed:', err?.message || err);
+    return { 
+      success: false, 
+      error: err?.message || 'Failed to connect to MongoDB. Please check if mongod is running on the server, verify port and database name.' 
+    };
+  }
+}
+
+/**
+ * Disconnect current active MongoDB instance
+ */
+export async function disconnectMongo(): Promise<{ success: boolean }> {
+  if (mongoClient) {
+    try {
+      await mongoClient.close();
+    } catch (_) {}
+  }
+  mongoClient = null;
+  mongoDb = null;
+  sessionsCollection = null;
+  otpCollection = null;
+  lastPingLatency = null;
+  return { success: true };
+}
+
+/**
+ * Sync local collection JSON snapshots to active MongoDB if MongoDB collections are empty
+ */
+export async function syncLocalToMongo(_targetDb?: Db): Promise<{ syncedCollections: string[]; totalRecords: number }> {
+  return { syncedCollections: [], totalRecords: 0 };
 }
 
 // Background init

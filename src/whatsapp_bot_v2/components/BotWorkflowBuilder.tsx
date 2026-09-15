@@ -29,7 +29,6 @@ import {
   Power,
   List
 } from 'lucide-react';
-import { db } from '../../firebase';
 import { dbService, handleFirestoreError, OperationType } from '../../services/dbService';
 import { NodeType, ConditionField, ConditionOperator, ActionType, BotWorkflow } from '../types';
 import { nodeTypes } from './nodes/CustomNodes';

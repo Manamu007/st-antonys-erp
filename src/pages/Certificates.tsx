@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { dbService } from '../services/dbService';
-import { where, limit } from 'firebase/firestore';
+import { dbService, where, limit } from '../services/dbService';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
 import { 
@@ -23,7 +22,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { auth } from '../firebase';
+import { auth } from '../services/authService';
 import { uploadService } from '../services/uploadService';
 import { CertificateTemplate, IssuedCertificate, StudentDetails } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
