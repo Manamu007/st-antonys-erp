@@ -13,6 +13,28 @@ router.get('/', async (req, res) => {
     const { status, classId, batchId, search, limit = '100' } = req.query;
     const limitNum = Math.min(500, parseInt(limit as string, 10) || 100);
 
+    // 1. In preview mode or when connecting to live school data, route directly to https://antonyschool.in/api/students
+    try {
+      const url = new URL('https://antonyschool.in/api/students');
+      if (req.query) {
+        Object.entries(req.query).forEach(([k, v]) => {
+          if (v) url.searchParams.append(k, String(v));
+        });
+      }
+      const vpsRes = await fetch(url.toString(), {
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(10000)
+      });
+      if (vpsRes.ok) {
+        const liveStudents = await vpsRes.json();
+        if (Array.isArray(liveStudents) && liveStudents.length > 0) {
+          return res.json(liveStudents);
+        }
+      }
+    } catch (vpsErr: any) {
+      console.warn('[StudentRoutes] Live antonyschool.in student fetch notice:', vpsErr?.message || vpsErr);
+    }
+
     const mongo = await getMongoDb().catch(() => null);
     if (mongo) {
       const query: any = {};
@@ -35,12 +57,34 @@ router.get('/', async (req, res) => {
         .toArray()
         .catch(() => []);
 
-      const formatted = students.map((s: any) => ({
-        id: s._id?.toString() || s.id,
-        uid: s._id?.toString() || s.id,
-        ...s
-      }));
-      return res.json(formatted);
+      if (students.length > 0) {
+        const formatted = students.map((s: any) => ({
+          id: s._id?.toString() || s.id,
+          uid: s._id?.toString() || s.id,
+          ...s
+        }));
+        return res.json(formatted);
+      }
+    }
+
+    // In preview mode or when local MongoDB is not connected, route directly to https://antonyschool.in/api/students
+    try {
+      const url = new URL('https://antonyschool.in/api/students');
+      if (req.query) {
+        Object.entries(req.query).forEach(([k, v]) => {
+          if (v) url.searchParams.append(k, String(v));
+        });
+      }
+      const vpsRes = await fetch(url.toString(), {
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(10000)
+      });
+      if (vpsRes.ok) {
+        const liveStudents = await vpsRes.json();
+        return res.json(liveStudents);
+      }
+    } catch (vpsErr: any) {
+      console.warn('[StudentRoutes] Live antonyschool.in student fetch failed:', vpsErr?.message || vpsErr);
     }
 
     const dbAdmin = getDbAdmin();
@@ -71,6 +115,18 @@ router.get('/count', async (req, res) => {
       const count = await mongo.collection('students').countDocuments({ status: { $ne: 'deleted' } }).catch(() => 0);
       return res.json({ success: true, count });
     }
+
+    // Live antonyschool.in count
+    try {
+      const vpsRes = await fetch('https://antonyschool.in/api/students/count', {
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(6000)
+      });
+      if (vpsRes.ok) {
+        const countData = await vpsRes.json();
+        return res.json(countData);
+      }
+    } catch (_) {}
 
     const dbAdmin = getDbAdmin();
     const snap = await dbAdmin.collection('students').limit(1000).get().catch(() => null);

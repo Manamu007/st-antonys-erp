@@ -780,10 +780,21 @@ const Attendance: React.FC = () => {
         } else if (currentProfileCollection === 'students') {
           cleanedUserList = cleanedUserList.map((st: any) => {
             const studentId = st.uid || st.id;
+            const effectiveRoll = String(
+              st.rollNumber ||
+              st.rollNo ||
+              st.roll_number ||
+              st.roll ||
+              st.batchRollNo ||
+              st.batchRollNumber ||
+              ''
+            ).trim();
             return {
               ...st,
               uid: studentId,
               id: studentId,
+              rollNumber: effectiveRoll || st.rollNumber || '',
+              rollNo: effectiveRoll || st.rollNo || '',
               name: getPersonDisplayName(st, 'Student')
             };
           });
@@ -818,6 +829,41 @@ const Attendance: React.FC = () => {
           }
           return true;
         });
+
+        // If viewing students with a specific batch or class, automatically assign missing roll numbers
+        if (currentProfileCollection === 'students' && (filterBatch !== 'all' || filterClass !== 'all')) {
+          const batchStudents = deduplicatedUsers.filter((u: any) => {
+            const resolved = resolveStudentClassAndBatch(u, classes, batches);
+            return (filterBatch === 'all' || resolved.batchId === filterBatch) &&
+                   (filterClass === 'all' || resolved.classId === filterClass);
+          });
+
+          const anyMissingRoll = batchStudents.some((s: any) => !s.rollNumber && !s.rollNo);
+          if (anyMissingRoll && batchStudents.length > 0) {
+            const males = batchStudents.filter(s => String(s.gender || '').toLowerCase() === 'male');
+            const females = batchStudents.filter(s => String(s.gender || '').toLowerCase() === 'female');
+            const others = batchStudents.filter(s => {
+              const g = String(s.gender || '').toLowerCase();
+              return g !== 'male' && g !== 'female';
+            });
+            const sortFn = (arr: any[]) => arr.slice().sort((a, b) => getPersonDisplayName(a).localeCompare(getPersonDisplayName(b)));
+            const ordered = [...sortFn(males), ...sortFn(females), ...sortFn(others)];
+
+            ordered.forEach((s: any, idx: number) => {
+              const expectedRoll = String(idx + 1);
+              if (!s.rollNumber && !s.rollNo) {
+                s.rollNumber = expectedRoll;
+                s.rollNo = expectedRoll;
+                const sId = s.uid || s.id;
+                dbService.update('students', sId, {
+                  rollNumber: expectedRoll,
+                  rollNo: expectedRoll,
+                  updatedAt: new Date().toISOString()
+                }).catch(() => {});
+              }
+            });
+          }
+        }
 
         setPeople(deduplicatedUsers);
         setAttendance((attendanceList || []) as any[]);
@@ -2712,7 +2758,7 @@ const Attendance: React.FC = () => {
       return teacherClassIds.includes(c.id);
     });
   
-  const availableBatches = isTeacherRole
+  const availableBatches = (isTeacherRole
     ? batches
     : (filterClass === 'all' 
       ? [] 
@@ -2720,7 +2766,19 @@ const Attendance: React.FC = () => {
         const selectedClassObj = classes.find(c => c.id === filterClass);
         const selectedClassName = selectedClassObj?.name;
         return b.classId === filterClass || (selectedClassName && b.className === selectedClassName);
-      }));
+      }))
+  ).filter(b => {
+    // If a batch is named 'IPL' (case insensitive), only show it if it actually has students assigned
+    const bNameLower = String(b.name || '').trim().toLowerCase();
+    if (bNameLower === 'ipl' || bNameLower.includes('ipl')) {
+      const hasStudents = people.some(p => {
+        const res = resolveStudentClassAndBatch(p, classes, batches);
+        return res.batchId === b.id || (b.name && String(res.batchName || '').toLowerCase() === bNameLower);
+      });
+      return hasStudents;
+    }
+    return true;
+  });
 
   const baseFilteredPeople = people.filter(p => {
     const isStudentTab = activeTab === 'student' || activeTab === 'register';
@@ -2766,6 +2824,8 @@ const Attendance: React.FC = () => {
     const matchesSearch = searchTerms.length === 0 || searchTerms.every(term => {
       return fullName.includes(term) ||
              (p.rollNumber && String(p.rollNumber).toLowerCase().includes(term)) ||
+             (p.rollNo && String(p.rollNo).toLowerCase().includes(term)) ||
+             (p.admissionNumber && String(p.admissionNumber).toLowerCase().includes(term)) ||
              (p.parentName && String(p.parentName).toLowerCase().includes(term)) ||
              (p.fatherName && String(p.fatherName).toLowerCase().includes(term)) ||
              (p.phone && String(p.phone).toLowerCase().includes(term)) ||
@@ -2783,10 +2843,17 @@ const Attendance: React.FC = () => {
     const config = sortConfig || { key: 'rollNumber', direction: 'asc' };
     
     if (config.key === 'rollNumber') {
-      const rollA = String(a.rollNumber || a.rollNo || '');
-      const rollB = String(b.rollNumber || b.rollNo || '');
-      const comparison = rollA.localeCompare(rollB, undefined, { numeric: true, sensitivity: 'base' });
-      return config.direction === 'asc' ? comparison : -comparison;
+      const rollA = String(a.rollNumber || a.rollNo || a.roll_number || a.roll || a.admissionNumber || '').trim();
+      const rollB = String(b.rollNumber || b.rollNo || b.roll_number || b.roll || b.admissionNumber || '').trim();
+      if (rollA && rollB) {
+        const comparison = rollA.localeCompare(rollB, undefined, { numeric: true, sensitivity: 'base' });
+        return config.direction === 'asc' ? comparison : -comparison;
+      }
+      if (rollA && !rollB) return config.direction === 'asc' ? -1 : 1;
+      if (!rollA && rollB) return config.direction === 'asc' ? 1 : -1;
+      const nameA = getPersonDisplayName(a).toLowerCase();
+      const nameB = getPersonDisplayName(b).toLowerCase();
+      return nameA.localeCompare(nameB);
     }
     
     if (config.key === 'name') {
@@ -2811,6 +2878,57 @@ const Attendance: React.FC = () => {
 
   const totalPages = Math.ceil(sortedPeople.length / pageSize);
   const paginatedPeople = sortedPeople.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+  // Auto-assign and persist roll numbers for students in selected batch if missing
+  useEffect(() => {
+    if (activeTab !== 'student' && activeTab !== 'register') return;
+    if (filterBatch === 'all') return;
+    if (!people || people.length === 0) return;
+
+    const batchStudents = people.filter(p => {
+      const resolved = resolveStudentClassAndBatch(p, classes, batches);
+      return resolved.batchId === filterBatch;
+    });
+
+    if (batchStudents.length === 0) return;
+
+    const missingRoll = batchStudents.some(s => !s.rollNumber && !s.rollNo);
+    if (!missingRoll) return;
+
+    const males = batchStudents.filter(s => String(s.gender || '').toLowerCase() === 'male');
+    const females = batchStudents.filter(s => String(s.gender || '').toLowerCase() === 'female');
+    const others = batchStudents.filter(s => {
+      const g = String(s.gender || '').toLowerCase();
+      return g !== 'male' && g !== 'female';
+    });
+
+    const sortFn = (arr: any[]) => arr.slice().sort((a, b) => getPersonDisplayName(a).localeCompare(getPersonDisplayName(b)));
+    const ordered = [...sortFn(males), ...sortFn(females), ...sortFn(others)];
+
+    let changed = false;
+    const updatedPeople = people.map(p => {
+      const idx = ordered.findIndex(o => (o.uid || o.id) === (p.uid || p.id));
+      if (idx !== -1) {
+        const expectedRoll = String(idx + 1);
+        if (!p.rollNumber && !p.rollNo) {
+          changed = true;
+          const sId = p.uid || p.id;
+          dbService.update('students', sId, {
+            rollNumber: expectedRoll,
+            rollNo: expectedRoll,
+            updatedAt: new Date().toISOString()
+          }).catch(err => console.warn('Could not persist roll number update:', err));
+
+          return { ...p, rollNumber: expectedRoll, rollNo: expectedRoll };
+        }
+      }
+      return p;
+    });
+
+    if (changed) {
+      setPeople(updatedPeople);
+    }
+  }, [filterBatch, activeTab, people.length, classes, batches]);
 
   // Auto-select first available for teachers & play school incharge
   useEffect(() => {
@@ -3345,8 +3463,13 @@ const Attendance: React.FC = () => {
                     <tr key={personId} className="hover:bg-neutral-50/50 transition-colors group">
                       {activeTab === 'student' ? (
                         <>
-                          <td className="px-6 py-4 text-lg text-neutral-600 font-mono">
-                            {person.rollNumber || 'N/A'}
+                          <td className="px-6 py-4 text-lg text-neutral-800 font-mono font-bold">
+                            {person.rollNumber || person.rollNo || person.roll_number || person.roll || (
+                              (() => {
+                                const idx = sortedPeople.findIndex(p => (p.uid || p.id) === personId);
+                                return idx >= 0 ? String(idx + 1) : '-';
+                              })()
+                            )}
                           </td>
                           <td className="px-6 py-4">
                             <div className="flex items-center gap-3">
@@ -3551,7 +3674,7 @@ const Attendance: React.FC = () => {
                             <span className="text-xs text-neutral-400 font-bold">
                               {activeTab === 'staff' 
                                 ? (person?.role ? person.role.replace(/_/g, ' ') : 'Staff') 
-                                : (person?.rollNumber || person?.classId || 'Student')
+                                : ((person?.rollNumber || person?.rollNo) ? `Roll No: ${person.rollNumber || person.rollNo}` : (person?.classId || 'Student'))
                               }
                             </span>
                           </div>
@@ -3593,7 +3716,7 @@ const Attendance: React.FC = () => {
                           <span className="text-xs text-neutral-400 font-bold">
                             {activeTab === 'staff' 
                               ? (absentee.role ? absentee.role.replace(/_/g, ' ') : 'Staff') 
-                              : (absentee.rollNumber || absentee.classId || 'Student')
+                              : ((absentee?.rollNumber || absentee?.rollNo) ? `Roll No: ${absentee.rollNumber || absentee.rollNo}` : (absentee?.classId || 'Student'))
                             }
                           </span>
                         </div>

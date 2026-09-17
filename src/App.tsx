@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { RefreshCw } from 'lucide-react';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -94,7 +94,7 @@ try {
 // Helper for resilient lazy loading with retry logic against stale module caches
 function lazyWithRetry<T extends React.ComponentType<any>>(
   factory: () => Promise<{ default: T }>,
-  retries = 2
+  retries = 3
 ): React.LazyExoticComponent<T> {
   return React.lazy(() =>
     new Promise<{ default: T }>((resolve, reject) => {
@@ -102,8 +102,24 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
         factory()
           .then(resolve)
           .catch((error) => {
+            const isModuleFetchError = 
+              error?.message?.includes('dynamically imported module') ||
+              error?.message?.includes('Failed to fetch') ||
+              error?.message?.includes('Loading chunk') ||
+              error?.name === 'ChunkLoadError';
+
             if (remaining > 0) {
-              setTimeout(() => attempt(remaining - 1), 400);
+              const delay = (4 - remaining) * 600;
+              setTimeout(() => attempt(remaining - 1), delay);
+            } else if (isModuleFetchError && typeof window !== 'undefined') {
+              const lastReload = Number(sessionStorage.getItem('last_module_retry_reload') || 0);
+              if (Date.now() - lastReload > 12000) {
+                sessionStorage.setItem('last_module_retry_reload', String(Date.now()));
+                window.location.reload();
+                return;
+              }
+              console.error('Failed to load module after retries:', error);
+              reject(error);
             } else {
               console.error('Failed to load module after retries:', error);
               reject(error);
@@ -116,10 +132,10 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
 }
 
 import Login from './pages/Login';
+import Dashboard from './pages/Dashboard';
+import LandingPage from './pages/LandingPage';
 
-// Resilient Lazy loading all pages for ultra fast initial app bundle load speed
-const LandingPage = lazyWithRetry(() => import('./pages/LandingPage'));
-const Dashboard = lazyWithRetry(() => import('./pages/Dashboard'));
+// Resilient Lazy loading for secondary modules
 const Students = lazyWithRetry(() => import('./pages/Students'));
 const Staff = lazyWithRetry(() => import('./pages/Staff'));
 const Hostel = lazyWithRetry(() => import('./pages/Hostel'));
@@ -198,6 +214,17 @@ const PublicRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <PublicLayout>{children}</PublicLayout>
 );
 
+const RouterNavigateBridge: React.FC = () => {
+  const navigate = useNavigate();
+  React.useEffect(() => {
+    (window as any).__REACT_ROUTER_NAVIGATE__ = navigate;
+    return () => {
+      delete (window as any).__REACT_ROUTER_NAVIGATE__;
+    };
+  }, [navigate]);
+  return null;
+};
+
 const PrivateRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, profile, loading } = useAuth();
   const location = useLocation();
@@ -210,13 +237,17 @@ const PrivateRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     </div>
   );
 
-  if (!user) {
+  const hasLocalSession = !!localStorage.getItem('bypass_user_email') || 
+                           !!localStorage.getItem('auth_jwt_token') || 
+                           !!localStorage.getItem('auth_user') ||
+                           !!localStorage.getItem('bypass_user_profile');
+
+  if (!user && !hasLocalSession) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  // If user is logged in but has no profile (and is not the system admin bootstrapping)
-  // we should treat them as unauthorized unless a bypass session is active
-  if (!profile && !isSystemAccount(user.email) && !localStorage.getItem('bypass_user_email')) {
+  // If user has local session or profile or is system account, allow access
+  if (!profile && !user && !isSystemAccount(user?.email) && !hasLocalSession) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
@@ -390,6 +421,7 @@ export default function App() {
       <AuthProvider>
         <SettingsProvider>
           <Router>
+            <RouterNavigateBridge />
             <ScrollToTop />
             <AutoUpdateNotifier />
             <IdleTimeoutDetector />

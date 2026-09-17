@@ -923,48 +923,14 @@ async function processNode(session: BotSession, node: any): Promise<void> {
 }
 
 /**
- * Places message payload into persistent Firestore queue for ban-safe, rate-limited dispatch
+ * Places message payload into persistent queue for ban-safe, rate-limited dispatch
  */
 async function queueBotMessage(phoneNumber: string, text: string, options: any = {}): Promise<void> {
   try {
-    let to = phoneNumber;
-    if (!to.includes('@')) {
-      to = `${to.replace(/\D/g, '')}@s.whatsapp.net`;
-    }
-
-    const { createQueueItem } = await import('../../server/models/WhatsAppQueue.js');
-    await createQueueItem({
-      recipient: to,
-      to,
-      message: text,
-      text,
-      options,
-      type: 'bot',
-      priority: 0,
-      status: 'pending'
-    });
-
-    const { isDatabaseDenied, getDbAdmin } = await import('../../server/db.js');
-    if (!isDatabaseDenied()) {
-      const dbAdmin = getDbAdmin();
-      if (dbAdmin) {
-        const payload = {
-          to,
-          text,
-          status: 'pending',
-          priority: 0,
-          type: 'bot',
-          options,
-          attempts: 0,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        };
-        await dbAdmin.collection('whatsapp_queue').add(payload).catch(() => {});
-      }
-    }
-
-    console.log(`[Bot Router] Message successfully queued for: ${to}`);
+    const { sendMessage } = await import('../../server/whatsapp.js');
+    await sendMessage(phoneNumber, text, options, 'bot');
+    console.log(`[Bot Router] Bot message successfully queued for: ${phoneNumber}`);
   } catch (err) {
-    console.error("[Bot Router] Error writing to queue collection:", err);
+    console.error("[Bot Router] Error queuing bot message:", err);
   }
 }

@@ -223,28 +223,51 @@ export const Class10DailyExams: React.FC<Class10DailyExamsProps> = ({
 
   // Filter subjects for Class 10
   const class10Subjects = useMemo(() => {
-    if (!subjects || subjects.length === 0) return [];
-    const activeClass = targetClasses.find(c => c.id === selectedClassId);
+    let result: any[] = [];
+    if (subjects && subjects.length > 0) {
+      const activeClass = targetClasses.find(c => c.id === selectedClassId);
 
-    if (activeClass?.subjectIds && Array.isArray(activeClass.subjectIds) && activeClass.subjectIds.length > 0) {
-      const matched = subjects.filter(s => activeClass.subjectIds.includes(s.id));
-      if (matched.length > 0) return matched;
-    }
-    if (activeClass?.subjects && Array.isArray(activeClass.subjects) && activeClass.subjects.length > 0) {
-      const subIds = activeClass.subjects.map((s: any) => typeof s === 'string' ? s : (s.id || s.subjectId)).filter(Boolean);
-      const matched = subjects.filter(s => subIds.includes(s.id));
-      if (matched.length > 0) return matched;
+      if (activeClass?.subjectIds && Array.isArray(activeClass.subjectIds) && activeClass.subjectIds.length > 0) {
+        const matched = subjects.filter(s => activeClass.subjectIds.includes(s.id));
+        if (matched.length > 0) result = matched;
+      } else if (activeClass?.subjects && Array.isArray(activeClass.subjects) && activeClass.subjects.length > 0) {
+        const subIds = activeClass.subjects.map((s: any) => typeof s === 'string' ? s : (s.id || s.subjectId)).filter(Boolean);
+        const matched = subjects.filter(s => subIds.includes(s.id));
+        if (matched.length > 0) result = matched;
+      } else {
+        const matchingClassId = subjects.filter(s => {
+          if (s.classId === selectedClassId) return true;
+          if (Array.isArray(s.classIds) && s.classIds.includes(selectedClassId)) return true;
+          return false;
+        });
+        if (matchingClassId.length > 0) result = matchingClassId;
+        else result = [...subjects];
+      }
     }
 
-    const matchingClassId = subjects.filter(s => {
-      if (s.classId === selectedClassId) return true;
-      if (Array.isArray(s.classIds) && s.classIds.includes(selectedClassId)) return true;
-      return false;
+    // Ensure subjects from saved schedules and marks (e.g. 'High school' / 'Subject') are included
+    const combined = [...result];
+    (schedules || []).forEach((sch: any) => {
+      if (sch.subjectId && !combined.some(s => s.id === sch.subjectId)) {
+        combined.push({
+          id: sch.subjectId,
+          name: sch.subjectName || sch.subjectId,
+          code: sch.subjectCode || 'SUB'
+        });
+      }
     });
-    if (matchingClassId.length > 0) return matchingClassId;
+    (allDailyMarks || []).forEach((m: any) => {
+      if (m.subjectId && !combined.some(s => s.id === m.subjectId)) {
+        combined.push({
+          id: m.subjectId,
+          name: m.subjectName || m.subjectId,
+          code: 'SUB'
+        });
+      }
+    });
 
-    return subjects;
-  }, [subjects, targetClasses, selectedClassId]);
+    return combined;
+  }, [subjects, targetClasses, selectedClassId, schedules, allDailyMarks]);
 
   // Filter teachers to show ONLY Class 10 related teachers in dropdown
   const class10Teachers = useMemo(() => {
@@ -519,15 +542,26 @@ export const Class10DailyExams: React.FC<Class10DailyExamsProps> = ({
       }
     });
 
-    // 3. Ensure standard Class 10 sections (IPL, M-Batch, S-Batch) exist
-    ['IPL', 'M-Batch', 'S-Batch'].forEach(def => {
+    // 3. Ensure standard Class 10 batches (M-Batch, S-Batch) exist
+    ['M-Batch', 'S-Batch'].forEach(def => {
       if (!added.has(def.toLowerCase())) {
         added.add(def.toLowerCase());
         list.push({ id: def, name: def });
       }
     });
 
-    return list;
+    // Only keep IPL if there are students actually assigned to IPL
+    return list.filter(item => {
+      if (item.name.toLowerCase() === 'ipl') {
+        return allAvailableStudents.some(s => {
+          const isClass10 = selectedClassId ? s.classId === selectedClassId : targetClasses.some(tc => tc.id === s.classId);
+          if (!isClass10) return false;
+          const bStr = String(s.batch || s.section || s.batchName || '').toLowerCase();
+          return bStr.includes('ipl');
+        });
+      }
+      return true;
+    });
   }, [batches, selectedClassId, allAvailableStudents, targetClasses]);
 
   // Filter students for Class 10 strictly and sort batch-wise
@@ -825,11 +859,31 @@ export const Class10DailyExams: React.FC<Class10DailyExamsProps> = ({
       setAllDailyMarks(marksList || []);
 
       // Check if there is already a schedule for selectedDate + selectedClassId
-      const existing = (schedulesList || []).find((s: any) => 
-        s.date === selectedDate && 
-        (selectedClassId ? s.classId === selectedClassId : true) &&
-        (selectedBatchId ? s.batchId === selectedBatchId : true)
-      );
+      let targetDate = selectedDate;
+      let existing = (schedulesList || []).find((s: any) => {
+        const matchDate = s.date === targetDate;
+        const matchClass = !selectedClassId || s.classId === selectedClassId || (s.classId === 'class_10' && (selectedClassId === '10_Class_Class' || selectedClassId === 'class_10')) || (s.classId === '10_Class_Class' && (selectedClassId === 'class_10' || selectedClassId === '10_Class_Class')) || targetClasses.some(tc => tc.id === s.classId);
+        const matchBatch = !selectedBatchId || !s.batchId || s.batchId === selectedBatchId || s.batchId === 'all';
+        return matchDate && matchClass && matchBatch;
+      });
+
+      // If no schedule exists for selectedDate, but there are existing schedules or marks in MongoDB, auto-select the latest date
+      if (!existing && (schedulesList.length > 0 || marksList.length > 0)) {
+        const allDates = Array.from(new Set([
+          ...(schedulesList || []).map((s: any) => s.date),
+          ...(marksList || []).map((m: any) => m.date)
+        ])).filter(Boolean).sort().reverse();
+        if (allDates.length > 0 && !allDates.includes(targetDate)) {
+          targetDate = allDates[0];
+          setSelectedDate(targetDate);
+          existing = (schedulesList || []).find((s: any) => {
+            const matchDate = s.date === targetDate;
+            const matchClass = !selectedClassId || s.classId === selectedClassId || (s.classId === 'class_10' && (selectedClassId === '10_Class_Class' || selectedClassId === 'class_10')) || (s.classId === '10_Class_Class' && (selectedClassId === 'class_10' || selectedClassId === '10_Class_Class')) || targetClasses.some(tc => tc.id === s.classId);
+            const matchBatch = !selectedBatchId || !s.batchId || s.batchId === selectedBatchId || s.batchId === 'all';
+            return matchDate && matchClass && matchBatch;
+          });
+        }
+      }
 
       if (existing) {
         if (existing.subjectId && (isAdminUser || teacherClass10Subjects.some(s => s.id === existing.subjectId))) {
@@ -1019,47 +1073,50 @@ export const Class10DailyExams: React.FC<Class10DailyExamsProps> = ({
 
   // Find active schedule for selected date
   const activeSchedule = useMemo(() => {
-    return schedules.find((s: any) => 
-      s.date === selectedDate && 
-      s.classId === selectedClassId &&
-      (!selectedBatchId || s.batchId === selectedBatchId)
-    );
-  }, [schedules, selectedDate, selectedClassId, selectedBatchId]);
+    return schedules.find((s: any) => {
+      const matchDate = s.date === selectedDate;
+      const matchClass = !selectedClassId || s.classId === selectedClassId || (s.classId === 'class_10' && (selectedClassId === '10_Class_Class' || selectedClassId === 'class_10')) || (s.classId === '10_Class_Class' && (selectedClassId === 'class_10' || selectedClassId === '10_Class_Class')) || targetClasses.some(tc => tc.id === s.classId);
+      const matchBatch = !selectedBatchId || !s.batchId || s.batchId === selectedBatchId || s.batchId === 'all';
+      return matchDate && matchClass && matchBatch;
+    });
+  }, [schedules, selectedDate, selectedClassId, selectedBatchId, targetClasses]);
 
   // Load existing marks for active schedule & load past subject marks for comparison
   useEffect(() => {
     const loadMarksData = async () => {
-      if (!selectedSubjectId) return;
-
       try {
-        // 1. Load current schedule's marks if schedule exists
-        if (activeSchedule) {
-          const marksList = await dbService.list('class10_daily_marks', [
+        let marksList: any[] = [];
+        if (activeSchedule?.id) {
+          marksList = await dbService.list('class10_daily_marks', [
             where('scheduleId', '==', activeSchedule.id)
           ], true);
-
-          const marksMap: Record<string, { marksObtained: number | ''; isAbsent: boolean }> = {};
-          (marksList || []).forEach((m: any) => {
-            marksMap[m.studentId] = {
-              marksObtained: m.isAbsent ? '' : (m.marksObtained ?? ''),
-              isAbsent: !!m.isAbsent
-            };
-          });
-          setCurrentMarks(marksMap);
-        } else {
-          setCurrentMarks({});
+        }
+        if ((!marksList || marksList.length === 0) && selectedDate) {
+          marksList = await dbService.list('class10_daily_marks', [
+            where('date', '==', selectedDate)
+          ], true);
+          if (selectedSubjectId && marksList.some((m: any) => m.subjectId === selectedSubjectId)) {
+            marksList = marksList.filter((m: any) => m.subjectId === selectedSubjectId);
+          }
         }
 
-        // 2. Load all past marks for this subject to calculate LAST WEEK's score
-        // We query marks for this subject across dates earlier than selectedDate
-        const allSubjectMarks = await dbService.list('class10_daily_marks', [
-          where('subjectId', '==', selectedSubjectId)
-        ], true);
+        const marksMap: Record<string, { marksObtained: number | ''; isAbsent: boolean }> = {};
+        (marksList || []).forEach((m: any) => {
+          marksMap[m.studentId] = {
+            marksObtained: m.isAbsent ? '' : (m.marksObtained ?? ''),
+            isAbsent: !!m.isAbsent
+          };
+        });
+        setCurrentMarks(marksMap);
 
-        // Filter out marks for selectedDate and filter for dates strictly before selectedDate
-        const past = (allSubjectMarks || []).filter((m: any) => m.date < selectedDate);
-        setPastMarksForSubject(past);
+        if (selectedSubjectId) {
+          const allSubjectMarks = await dbService.list('class10_daily_marks', [
+            where('subjectId', '==', selectedSubjectId)
+          ], true);
 
+          const past = (allSubjectMarks || []).filter((m: any) => m.date < selectedDate);
+          setPastMarksForSubject(past);
+        }
       } catch (e) {
         console.error("Error loading daily exam marks:", e);
       }
@@ -1567,17 +1624,17 @@ export const Class10DailyExams: React.FC<Class10DailyExamsProps> = ({
             />
           </div>
 
-          {/* Section / Batch */}
+          {/* Batch */}
           <div className="md:col-span-2">
             <label className="block text-[10px] font-extrabold text-neutral-500 uppercase tracking-wider mb-1">
-              Section / Batch
+              Batch
             </label>
             <select
               value={selectedBatchId}
               onChange={(e) => setSelectedBatchId(e.target.value)}
               className="w-full text-xs font-bold bg-neutral-50 border border-neutral-200 rounded-xl px-2.5 py-1.5 text-neutral-800 focus:bg-white focus:border-emerald-500 outline-none cursor-pointer"
             >
-              <option value="">All Sections</option>
+              <option value="">All Batches</option>
               {classBatches.map(b => (
                 <option key={b.id} value={b.id}>{b.name}</option>
               ))}
@@ -2049,7 +2106,7 @@ export const Class10DailyExams: React.FC<Class10DailyExamsProps> = ({
                 </h2>
               </div>
               <p className="text-xs font-medium text-neutral-500 mt-1">
-                Admin & Faculty Master Overview • Exam Date: <strong className="text-neutral-900">{selectedDate}</strong> • {selectedBatchId ? batches.find(b => b.id === selectedBatchId)?.name || 'Batch' : 'All Batches/Sections'}
+                Admin & Faculty Master Overview • Exam Date: <strong className="text-neutral-900">{selectedDate}</strong> • {selectedBatchId ? batches.find(b => b.id === selectedBatchId)?.name || 'Batch' : 'All Batches'}
               </p>
             </div>
 
@@ -2167,7 +2224,7 @@ export const Class10DailyExams: React.FC<Class10DailyExamsProps> = ({
                 <tr className="bg-neutral-900 text-white text-xs uppercase font-black tracking-wider border-b border-neutral-800">
                   <th className="p-3 text-center w-14">Roll</th>
                   <th className="p-3 min-w-[180px]">Student Details</th>
-                  <th className="p-3 text-center min-w-[110px]">Section</th>
+                  <th className="p-3 text-center min-w-[110px]">Batch</th>
                   {class10Subjects.map(sub => (
                     <th key={sub.id} className="p-3 text-center min-w-[110px] border-l border-neutral-800">
                       <div className="font-black text-emerald-300">{sub.name}</div>
@@ -2462,7 +2519,7 @@ export const Class10DailyExams: React.FC<Class10DailyExamsProps> = ({
                   <th className="p-3">Date</th>
                   <th className="p-3">Test ID</th>
                   <th className="p-3">Test Name / Title</th>
-                  <th className="p-3">Class / Section</th>
+                  <th className="p-3">Class / Batch</th>
                   <th className="p-3">Subject</th>
                   <th className="p-3 text-center">Max Marks</th>
                   <th className="p-3">Syllabus / Topic</th>

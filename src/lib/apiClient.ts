@@ -1,63 +1,74 @@
 /**
  * Frontend API Client Configuration & Base URL Resolver
  * 
- * Automatically routes API requests to the live VPS MongoDB backend at
- * https://antonyschool.in/api when running inside the preview environment:
- * - window.location.hostname.includes('aistudio.google.com')
- * - window.location.hostname.includes('.run.app')
- * - process.env.NODE_ENV === 'development'
+ * Default API base URL: "https://antonyschool.in"
  * 
- * In standard production (or when deployed directly on the domain),
- * it uses standard relative paths '/api'.
+ * Configures endpoints for student and staff data:
+ * - https://antonyschool.in/api/students
+ * - https://antonyschool.in/api/maintenance/db-proxy
+ * 
+ * In the AI Studio preview browser container:
+ * Routes API requests through the container's backend CORS proxy to safely fetch live data
+ * from antonyschool.in without browser cross-origin restrictions.
  */
 
-export const LIVE_VPS_API_BASE = 'https://antonyschool.in/api';
+export const DEFAULT_API_BASE_URL = 'https://antonyschool.in';
+export const LIVE_VPS_API_BASE = 'https://antonyschool.in';
+export const STUDENTS_API_URL = 'https://antonyschool.in/api/students';
+export const DB_PROXY_API_URL = 'https://antonyschool.in/api/maintenance/db-proxy';
 
 export function isPreviewEnvironment(): boolean {
   if (typeof window === 'undefined') {
-    return process.env.NODE_ENV === 'development';
+    return true;
   }
 
   const hostname = window.location.hostname || '';
-  return (
-    hostname.includes('aistudio.google.com') ||
-    hostname.includes('.run.app') ||
-    hostname === 'localhost' ||
-    hostname === '127.0.0.1' ||
-    process.env.NODE_ENV === 'development' ||
-    import.meta.env.DEV ||
-    import.meta.env.MODE === 'development'
-  );
+  
+  // Production domain
+  if (hostname === 'antonyschool.in' || hostname === 'www.antonyschool.in') {
+    return false;
+  }
+
+  // Running in preview container (AI Studio, Cloud Run, localhost, dev)
+  return true;
 }
 
 export function getApiBaseUrl(): string {
-  // In the browser preview, cross-origin requests directly to https://antonyschool.in/api
-  // are blocked by browser CORS restrictions because antonyschool.in does not emit Access-Control-Allow-Origin.
-  // Standard relative '/api' routes through the same-origin Express server without CORS errors.
-  return '/api';
+  // In non-browser environments, return the full live production URL
+  if (typeof window === 'undefined') {
+    return DEFAULT_API_BASE_URL;
+  }
+  // In the browser preview container, use relative paths so requests hit
+  // the container's CORS-enabled Express proxy which securely communicates with antonyschool.in
+  return '';
 }
 
 /**
- * Transforms an endpoint path (e.g. '/api/whatsapp/status' or '/attendance/mark')
- * to the appropriate base URL based on the environment.
+ * Resolves an API URL or path to the proper endpoint.
+ * In the browser preview container, ensures requests route via the local CORS-enabled Express proxy.
  */
 export function resolveApiUrl(pathOrUrl: string): string {
   if (!pathOrUrl) return pathOrUrl;
 
-  // If already an absolute URL, return as is
+  // In browser preview: rewrite direct antonyschool.in API calls to relative paths so they
+  // go through our Express server which proxies to https://antonyschool.in with full CORS headers
+  if (typeof window !== 'undefined') {
+    if (pathOrUrl.startsWith('https://antonyschool.in/api/') || pathOrUrl.startsWith('http://antonyschool.in/api/')) {
+      return pathOrUrl.replace(/^https?:\/\/antonyschool\.in/, '');
+    }
+    if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
+      return pathOrUrl;
+    }
+    const cleanPath = pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`;
+    return cleanPath.startsWith('/api') ? cleanPath : `/api${cleanPath}`;
+  }
+
+  // Server-side / Node.js runtime:
   if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
     return pathOrUrl;
   }
 
-  // Ensure leading slash
-  if (!pathOrUrl.startsWith('/')) {
-    return `/api/${pathOrUrl}`;
-  }
-
-  // If already starts with /api, return as is
-  if (pathOrUrl.startsWith('/api')) {
-    return pathOrUrl;
-  }
-
-  return `/api${pathOrUrl}`;
+  const cleanPath = pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`;
+  const fullApiPath = cleanPath.startsWith('/api') ? cleanPath : `/api${cleanPath}`;
+  return `${DEFAULT_API_BASE_URL}${fullApiPath}`;
 }

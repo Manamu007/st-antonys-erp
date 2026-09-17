@@ -226,6 +226,99 @@ export const getStaffDisplayName = (member: any): string => {
 };
 
 /**
+ * Robust helper to locate the corresponding class for any batch object
+ */
+export function findClassForBatch(batch: any, classes: any[] = []): any {
+  if (!batch || !classes || classes.length === 0) return null;
+
+  const bClassId = String(batch.classId || '').trim();
+  const bClassName = String(batch.className || '').trim();
+  const bId = String(batch.id || batch.uid || '').trim();
+  const bName = String(batch.name || '').trim();
+
+  // 1. Direct classId match
+  if (bClassId && bClassId !== 'N/A') {
+    const direct = classes.find(c => c && (c.id === bClassId || c.uid === bClassId));
+    if (direct) return direct;
+  }
+
+  // 2. Direct className match
+  if (bClassName && bClassName !== 'N/A') {
+    const byName = classes.find(c => c && c.name && c.name.toLowerCase().trim() === bClassName.toLowerCase().trim());
+    if (byName) return byName;
+  }
+
+  // 3. Normalized matching across IDs and names (e.g. "cls_10" vs "10_Class_Class" vs "10 Class" vs "Class 10")
+  const combined = `${bClassId} ${bClassName} ${bId} ${bName}`.toLowerCase();
+
+  if (combined.includes('nur')) {
+    const c = classes.find(cls => (cls.id && cls.id.toLowerCase().includes('nur')) || (cls.name && cls.name.toLowerCase().includes('nur')));
+    if (c) return c;
+  }
+  if (combined.includes('lkg')) {
+    const c = classes.find(cls => (cls.id && cls.id.toLowerCase().includes('lkg')) || (cls.name && cls.name.toLowerCase().includes('lkg')));
+    if (c) return c;
+  }
+  if (combined.includes('ukg')) {
+    const c = classes.find(cls => (cls.id && cls.id.toLowerCase().includes('ukg')) || (cls.name && cls.name.toLowerCase().includes('ukg')));
+    if (c) return c;
+  }
+
+  // Numeric grades 1 to 10
+  for (let g = 10; g >= 1; g--) {
+    const tokenRegex = new RegExp(`\\b${g}\\b|cls_${g}|${g}_class|class_${g}|${g}th|class\\s*${g}`, 'i');
+    if (tokenRegex.test(combined)) {
+      const c = classes.find(cls => {
+        const clsStr = `${cls.id || ''} ${cls.name || ''} ${cls.code || ''}`.toLowerCase();
+        return tokenRegex.test(clsStr);
+      });
+      if (c) return c;
+    }
+  }
+
+  return null;
+}
+
+export function findBatchesForClass(cls: any, batches: any[] = []): any[] {
+  if (!cls || !batches || batches.length === 0) return [];
+  return batches.filter(b => {
+    if (!b) return false;
+    if (b.classId === cls.id || b.classId === cls.uid) return true;
+    if (b.className && cls.name && b.className.toLowerCase().trim() === cls.name.toLowerCase().trim()) return true;
+    const resolvedCls = findClassForBatch(b, [cls]);
+    return resolvedCls?.id === cls.id;
+  });
+}
+
+export function isStudentInBatch(student: any, batch: any): boolean {
+  if (!student || !batch) return false;
+  if ((student.status || 'active') !== 'active') return false;
+
+  const sBatchId = String(student.batchId || '').trim();
+  const sBatch = String(student.batch || student.batchName || '').trim();
+  const bId = String(batch.id || batch.uid || '').trim();
+  const bName = String(batch.name || '').trim();
+  const aliases: string[] = Array.isArray(batch.aliases) ? batch.aliases : [];
+
+  if (sBatchId && (sBatchId === bId || aliases.includes(sBatchId))) return true;
+  if (sBatch && (sBatch === bName || sBatch === bId || aliases.includes(sBatch))) return true;
+
+  const sCombined = `${sBatchId} ${sBatch}`.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const bCombined = `${bId} ${bName}`.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  if (sCombined && bCombined && (sCombined === bCombined || sCombined.includes(bCombined) || bCombined.includes(sCombined))) {
+    const sClass = String(student.classId || student.class || '').toLowerCase();
+    const bClass = String(batch.classId || batch.className || '').toLowerCase();
+    if (!sClass || !bClass) return true;
+    const sNum = sClass.match(/\d+|nur|lkg|ukg/)?.[0];
+    const bNum = bClass.match(/\d+|nur|lkg|ukg/)?.[0];
+    if (sNum && bNum && sNum === bNum) return true;
+  }
+
+  return false;
+}
+
+/**
  * Accurately and consistently resolves a student's classId, className, batchId, and batchName
  * from raw student metadata against registered classes and batches.
  */
@@ -249,7 +342,7 @@ export function resolveStudentClassAndBatch(
   const sClass = String(student.class || student.className || '').trim();
 
   if (sClassId && sClassId !== 'N/A') {
-    resolvedClass = classes.find(c => c.id === sClassId);
+    resolvedClass = classes.find(c => c && (c.id === sClassId || c.uid === sClassId));
     if (!resolvedClass) {
       resolvedClass = classes.find(c => 
         (c.name && c.name.toLowerCase() === sClassId.toLowerCase()) || 
@@ -264,6 +357,9 @@ export function resolveStudentClassAndBatch(
       (c.name && sClass.toLowerCase().includes(c.name.toLowerCase()))
     );
   }
+  if (!resolvedClass) {
+    resolvedClass = findClassForBatch({ classId: sClassId, className: sClass }, classes);
+  }
 
   // 2. Resolve Batch
   let resolvedBatch: any = null;
@@ -272,12 +368,13 @@ export function resolveStudentClassAndBatch(
 
   // If resolvedClass is known, prioritize batches belonging to this class!
   if (resolvedClass) {
-    const classBatches = batches.filter(b => b.classId === resolvedClass.id || b.className === resolvedClass.name);
+    const classBatches = findBatchesForClass(resolvedClass, batches);
     
     // First, check if sBatchId directly matches a batch belonging to this class
     if (sBatchId && sBatchId !== 'N/A') {
       resolvedBatch = classBatches.find(b => 
         b.id === sBatchId || 
+        (Array.isArray(b.aliases) && b.aliases.includes(sBatchId)) ||
         (b.name && b.name.toLowerCase() === sBatchId.toLowerCase()) ||
         (b.id && b.id.toLowerCase() === sBatchId.toLowerCase())
       );
@@ -287,6 +384,7 @@ export function resolveStudentClassAndBatch(
     if (!resolvedBatch && sBatch && sBatch !== 'N/A') {
       resolvedBatch = classBatches.find(b => 
         b.id === sBatch ||
+        (Array.isArray(b.aliases) && b.aliases.includes(sBatch)) ||
         (b.name && b.name.toLowerCase() === sBatch.toLowerCase()) ||
         (b.id && b.id.toLowerCase() === sBatch.toLowerCase()) ||
         (b.name && sBatch.toLowerCase().includes(b.name.toLowerCase()))
@@ -296,12 +394,13 @@ export function resolveStudentClassAndBatch(
 
   // If still not resolved or no class resolved, search all batches
   if (!resolvedBatch && sBatchId && sBatchId !== 'N/A') {
-    resolvedBatch = batches.find(b => b.id === sBatchId) ||
+    resolvedBatch = batches.find(b => b.id === sBatchId || (Array.isArray(b.aliases) && b.aliases.includes(sBatchId))) ||
       batches.find(b => (b.name && b.name.toLowerCase() === sBatchId.toLowerCase()) || (b.id && b.id.toLowerCase() === sBatchId.toLowerCase()));
   }
   if (!resolvedBatch && sBatch && sBatch !== 'N/A') {
     resolvedBatch = batches.find(b => 
       b.id === sBatch ||
+      (Array.isArray(b.aliases) && b.aliases.includes(sBatch)) ||
       (b.name && b.name.toLowerCase() === sBatch.toLowerCase()) ||
       (b.id && b.id.toLowerCase() === sBatch.toLowerCase())
     );

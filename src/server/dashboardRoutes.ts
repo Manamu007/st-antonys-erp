@@ -7,10 +7,32 @@ const router = Router();
 
 /**
  * GET /api/dashboard/stats
- * Aggregates essential dashboard metrics strictly via MongoDB
+ * Aggregates essential dashboard metrics via live antonyschool.in or local MongoDB
  */
 router.get('/stats', async (req, res) => {
   try {
+    // 1. Fetch live production metrics from antonyschool.in first
+    try {
+      const vpsUrl = new URL('https://antonyschool.in/api/dashboard/stats');
+      if (req.query) {
+        Object.entries(req.query).forEach(([k, v]) => {
+          if (v) vpsUrl.searchParams.append(k, String(v));
+        });
+      }
+      const vpsRes = await fetch(vpsUrl.toString(), {
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(8000)
+      });
+      if (vpsRes.ok) {
+        const liveData = await vpsRes.json();
+        if (liveData && (liveData.students > 0 || (liveData.stats && liveData.stats.students > 0))) {
+          return res.json(liveData);
+        }
+      }
+    } catch (vpsErr: any) {
+      console.warn('[DashboardStats] Live antonyschool.in stats fetch notice:', vpsErr?.message || vpsErr);
+    }
+
     const mongo = await getMongoDb().catch(() => null);
     const dbAdmin = getDbAdmin();
 
@@ -194,6 +216,20 @@ router.get('/stats', async (req, res) => {
  */
 router.get('/notices', async (req, res) => {
   try {
+    // 1. Fetch live notices from antonyschool.in
+    try {
+      const vpsRes = await fetch('https://antonyschool.in/api/dashboard/notices', {
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(6000)
+      });
+      if (vpsRes.ok) {
+        const liveNotices = await vpsRes.json();
+        if (liveNotices && Array.isArray(liveNotices.notices) && liveNotices.notices.length > 0) {
+          return res.json(liveNotices);
+        }
+      }
+    } catch (_) {}
+
     const mongo = await getMongoDb().catch(() => null);
     if (mongo) {
       const notices = await mongo.collection('notices')
@@ -239,6 +275,20 @@ router.get('/notices', async (req, res) => {
  */
 router.get('/timeline', async (req, res) => {
   try {
+    // 1. Fetch live timeline from antonyschool.in
+    try {
+      const vpsRes = await fetch('https://antonyschool.in/api/dashboard/timeline', {
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(6000)
+      });
+      if (vpsRes.ok) {
+        const liveTimeline = await vpsRes.json();
+        if (liveTimeline && Array.isArray(liveTimeline.activities) && liveTimeline.activities.length > 0) {
+          return res.json(liveTimeline);
+        }
+      }
+    } catch (_) {}
+
     const mongo = await getMongoDb().catch(() => null);
     if (mongo) {
       const activities = await mongo.collection('user_activities')

@@ -1152,7 +1152,26 @@ const Exams: React.FC = () => {
         setStudents(sorted);
 
         // 3. Fetch exam marks for batch AND for the student IDs
-        const batchMarks = await dbService.list('examMarks', [where('batchId', '==', selectedBatch)]);
+        const marksMap = new Map<string, any>();
+
+        try {
+          const batchMarks = await dbService.list('examMarks', [where('batchId', '==', selectedBatch)]);
+          (batchMarks || []).forEach((m: any) => {
+            if (m.id) marksMap.set(m.id, m);
+          });
+        } catch (e) {
+          console.warn('Error fetching batch marks:', e);
+        }
+
+        if (activeBatchObj?.name && activeBatchObj.name !== selectedBatch) {
+          try {
+            const altMarks = await dbService.list('examMarks', [where('batchId', '==', activeBatchObj.name)]);
+            (altMarks || []).forEach((m: any) => {
+              if (m.id) marksMap.set(m.id, m);
+            });
+          } catch (e) {}
+        }
+
         const studentIds = sorted.map((s: any) => s.id || s.uid).filter(Boolean);
         
         let studentSpecificMarks: any[] = [];
@@ -1171,10 +1190,6 @@ const Exams: React.FC = () => {
           }
         }
 
-        const marksMap = new Map<string, any>();
-        (batchMarks || []).forEach((m: any) => {
-          if (m.id) marksMap.set(m.id, m);
-        });
         studentSpecificMarks.forEach((m: any) => {
           if (m.id) marksMap.set(m.id, m);
         });
@@ -2879,10 +2894,10 @@ const ExamTimetableModal = ({ exam, batchId, classId, subjects: propSubjects = [
               <div className="flex items-center gap-2">
                 <span className="text-xs font-black text-sidebar uppercase tracking-wider flex items-center gap-1.5">
                   <Filter className="w-4 h-4 text-primary" />
-                  Select Class & Section to Schedule
+                  Select Class & Batch to Schedule
                 </span>
                 <span className="text-[10px] bg-primary/10 text-primary font-black px-2 py-0.5 rounded-full uppercase">
-                  {classes.length} Classes • {batches.length} Sections
+                  {classes.length} Classes • {batches.length} Batches
                 </span>
               </div>
 
@@ -2896,7 +2911,7 @@ const ExamTimetableModal = ({ exam, batchId, classId, subjects: propSubjects = [
                 }`}
               >
                 <Layers className="w-3.5 h-3.5" />
-                {showTargetBatches ? 'Hide All Classes & Sections' : `Multi-Class Setup (${selectedBatches.length} selected)`}
+                {showTargetBatches ? 'Hide All Classes & Batches' : `Multi-Class Setup (${selectedBatches.length} selected)`}
               </button>
             </div>
 
@@ -2919,10 +2934,10 @@ const ExamTimetableModal = ({ exam, batchId, classId, subjects: propSubjects = [
                 </select>
               </div>
 
-              {/* Batch / Section Dropdown */}
+              {/* Batch Dropdown */}
               <div className="space-y-1">
                 <label className="text-[10px] font-black text-neutral-500 uppercase tracking-widest px-1">
-                  2. Section / Batch
+                  2. Batch
                 </label>
                 <select
                   value={activeBatchId}

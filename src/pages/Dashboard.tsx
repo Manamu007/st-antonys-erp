@@ -38,6 +38,7 @@ import { whatsappService } from '../services/whatsappService';
 import { generateAIContent, getStrategicAnalysis } from '../services/aiService';
 import { uploadService } from '../services/uploadService';
 import { normalizeUrl } from '../lib/utils';
+import { resolveApiUrl } from '../lib/apiClient';
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
 import { 
@@ -306,7 +307,7 @@ const Dashboard: React.FC = () => {
     const checkWaStatus = async () => {
       if (typeof document !== 'undefined' && document.hidden) return;
       try {
-        const res = await fetch('/api/whatsapp/status');
+        const res = await fetch(resolveApiUrl('/api/whatsapp/status'));
         if (res.ok) {
           const data = await res.json();
           setWaEngineStatus(data.status);
@@ -377,7 +378,7 @@ const Dashboard: React.FC = () => {
       const [classesData, concessionsData, studentsRes, batchesData] = await Promise.all([
         dbService.list('classes'),
         dbService.list('concessions'),
-        fetch('/api/students?limit=500').then(r => r.ok ? r.json() : []).catch(() => []),
+        fetch(resolveApiUrl('/api/students?limit=500')).then(r => r.ok ? r.json() : []).catch(() => []),
         dbService.list('batches')
       ]);
       setConcessionClasses(classesData || []);
@@ -403,7 +404,7 @@ const Dashboard: React.FC = () => {
     
     const fetchClassStudents = async () => {
       try {
-        const res = await fetch(`/api/students?classId=${encodeURIComponent(selectedConcessionClass)}`);
+        const res = await fetch(resolveApiUrl(`/api/students?classId=${encodeURIComponent(selectedConcessionClass)}`));
         if (res.ok) {
           const studentsData = await res.json();
           setConcessionClassStudents(Array.isArray(studentsData) ? studentsData : []);
@@ -617,7 +618,7 @@ const Dashboard: React.FC = () => {
         // 1. Fetch dashboard stats via local Express / MongoDB REST API
         const roleParam = encodeURIComponent(profile?.role || (user as any)?.role || '');
         const userParam = encodeURIComponent(profile?.uid || profile?.id || (user as any)?.uid || (user as any)?.id || '');
-        const res = await fetch(`/api/dashboard/stats?role=${roleParam}&userId=${userParam}`);
+        const res = await fetch(resolveApiUrl(`/api/dashboard/stats?role=${roleParam}&userId=${userParam}`));
         if (res.ok) {
           const payload = await res.json();
           const s = payload.stats || payload;
@@ -712,7 +713,7 @@ const Dashboard: React.FC = () => {
 
         // 3. Fetch upcoming notices and events for timeline via REST API
         try {
-          const noticesRes = await fetch('/api/dashboard/notices');
+          const noticesRes = await fetch(resolveApiUrl('/api/dashboard/notices'));
           if (noticesRes.ok) {
             const nData = await noticesRes.json();
             const list = (nData.notices || []).slice(0, 4).map((n: any) => ({

@@ -19,7 +19,8 @@ import {
   KeyRound,
   Eye,
   EyeOff,
-  Lock
+  Lock,
+  Mail
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useSettings } from '../context/SettingsContext';
@@ -128,9 +129,9 @@ const Login: React.FC = () => {
   const location = useLocation();
 
   // Custom Login Interface states
-  const [activeTab, setActiveTab] = useState<'email_mobile' | 'admission_id'>('email_mobile');
+  const [activeTab, setActiveTab] = useState<'email' | 'mobile' | 'admission_id'>('email');
   const [authView, setAuthView] = useState<'password' | 'whatsapp_otp' | 'forgot_password'>('password');
-  const [emailOrMobile, setEmailOrMobile] = useState('');
+  const [emailOrMobile, setEmailOrMobile] = useState('manamunagaraju@gmail.com');
   const [admissionId, setAdmissionId] = useState('');
   const [credentialPassword, setCredentialPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -819,9 +820,11 @@ const Login: React.FC = () => {
       });
 
       login(fullProfile, token);
+      navigate('/dashboard', { replace: true });
     } catch (err: any) {
       console.error('[Login] completeBypassLogin error:', err);
       login(matchedProfile, token);
+      navigate('/dashboard', { replace: true });
     }
   };
 
@@ -853,6 +856,7 @@ const Login: React.FC = () => {
           description: `Logged in as ${superAdminUser.name || 'Nagaraju Manamu (Super Admin)'}`
         });
         login(superAdminUser, data.token);
+        navigate('/dashboard', { replace: true });
       } else {
         throw new Error(data?.error || 'Master login failed');
       }
@@ -874,6 +878,7 @@ const Login: React.FC = () => {
         description: "Logged in as Nagaraju Manamu (Super Admin)"
       });
       login(fallbackMaster);
+      navigate('/dashboard', { replace: true });
     } finally {
       setLoading(false);
     }
@@ -903,10 +908,13 @@ const Login: React.FC = () => {
   // Beautiful Credential Authentication (supporting registered email, student mobile, or admin ID and password bypass)
   const handleCustomSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const credential = activeTab === 'email_mobile' ? emailOrMobile : admissionId;
+    const isEmailOrMobile = activeTab === 'email' || activeTab === 'mobile' || (activeTab as any) === 'email_mobile';
+    const credential = isEmailOrMobile ? emailOrMobile : admissionId;
     
     if (!credential.trim()) {
-      toast.error(activeTab === 'email_mobile' ? "Please enter mobile number or email" : "Please enter Admission ID");
+      if (activeTab === 'email') toast.error("Please enter your Admin or Staff email ID");
+      else if (activeTab === 'mobile') toast.error("Please enter your registered mobile number");
+      else toast.error("Please enter Admission ID");
       return;
     }
 
@@ -1110,7 +1118,7 @@ const Login: React.FC = () => {
             const sRoll = (s.rollNumber || s.rollNo || '').toLowerCase().trim();
             const sUid = (s.uid || s.id || '').toLowerCase().trim();
 
-            if (activeTab === 'email_mobile') {
+            if (activeTab === 'email' || activeTab === 'mobile' || (activeTab as any) === 'email_mobile') {
               return sEmail === inputClean || sParentEmail === inputClean || sPhone === inputClean;
             } else {
               return sAdmission === inputClean || sRoll === inputClean || sUid === inputClean;
@@ -1624,48 +1632,118 @@ const Login: React.FC = () => {
                     </p>
                   </div>
 
-                  {/* Tablet Style Tabs with Mobile Number & Password as Primary */}
-                  <div className="flex bg-neutral-100 rounded-full p-1.5 w-full mx-auto border border-neutral-200 shadow-sm">
+                  {/* Tablet Style 3 Tabs with Admin Email, Mobile & Admission ID */}
+                  <div className="flex bg-neutral-100 rounded-full p-1 w-full mx-auto border border-neutral-200 shadow-sm gap-1">
                     <button
                       type="button"
-                      onClick={() => setActiveTab('email_mobile')}
-                      className={`flex-1 py-3 text-center text-xs font-black uppercase rounded-full transition-all duration-300 cursor-pointer ${
-                        activeTab === 'email_mobile' ? 'bg-[#004D40] text-white shadow-md' : 'text-neutral-500 hover:text-neutral-800'
+                      onClick={() => {
+                        setActiveTab('email');
+                        if (!emailOrMobile || emailOrMobile === '8822269999') {
+                          setEmailOrMobile('manamunagaraju@gmail.com');
+                        }
+                      }}
+                      className={`flex-1 py-2.5 px-2 text-center text-[11px] font-black uppercase rounded-full transition-all duration-300 cursor-pointer flex items-center justify-center gap-1.5 ${
+                        activeTab === 'email' ? 'bg-[#004D40] text-white shadow-md' : 'text-neutral-500 hover:text-neutral-800'
                       }`}
                     >
-                      Mobile & Password
+                      <Mail className="w-3.5 h-3.5 shrink-0" />
+                      <span>Admin / Email</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab('mobile');
+                        if (emailOrMobile === 'manamunagaraju@gmail.com') {
+                          setEmailOrMobile('8822269999');
+                        }
+                      }}
+                      className={`flex-1 py-2.5 px-2 text-center text-[11px] font-black uppercase rounded-full transition-all duration-300 cursor-pointer flex items-center justify-center gap-1.5 ${
+                        activeTab === 'mobile' ? 'bg-[#004D40] text-white shadow-md' : 'text-neutral-500 hover:text-neutral-800'
+                      }`}
+                    >
+                      <Smartphone className="w-3.5 h-3.5 shrink-0" />
+                      <span>Mobile</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => setActiveTab('admission_id')}
-                      className={`flex-1 py-3 text-center text-xs font-black uppercase rounded-full transition-all duration-300 cursor-pointer ${
+                      className={`flex-1 py-2.5 px-2 text-center text-[11px] font-black uppercase rounded-full transition-all duration-300 cursor-pointer flex items-center justify-center gap-1.5 ${
                         activeTab === 'admission_id' ? 'bg-[#004D40] text-white shadow-md' : 'text-neutral-500 hover:text-neutral-800'
                       }`}
                     >
-                      Admission ID
+                      <GraduationCap className="w-3.5 h-3.5 shrink-0" />
+                      <span>Admission ID</span>
                     </button>
                   </div>
 
                   {/* Outlined outline inputs */}
-                  <form onSubmit={handleCustomSubmit} className="space-y-5">
-                    {activeTab === 'email_mobile' ? (
-                      <div className="relative rounded-2xl border border-neutral-300 px-4 py-3 bg-white focus-within:border-[#004D40] focus-within:ring-2 focus-within:ring-[#004D40]/20 transition-all">
-                        <label className="absolute -top-2.5 left-4 bg-white px-2.5 text-[10px] font-black uppercase tracking-wider text-[#004D40]">
-                          Registered Mobile Number *
-                        </label>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-black text-neutral-400 select-none">+91</span>
-                          <span className="text-neutral-300">|</span>
-                          <input
-                            type="text"
-                            required
-                            value={emailOrMobile}
-                            onChange={(e) => setEmailOrMobile(e.target.value)}
-                            disabled={loading}
-                            placeholder="Enter 10-digit mobile number"
-                            className="w-full text-xs font-bold py-1.5 outline-none text-neutral-800 bg-transparent placeholder-neutral-400 tracking-wider"
-                          />
-                          <Smartphone className="w-4 h-4 text-neutral-400 shrink-0" />
+                  <form onSubmit={handleCustomSubmit} className="space-y-4">
+                    {activeTab === 'email' ? (
+                      <div className="space-y-1.5">
+                        <div className="relative rounded-2xl border border-neutral-300 px-4 py-3 bg-white focus-within:border-[#004D40] focus-within:ring-2 focus-within:ring-[#004D40]/20 transition-all">
+                          <label className="absolute -top-2.5 left-4 bg-white px-2.5 text-[10px] font-black uppercase tracking-wider text-[#004D40]">
+                            Admin / Staff Email ID *
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="email"
+                              required
+                              value={emailOrMobile}
+                              onChange={(e) => setEmailOrMobile(e.target.value)}
+                              disabled={loading}
+                              placeholder="e.g. manamunagaraju@gmail.com"
+                              className="w-full text-xs font-bold py-1 outline-none text-neutral-800 bg-transparent placeholder-neutral-400"
+                            />
+                            <Mail className="w-4 h-4 text-[#004D40] shrink-0" />
+                          </div>
+                        </div>
+                        {/* Quick fill chip for admin */}
+                        <div className="flex items-center gap-2 px-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEmailOrMobile('manamunagaraju@gmail.com');
+                              setCredentialPassword('password');
+                            }}
+                            className="text-[10px] font-bold text-[#004D40] bg-[#004D40]/10 hover:bg-[#004D40]/20 px-2.5 py-1 rounded-full cursor-pointer transition-colors"
+                          >
+                            👑 Quick Fill: manamunagaraju@gmail.com
+                          </button>
+                        </div>
+                      </div>
+                    ) : activeTab === 'mobile' ? (
+                      <div className="space-y-1.5">
+                        <div className="relative rounded-2xl border border-neutral-300 px-4 py-3 bg-white focus-within:border-[#004D40] focus-within:ring-2 focus-within:ring-[#004D40]/20 transition-all">
+                          <label className="absolute -top-2.5 left-4 bg-white px-2.5 text-[10px] font-black uppercase tracking-wider text-[#004D40]">
+                            Registered Mobile Number *
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-black text-neutral-400 select-none">+91</span>
+                            <span className="text-neutral-300">|</span>
+                            <input
+                              type="text"
+                              required
+                              value={emailOrMobile}
+                              onChange={(e) => setEmailOrMobile(e.target.value)}
+                              disabled={loading}
+                              placeholder="Enter 10-digit mobile number"
+                              className="w-full text-xs font-bold py-1 outline-none text-neutral-800 bg-transparent placeholder-neutral-400 tracking-wider"
+                            />
+                            <Smartphone className="w-4 h-4 text-[#004D40] shrink-0" />
+                          </div>
+                        </div>
+                        {/* Quick fill chip for mobile */}
+                        <div className="flex items-center gap-2 px-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEmailOrMobile('8822269999');
+                              setCredentialPassword('password');
+                            }}
+                            className="text-[10px] font-bold text-[#004D40] bg-[#004D40]/10 hover:bg-[#004D40]/20 px-2.5 py-1 rounded-full cursor-pointer transition-colors"
+                          >
+                            👑 Quick Fill: 8822269999
+                          </button>
                         </div>
                       </div>
                     ) : (
@@ -1673,15 +1751,18 @@ const Login: React.FC = () => {
                         <label className="absolute -top-2.5 left-4 bg-white px-2.5 text-[10px] font-black uppercase tracking-wider text-[#004D40]">
                           Admission ID *
                         </label>
-                        <input
-                          type="text"
-                          required
-                          value={admissionId}
-                          onChange={(e) => setAdmissionId(e.target.value)}
-                          disabled={loading}
-                          placeholder="Enter admission ID (e.g. ADM001)"
-                          className="w-full text-xs font-bold py-1.5 outline-none text-neutral-800 bg-transparent placeholder-neutral-400"
-                        />
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            required
+                            value={admissionId}
+                            onChange={(e) => setAdmissionId(e.target.value)}
+                            disabled={loading}
+                            placeholder="Enter admission ID (e.g. ADM001)"
+                            className="w-full text-xs font-bold py-1 outline-none text-neutral-800 bg-transparent placeholder-neutral-400"
+                          />
+                          <GraduationCap className="w-4 h-4 text-[#004D40] shrink-0" />
+                        </div>
                       </div>
                     )}
 
@@ -1696,8 +1777,8 @@ const Login: React.FC = () => {
                           value={credentialPassword}
                           onChange={(e) => setCredentialPassword(e.target.value)}
                           disabled={loading}
-                          placeholder="Enter account password"
-                          className="w-full text-xs font-bold py-1.5 outline-none text-neutral-800 bg-transparent placeholder-neutral-400"
+                          placeholder="Enter account password (default: password)"
+                          className="w-full text-xs font-bold py-1 outline-none text-neutral-800 bg-transparent placeholder-neutral-400"
                         />
                         <button
                           type="button"
@@ -1712,9 +1793,9 @@ const Login: React.FC = () => {
                     {/* Primary Submit Button */}
                     <button
                       type="submit"
-                      disabled={loading || !(activeTab === 'email_mobile' ? emailOrMobile : admissionId) || !credentialPassword}
+                      disabled={loading || !(activeTab === 'admission_id' ? admissionId : emailOrMobile) || !credentialPassword}
                       className={`w-full py-4 text-center transition-all font-black text-xs uppercase tracking-widest rounded-full shadow-lg cursor-pointer ${
-                        (activeTab === 'email_mobile' ? emailOrMobile : admissionId) && credentialPassword
+                        (activeTab === 'admission_id' ? admissionId : emailOrMobile) && credentialPassword
                           ? 'bg-[#004D40] text-white hover:bg-[#064e3b] hover:shadow-[#004D40]/20 active:scale-[0.98]'
                           : 'bg-[#E0E0E0] text-neutral-400 cursor-not-allowed'
                       }`}

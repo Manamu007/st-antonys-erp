@@ -150,9 +150,13 @@ export async function connectMongo(uri: string): Promise<{ success: boolean; dat
     return { success: true, database: db.databaseName, latencyMs: latency };
   } catch (err: any) {
     console.error('[MongoDB] Connection attempt failed:', err?.message || err);
+    let errorMessage = err?.message || 'Failed to connect to MongoDB.';
+    if (uri.includes('127.0.0.1') || uri.includes('localhost')) {
+      errorMessage = `Cannot connect to '127.0.0.1' from Cloud Preview (ECONNREFUSED). This web app preview runs in a cloud container, so '127.0.0.1' refers to the cloud container rather than your VPS. To connect from this preview, enter your VPS Public IP (e.g. mongodb://user:pass@<vps_ip>:27017/antonyschool_erp) or import your student data JSON/CSV. When you deploy this code directly on your VPS, 127.0.0.1 will connect locally.`;
+    }
     return { 
       success: false, 
-      error: err?.message || 'Failed to connect to MongoDB. Please check if mongod is running on the server, verify port and database name.' 
+      error: errorMessage 
     };
   }
 }

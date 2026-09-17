@@ -195,7 +195,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (e) {}
 
     if (typeof window !== 'undefined') {
-      window.location.href = '/dashboard';
+      try {
+        window.dispatchEvent(new CustomEvent('auth_login_success', { detail: sanitizedObj }));
+      } catch {}
+      if (window.location.pathname.startsWith('/login') || window.location.pathname === '/') {
+        if ((window as any).__REACT_ROUTER_NAVIGATE__) {
+          try {
+            (window as any).__REACT_ROUTER_NAVIGATE__('/dashboard', { replace: true });
+          } catch {}
+        } else {
+          try {
+            window.history.pushState({}, '', '/dashboard');
+            window.dispatchEvent(new PopStateEvent('popstate'));
+          } catch {
+            window.location.href = '/dashboard';
+          }
+        }
+      }
     }
   }, [setStableProfile, setStableAvailableProfiles, setStablePermissions]);
 
@@ -232,12 +248,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
         localStorage.setItem('last_auth_uid', firebaseUser.uid);
       } else {
-        setUser(null);
-        setStableProfile(null);
-        setStableAvailableProfiles([]);
-        setStablePermissions([]);
-        setActiveProfileId(null);
-        setLoading(false);
+        // Guard: Check if an active bypass session, JWT token, or stored user exists
+        const existingStored = getInitialStoredUser();
+        if (existingStored) {
+          setUser(existingStored as any);
+          setStableProfile(existingStored as any);
+          setStableAvailableProfiles([existingStored as any]);
+          const roleKey = normalizeRole(existingStored.role);
+          setStablePermissions(ROLE_PERMISSIONS[roleKey as Role] || ROLE_PERMISSIONS.student || []);
+          setLoading(false);
+          return;
+        }
+
+        // Only clear state if neither Firebase nor a local JWT/bypass session is present
+        if (!localStorage.getItem('bypass_user_email') && !localStorage.getItem('auth_jwt_token') && !localStorage.getItem('auth_user')) {
+          setUser(null);
+          setStableProfile(null);
+          setStableAvailableProfiles([]);
+          setStablePermissions([]);
+          setActiveProfileId(null);
+          setLoading(false);
+        }
       }
     };
 

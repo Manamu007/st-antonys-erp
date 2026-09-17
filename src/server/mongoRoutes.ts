@@ -178,6 +178,20 @@ export const MONGO_ERP_COLLECTIONS = [
  */
 router.get('/status', async (req, res) => {
   try {
+    // 1. Fetch live production MongoDB status from antonyschool.in first
+    try {
+      const vpsRes = await fetch('https://antonyschool.in/api/mongodb/status', {
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(6000)
+      });
+      if (vpsRes.ok) {
+        const liveStatus = await vpsRes.json();
+        if (liveStatus && liveStatus.connected) {
+          return res.json(liveStatus);
+        }
+      }
+    } catch (_) {}
+
     const isMongooseConnected = mongoose.connection.readyState === 1;
     const mongoDb = await getMongoDb().catch(() => null);
     const isNativeConnected = !!mongoDb;

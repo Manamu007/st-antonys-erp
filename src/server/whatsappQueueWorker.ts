@@ -17,7 +17,7 @@ const getAntiBanDelay = (): number => {
 /**
  * Process a single queue item
  */
-async function processNextQueueItem(): Promise<boolean> {
+export async function processNextQueueItem(): Promise<boolean> {
   // 1. Verify WhatsApp socket is alive and authenticated before pulling from queue
   // This completely prevents 1006 (abnormal closure) and unready socket errors
   const isAlive = typeof checkSocketAlive === 'function' ? checkSocketAlive() : false;

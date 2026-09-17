@@ -321,6 +321,31 @@ const invalidateProxyCache = (colPath: string) => {
 
 
 
+async function forwardToLiveProxy(operation: string, colPath: string, id: any, data: any, constraints: any, body: any): Promise<{ status?: number; json: any }> {
+  try {
+    const vpsRes = await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operation,
+        path: colPath,
+        id,
+        data,
+        constraints,
+        ...body
+      }),
+      signal: AbortSignal.timeout(12000)
+    });
+    if (vpsRes.ok) {
+      const vpsData = await vpsRes.json();
+      return { status: vpsRes.status, json: vpsData };
+    }
+  } catch (vpsErr: any) {
+    console.warn("[Maintenance] Live antonyschool.in proxy forwarding notice:", vpsErr?.message || vpsErr);
+  }
+  return { status: 500, json: { error: "Failed to communicate with live database proxy" } };
+}
+
 async function handleWithMongoOrLocal(operation: string, colPath: string, id: any, data: any, constraints: any, body: any): Promise<{ status?: number; json: any }> {
   const mongo = await getMongoDb().catch(() => null);
 
@@ -373,6 +398,17 @@ async function handleWithMongoOrLocal(operation: string, colPath: string, id: an
         const { _id, ...rest } = d;
         return { id: rest.id || String(_id), uid: rest.uid || rest.id || String(_id), ...rest };
       });
+
+      if (result.length > 0) {
+        return { json: { success: true, data: result } };
+      }
+
+      // If local collection is empty, fetch live data from antonyschool.in
+      const vpsRes = await forwardToLiveProxy(operation, colPath, id, data, constraints, body);
+      if (vpsRes.json && Array.isArray(vpsRes.json.data) && vpsRes.json.data.length > 0) {
+        return vpsRes;
+      }
+
       return { json: { success: true, data: result } };
     }
 
@@ -388,6 +424,16 @@ async function handleWithMongoOrLocal(operation: string, colPath: string, id: an
         }
       }
       const count = await col.countDocuments(filter);
+      if (count > 0) {
+        return { json: { success: true, count } };
+      }
+
+      // If local count is 0, query live antonyschool.in
+      const vpsRes = await forwardToLiveProxy(operation, colPath, id, data, constraints, body);
+      if (vpsRes.json && typeof vpsRes.json.count === "number" && vpsRes.json.count > 0) {
+        return vpsRes;
+      }
+
       return { json: { success: true, count } };
     }
 
@@ -396,15 +442,25 @@ async function handleWithMongoOrLocal(operation: string, colPath: string, id: an
         return { json: { success: true, data: null } };
       }
       const doc = await col.findOne({ $or: [{ id: id }, { uid: id }] });
-      if (!doc) return { json: { success: true, data: null } };
-      const { _id, ...rest } = doc;
-      return { json: { success: true, data: { id: rest.id || id, uid: rest.uid || id, ...rest } } };
+      if (doc) {
+        const { _id, ...rest } = doc;
+        return { json: { success: true, data: { id: rest.id || id, uid: rest.uid || id, ...rest } } };
+      }
+
+      // If not found in local db, check live antonyschool.in
+      const vpsRes = await forwardToLiveProxy(operation, colPath, id, data, constraints, body);
+      if (vpsRes.json && vpsRes.json.data) {
+        return vpsRes;
+      }
+
+      return { json: { success: true, data: null } };
     }
 
     if (operation === "add") {
       const docId = id || crypto.randomUUID();
       const newDoc = { ...data, id: docId, uid: docId, createdAt: new Date().toISOString() };
       await col.insertOne(newDoc);
+      forwardToLiveProxy(operation, colPath, docId, data, constraints, body).catch(() => {});
       return { json: { success: true, id: docId } };
     }
 
@@ -417,6 +473,7 @@ async function handleWithMongoOrLocal(operation: string, colPath: string, id: an
       } else {
         await col.insertOne(cleaned);
       }
+      forwardToLiveProxy(operation, colPath, docId, cleaned, constraints, body).catch(() => {});
       return { json: { success: true, id: docId } };
     }
 
@@ -429,18 +486,21 @@ async function handleWithMongoOrLocal(operation: string, colPath: string, id: an
       } else {
         await col.insertOne({ ...data, id: docId, uid: docId, updatedAt: new Date().toISOString() });
       }
+      forwardToLiveProxy(operation, colPath, docId, data, constraints, body).catch(() => {});
       return { json: { success: true, id: docId } };
     }
 
     if (operation === "delete") {
       if (!id) return { status: 400, json: { error: "Missing document id" } };
       await col.deleteOne({ $or: [{ id: id }, { uid: id }] });
+      forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
       return { json: { success: true } };
     }
 
     if (operation === "deleteBatch") {
       const ids = body.ids || [];
       await col.deleteMany({ $or: [{ id: { $in: ids } }, { uid: { $in: ids } }] });
+      forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
       return { json: { success: true } };
     }
 
@@ -458,11 +518,15 @@ async function handleWithMongoOrLocal(operation: string, colPath: string, id: an
           }
         }
       }
+      forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
       return { json: { success: true } };
     }
   }
 
-  // Strict MongoDB Mode: When MongoDB is not connected, return empty results or connection error
+  // When MongoDB is not running locally (e.g. preview container), route directly to live https://antonyschool.in/api/maintenance/db-proxy
+  return forwardToLiveProxy(operation, colPath, id, data, constraints, body);
+
+  // Strict MongoDB Mode: When MongoDB is not connected and live fallback fails
   if (operation === "list") {
     return { json: { success: true, data: [] } };
   }

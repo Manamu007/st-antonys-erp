@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Database, RefreshCw, CheckCircle2, AlertCircle, ArrowUpRight, Zap, Cloud, Server, X } from 'lucide-react';
+import { Database, RefreshCw, CheckCircle2, AlertCircle, AlertTriangle, ArrowUpRight, Zap, Cloud, Server, X } from 'lucide-react';
 import { toast } from 'sonner';
+import { resolveApiUrl } from '../lib/apiClient';
 
 interface MongoStatusBannerProps {
   onDataRefreshed?: () => void;
@@ -12,6 +13,7 @@ export const MongoStatusBanner: React.FC<MongoStatusBannerProps> = ({ onDataRefr
   const [loading, setLoading] = useState(true);
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [inputUri, setInputUri] = useState('');
+  const [connectError, setConnectError] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isSeeding, setIsSeeding] = useState(false);
@@ -19,7 +21,7 @@ export const MongoStatusBanner: React.FC<MongoStatusBannerProps> = ({ onDataRefr
   const fetchStatus = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/mongodb/status');
+      const res = await fetch(resolveApiUrl('/api/mongodb/status'));
       const data = await res.json();
       setStatus(data);
     } catch (err) {
@@ -42,6 +44,7 @@ export const MongoStatusBanner: React.FC<MongoStatusBannerProps> = ({ onDataRefr
 
     try {
       setIsConnecting(true);
+      setConnectError(null);
       const res = await fetch('/api/mongodb/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -53,13 +56,18 @@ export const MongoStatusBanner: React.FC<MongoStatusBannerProps> = ({ onDataRefr
         toast.success(data.message || 'Connected to MongoDB successfully!');
         setShowConnectModal(false);
         setInputUri('');
+        setConnectError(null);
         fetchStatus();
         if (onDataRefreshed) onDataRefreshed();
       } else {
-        toast.error(data.error || 'Failed to connect to MongoDB');
+        const err = data.error || 'Failed to connect to MongoDB';
+        setConnectError(err);
+        toast.error(err);
       }
     } catch (err: any) {
-      toast.error('Connection error: ' + (err?.message || 'Network failure'));
+      const msg = 'Connection error: ' + (err?.message || 'Network failure');
+      setConnectError(msg);
+      toast.error(msg);
     } finally {
       setIsConnecting(false);
     }
@@ -241,6 +249,16 @@ export const MongoStatusBanner: React.FC<MongoStatusBannerProps> = ({ onDataRefr
                   <li>All database operations communicate via native fetch API to <code>/api/maintenance/db-proxy</code>.</li>
                 </ul>
               </div>
+
+              {connectError && (
+                <div className="p-3.5 bg-rose-950/70 border border-rose-800 rounded-xl text-xs text-rose-300 space-y-1">
+                  <p className="font-bold text-rose-200 flex items-center gap-1.5 text-[11px] uppercase tracking-wider">
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                    Connection Notice
+                  </p>
+                  <p className="leading-relaxed text-[11px] text-rose-200/90">{connectError}</p>
+                </div>
+              )}
 
               <div className="flex items-center justify-end gap-3 pt-2">
                 <button

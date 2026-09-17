@@ -848,7 +848,11 @@ export async function resilientFetch(input: RequestInfo | URL, init?: RequestIni
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 20000);
-      const requestInit = { ...init, signal: controller.signal };
+      const requestInit: RequestInit = { 
+        ...init, 
+        mode: 'cors',
+        signal: controller.signal 
+      };
 
       const res = await fetch(targetUrl, requestInit);
       clearTimeout(timeoutId);
@@ -862,6 +866,23 @@ export async function resilientFetch(input: RequestInfo | URL, init?: RequestIni
       }
       throw new Error(`HTTP ${res.status}`);
     } catch (err: any) {
+      // If direct cross-origin fetch to antonyschool.in fails (e.g. browser CORS policy),
+      // seamlessly fallback through the local preview container backend which has CORS enabled
+      if (typeof targetUrl === 'string' && targetUrl.startsWith('https://antonyschool.in')) {
+        const localPath = targetUrl.replace('https://antonyschool.in', '');
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 20000);
+          const fallbackRes = await fetch(localPath, { ...init, signal: controller.signal });
+          clearTimeout(timeoutId);
+          if (fallbackRes.ok || fallbackRes.status < 500) {
+            return fallbackRes;
+          }
+        } catch (fbErr) {
+          // Continue to retry loop
+        }
+      }
+
       attempt++;
       if (attempt >= retries) {
         console.error(`[ResilientFetch] Failed after ${attempt} attempts: ${err?.message || String(err)}`);

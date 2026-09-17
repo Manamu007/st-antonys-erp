@@ -213,6 +213,20 @@ export async function fetchNextPendingItem(): Promise<any | null> {
         { sort: { priority: 1, createdAt: 1 }, new: true }
       );
       if (item) {
+        try {
+          const { getDbAdmin, isDatabaseDenied } = await import('../db.js');
+          if (typeof isDatabaseDenied === 'function' ? !isDatabaseDenied() : true) {
+            const db = getDbAdmin();
+            if (db && typeof db.collection === 'function') {
+              db.collection('whatsapp_queue').doc(String(item._id)).update({
+                status: 'processing',
+                startedAt: new Date().toISOString(),
+                attempts: item.attempts || 1,
+                updatedAt: new Date().toISOString()
+              }).catch(() => {});
+            }
+          }
+        } catch (_) {}
         return item.toObject();
       }
     } catch (err) {
@@ -278,6 +292,21 @@ export async function updateQueueItem(
     memoryQueue.set(String(id), localItem);
     persistLocalQueue();
   }
+
+  // Synchronize to Firestore mirrored queue document so Firestore fallback never re-sends this item
+  try {
+    const { getDbAdmin, isDatabaseDenied } = await import('../db.js');
+    if (typeof isDatabaseDenied === 'function' ? !isDatabaseDenied() : true) {
+      const db = getDbAdmin();
+      if (db && typeof db.collection === 'function') {
+        const firestoreUpdates: any = { ...updates, updatedAt: new Date().toISOString() };
+        if (updates.sentAt instanceof Date) firestoreUpdates.sentAt = updates.sentAt.toISOString();
+        if (updates.nextAttemptAt instanceof Date) firestoreUpdates.nextAttemptAt = updates.nextAttemptAt.toISOString();
+        if (updates.startedAt instanceof Date) firestoreUpdates.startedAt = updates.startedAt.toISOString();
+        await db.collection('whatsapp_queue').doc(String(id)).set(firestoreUpdates, { merge: true }).catch(() => {});
+      }
+    }
+  } catch (_) {}
 }
 
 /**

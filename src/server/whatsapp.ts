@@ -30,7 +30,8 @@ import {
   resetStalledItems,
   WhatsAppQueue
 } from './models/WhatsAppQueue.js';
-import { startWhatsAppQueueWorker, triggerQueueProcessing } from './whatsappQueueWorker.js';
+import { startWhatsAppQueueWorker, triggerQueueProcessing, processNextQueueItem } from './whatsappQueueWorker.js';
+import mongoose from 'mongoose';
 import NodeCache from 'node-cache';
 
 const msgRetryCounterCache = new NodeCache({ stdTTL: 0, checkperiod: 0 });
@@ -708,15 +709,15 @@ async function processQueue() {
       }
 
       // 2. Process next pending item from local MongoDB collection whatsapp_queue first
-      let mongoItem: any = null;
+      let handledMongo = false;
       try {
-        mongoItem = await fetchNextPendingItem();
+        handledMongo = await processNextQueueItem();
       } catch (err: any) {
-        console.warn(`[WhatsApp Queue] fetchNextPendingItem error:`, err?.message);
+        console.warn(`[WhatsApp Queue] processNextQueueItem error:`, err?.message);
       }
 
-      if (mongoItem) {
-        await dispatchMongoQueueItem(mongoItem);
+      if (handledMongo) {
+        await delay(1500);
         continue;
       }
 
@@ -816,6 +817,22 @@ async function processQueue() {
 
       const messageDoc = db.collection(QUEUE_COLLECTION).doc(messageId);
       const messageData = targetMessage as any;
+
+      // Check if message was already handled by MongoDB queue
+      try {
+        const isMongoConnected = mongoose.connection.readyState === 1;
+        if (isMongoConnected) {
+          const mongoItem = await WhatsAppQueue.findById(messageId).lean().catch(() => null);
+          if (mongoItem && (mongoItem.status === 'sent' || mongoItem.status === 'processing')) {
+            console.log(`[WhatsApp Queue] Message ${messageId} already handled in MongoDB (${mongoItem.status}), skipping Firestore duplicate.`);
+            await messageDoc.update({
+              status: mongoItem.status,
+              updatedAt: new Date().toISOString()
+            }).catch(() => {});
+            continue;
+          }
+        }
+      } catch (_) {}
 
       try {
         const toVal = messageData.to || messageData.phone;
@@ -4731,13 +4748,8 @@ export const sendMessage = async (to: string, text: string, options: any = {}, t
     
     console.log(`[WhatsApp Queue] Message added to MongoDB queue (Priority: P${priorityVal}) for ${normalizedPhone}. ID: ${queueId}`);
 
-    // Fast-path: If emergency P0 (such as OTP, verification code, outpass), dispatch immediately if socket is connected
+    // Fast-path: If emergency P0 (such as OTP, verification code, outpass, bot message), trigger immediate queue dispatch
     if (priorityVal === 0) {
-      if (checkSocketAlive()) {
-        dispatchMongoQueueItem(queueItem).catch((dispatchErr) => {
-          console.warn(`[WhatsApp Queue] Fast-path emergency dispatch notice:`, dispatchErr?.message || dispatchErr);
-        });
-      }
       try {
         triggerQueueProcessing();
       } catch (_) {}

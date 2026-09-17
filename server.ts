@@ -146,6 +146,18 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+  // Allow CORS requests so the AI Studio preview container can read live data from antonyschool.in
+  app.use((req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Range, Accept');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(204);
+    }
+    next();
+  });
+
   // Serve static uploads with browser caching (7 days for images & documents)
   app.use('/uploads', express.static(path.join(process.cwd(), 'uploads'), {
     maxAge: '7d'
@@ -224,6 +236,20 @@ async function startServer() {
 
   app.get("/api/whatsapp/status", async (req, res) => {
     try {
+      // 1. Fetch live production WhatsApp status from antonyschool.in
+      try {
+        const vpsRes = await fetch("https://antonyschool.in/api/whatsapp/status", {
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(5000)
+        });
+        if (vpsRes.ok) {
+          const liveStatus = await vpsRes.json();
+          if (liveStatus && liveStatus.status) {
+            return res.json(liveStatus);
+          }
+        }
+      } catch (_) {}
+
       const { getWAStatus } = await import("./src/server/whatsapp.js");
       const local = getWAStatus();
       res.json(local || { status: 'close', qr: null });
@@ -234,6 +260,20 @@ async function startServer() {
 
   app.get("/api/whatsapp/stats", async (req, res) => {
     try {
+      // 1. Fetch live production WhatsApp stats from antonyschool.in
+      try {
+        const vpsRes = await fetch("https://antonyschool.in/api/whatsapp/stats", {
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(5000)
+        });
+        if (vpsRes.ok) {
+          const liveStats = await vpsRes.json();
+          if (liveStats) {
+            return res.json(liveStats);
+          }
+        }
+      } catch (_) {}
+
       const { reconcileWhatsAppStats } = await import("./src/server/whatsapp.js");
       const stats = await reconcileWhatsAppStats();
       res.json(stats || { delivered: 0, sent: 0, processing: 0, failed: 0, total: 0, types: {} });

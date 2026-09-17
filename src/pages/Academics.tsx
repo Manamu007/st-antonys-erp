@@ -28,7 +28,8 @@ import { useSettings } from '../context/SettingsContext';
 import { PERMISSIONS } from '../constants/permissions';
 import { toast } from 'sonner';
 import { getTeacherAssignments, filterClassesForTeacher, filterBatchesForTeacher, filterSubjectsForTeacher, checkIsTeacherAccount, TeacherAssignments } from '../utils/teacherFilter';
-import { sortAlphabetically, getStaffDisplayName, getPersonDisplayName, formatNameFromEmail } from '../lib/utils';
+import { sortAlphabetically, getStaffDisplayName, getPersonDisplayName, formatNameFromEmail, findClassForBatch, findBatchesForClass, isStudentInBatch } from '../lib/utils';
+import { OFFICIAL_HOLIDAYS_2026_27 } from '../constants/academicDefaults';
 
 import { motion } from 'motion/react';
 import { Mail, GraduationCap, Sparkles, CalendarCheck } from 'lucide-react';
@@ -655,6 +656,22 @@ const Academics: React.FC = () => {
   const [allStudents, setAllStudents] = useState<any[]>([]);
   const [teacherAssignments, setTeacherAssignments] = useState<TeacherAssignments | null>(null);
 
+  // Deduplicated batches preserving class relationships and aliases
+  const displayedBatches = useMemo(() => {
+    const seen = new Set<string>();
+    const list: BatchRecord[] = [];
+    for (const b of batches) {
+      if (!b) continue;
+      const cls = findClassForBatch(b, classes);
+      const key = `${cls?.id || b.classId || b.className || ''}_${(b.name || '').toLowerCase().trim()}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        list.push(b);
+      }
+    }
+    return list;
+  }, [batches, classes]);
+
   // Promotion state
   const [promotionSource, setPromotionSource] = useState({ classId: '', batchId: '', academicYear: settings.currentAcademicYear || '' });
   const [promotionTarget, setPromotionTarget] = useState({ classId: '', batchId: '', academicYear: '' });
@@ -860,7 +877,8 @@ const Academics: React.FC = () => {
         setClasses(sortAlphabetically(finalClasses, 'name', 'asc'));
         setBatches(sortAlphabetically(finalBatches, 'name', 'asc'));
         setSubjects(sortAlphabetically(finalSubjects, 'name', 'asc'));
-        setHolidays(hData.sort((a: any, b: any) => (a.date || '').localeCompare(b.date || '')));
+        const holidaysToUse = (hData && Array.isArray(hData) && hData.length > 0) ? hData : OFFICIAL_HOLIDAYS_2026_27;
+        setHolidays(holidaysToUse.filter(Boolean).sort((a: any, b: any) => (a.date || '').localeCompare(b.date || '')));
       } catch (e) {
         console.error("Error loading academic data:", e);
       } finally {
@@ -876,12 +894,28 @@ const Academics: React.FC = () => {
       console.error("Error subscribing to students in Academics:", error);
     });
 
+    const unsubClasses = dbService.subscribe('classes', [], (data) => {
+      if (data && Array.isArray(data) && data.length > 0) {
+        setClasses(sortAlphabetically(data.filter(Boolean), 'name', 'asc'));
+      }
+    }, (error) => {
+      console.error("Error subscribing to classes in Academics:", error);
+    });
+
     const unsubBatches = dbService.subscribe('batches', [], (data) => {
-      if (data && Array.isArray(data)) {
+      if (data && Array.isArray(data) && data.length > 0) {
         setBatches(sortAlphabetically(data.filter(Boolean), 'name', 'asc'));
       }
     }, (error) => {
       console.error("Error subscribing to batches in Academics:", error);
+    });
+
+    const unsubHolidays = dbService.subscribe('holidays', [], (data) => {
+      if (data && Array.isArray(data) && data.length > 0) {
+        setHolidays(data.filter(Boolean).sort((a: any, b: any) => (a.date || '').localeCompare(b.date || '')));
+      }
+    }, (error) => {
+      console.error("Error subscribing to holidays in Academics:", error);
     });
 
     const unsubStaff = dbService.subscribe('staff', [], () => {
@@ -894,7 +928,9 @@ const Academics: React.FC = () => {
 
     return () => {
       unsubStudents();
+      unsubClasses();
       unsubBatches();
+      unsubHolidays();
       unsubStaff();
     };
   }, [user, profile, fetchMetadata]);
@@ -1752,11 +1788,13 @@ const Academics: React.FC = () => {
                       disabled={!promotionSource.classId}
                     >
                       <option value="">Select Batch</option>
-                      {batches.filter(b => b.classId === promotionSource.classId && (canViewAllBatches || b.id === profile?.batchId)).map(b => (
-                        <option key={b.id} value={b.id}>
-                          {b.name} (Strength: {allStudents.filter(s => s && s.batchId === b.id && (s.status || 'active') === 'active').length})
-                        </option>
-                      ))}
+                      {findBatchesForClass({ id: promotionSource.classId }, displayedBatches)
+                        .filter(b => canViewAllBatches || b.id === profile?.batchId)
+                        .map(b => (
+                          <option key={b.id} value={b.id}>
+                            {b.name} (Strength: {allStudents.filter(s => isStudentInBatch(s, b)).length})
+                          </option>
+                        ))}
                     </select>
                   </div>
                 </div>
@@ -1802,9 +1840,9 @@ const Academics: React.FC = () => {
                       disabled={!promotionTarget.classId}
                     >
                       <option value="">Select Batch</option>
-                      {batches.filter(b => b.classId === promotionTarget.classId).map(b => (
+                      {findBatchesForClass({ id: promotionTarget.classId }, displayedBatches).map(b => (
                         <option key={b.id} value={b.id}>
-                          {b.name} (Strength: {allStudents.filter(s => s && s.batchId === b.id && (s.status || 'active') === 'active').length})
+                          {b.name} (Strength: {allStudents.filter(s => isStudentInBatch(s, b)).length})
                         </option>
                       ))}
                     </select>
@@ -1971,8 +2009,7 @@ const Academics: React.FC = () => {
                   }
                   return canViewAllClasses || c.id === profile?.classId;
                 }).map((item) => {
-                  const classBatches = batches.filter(b => 
-                    (b.classId === item.id || (b && b.classId && classes.find(c => c && c.id === b.classId)?.name === item.name)) &&
+                  const classBatches = findBatchesForClass(item, displayedBatches).filter(b => 
                     (isTeacherRole ? (teacherAssignedBatchIds.has(b.id) || (teacherAssignments?.assignedBatchNames ? Array.from(teacherAssignments.assignedBatchNames).some(bn => bn && (b.name || '').toLowerCase().trim().includes(bn)) : false)) : true)
                   );
                   
@@ -1985,7 +2022,7 @@ const Academics: React.FC = () => {
                           {classBatches.length > 0 ? (
                             classBatches.map(b => (
                               <span key={b.id} className="px-2 py-0.5 bg-neutral-100 text-neutral-600 text-[10px] font-bold rounded-md border border-neutral-200">
-                                {b.name} ({allStudents.filter(s => s && s.batchId === b.id && (s.status || 'active') === 'active').length})
+                                {b.name} ({allStudents.filter(s => isStudentInBatch(s, b)).length})
                               </span>
                             ))
                           ) : (
@@ -2031,25 +2068,28 @@ const Academics: React.FC = () => {
                     </tr>
                   );
                 })}
-                {activeTab === 'batches' && getSortedData<BatchRecord>(batches).filter(b => {
+                {activeTab === 'batches' && getSortedData<BatchRecord>(displayedBatches).filter(b => {
                   if (isTeacherRole) {
                     const bName = (b.name || '').toLowerCase().trim();
                     return teacherAssignedBatchIds.has(b.id) ||
                       (teacherAssignments?.assignedBatchNames ? Array.from(teacherAssignments.assignedBatchNames).some(bn => bn && (bName === bn || bName.includes(bn) || bn.includes(bName))) : false);
                   }
                   return canViewAllBatches || b.id === profile?.batchId || b.classId === profile?.classId;
-                }).map((item) => (
+                }).map((item) => {
+                  const resolvedClass = findClassForBatch(item, classes);
+                  const studentCount = allStudents.filter(s => isStudentInBatch(s, item)).length;
+                  return (
                   <tr key={item.id} className="hover:bg-neutral-50/50 transition-colors group">
                     <td className="px-6 py-4 font-bold text-sidebar">
                       <div className="flex items-center gap-2">
                         <span>{item.name}</span>
                         <span className="px-2 py-0.5 bg-neutral-100 text-neutral-600 text-[11px] font-bold rounded-full">
-                          {allStudents.filter(s => s && s.batchId === item.id && (s.status || 'active') === 'active').length} Students
+                          {studentCount} Students
                         </span>
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-neutral-600">
-                      {classes.find(c => c && c.id === item.classId)?.name || 'Unknown'}
+                    <td className="px-6 py-4 text-neutral-600 font-semibold">
+                      {resolvedClass?.name || item.className || 'Unknown'}
                     </td>
                     <td className="px-6 py-4 text-neutral-500">
                       {(() => {
@@ -2113,7 +2153,8 @@ const Academics: React.FC = () => {
                       </td>
                     )}
                   </tr>
-                ))}
+                );
+              })}
                 {activeTab === 'subjects' && getSortedData<SubjectRecord>(subjects).filter(s => {
                   if (isTeacherRole) {
                     const sId = String(s.id || '').toLowerCase().trim();
@@ -2203,7 +2244,7 @@ const Academics: React.FC = () => {
                   </tr>
                 ))}
                 {((activeTab === 'classes' && classes.length === 0) || 
-                  (activeTab === 'batches' && batches.length === 0) || 
+                  (activeTab === 'batches' && displayedBatches.length === 0) || 
                   (activeTab === 'subjects' && subjects.length === 0) ||
                   (activeTab === 'holidays' && holidays.length === 0)) && (
                   <tr>
@@ -2316,17 +2357,14 @@ const Academics: React.FC = () => {
                       <label className="text-xs font-bold text-neutral-400 uppercase tracking-wider mb-2 block">Associated Batches</label>
                       <div className="space-y-2">
                         {(() => {
-                          const classBatches = batches.filter(b => 
-                            b.classId === editingItem.id || 
-                            (b && b.classId && classes.find(c => c && c.id === b.classId)?.name === editingItem.name)
-                          );
+                          const classBatches = findBatchesForClass(editingItem, displayedBatches);
                           
                           return classBatches.length > 0 ? (
                             classBatches.map(batch => (
                               <div key={batch.id} className="flex items-center justify-between p-3 bg-neutral-50 rounded-xl border border-neutral-100">
                                 <div>
                                   <p className="font-bold text-sm text-sidebar">
-                                    {batch.name} (Strength: {allStudents.filter(s => s && s.batchId === batch.id && (s.status || 'active') === 'active').length})
+                                    {batch.name} (Strength: {allStudents.filter(s => isStudentInBatch(s, batch)).length})
                                   </p>
                                   <p className="text-[10px] text-neutral-400 uppercase tracking-wider">
                                     Teacher: {getBatchClassTeacherDisplayName(batch, teachers)}
@@ -2351,7 +2389,7 @@ const Academics: React.FC = () => {
                                 type="button"
                                 onClick={() => {
                                   setActiveTab('batches');
-                                  handleOpenModal({ classId: editingItem.id });
+                                  handleOpenModal({ classId: editingItem.id, className: editingItem.name });
                                 }}
                                 className="mt-2 text-xs font-bold text-primary hover:underline"
                               >
@@ -2373,8 +2411,18 @@ const Academics: React.FC = () => {
                     <select
                       required
                       className="w-full px-4 py-3 rounded-xl border border-neutral-100 focus:border-primary outline-none bg-white"
-                      value={formData.classId || ''}
-                      onChange={(e) => setFormData({...formData, classId: e.target.value})}
+                      value={(() => {
+                        const matched = findClassForBatch(formData, classes);
+                        return matched ? matched.id : (formData.classId || '');
+                      })()}
+                      onChange={(e) => {
+                        const selCls = classes.find(c => c && c.id === e.target.value);
+                        setFormData({
+                          ...formData,
+                          classId: e.target.value,
+                          className: selCls?.name || formData.className
+                        });
+                      }}
                     >
                       <option value="">Select Class</option>
                       {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}

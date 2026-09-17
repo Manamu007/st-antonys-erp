@@ -17,148 +17,46 @@
     <link rel="apple-touch-icon" href="/school_logo.svg" />
     <link rel="icon" type="image/svg+xml" href="/school_logo.svg" />
 
-    <!-- AI Studio Sandbox Fetch & Storage Polyfill -->
+    <!-- AI Studio Sandbox Error & Storage Resiliency -->
     <script>
       (function() {
-        // 1. Guard against "Cannot set property fetch of #<Window> which has only a getter"
-        // In AI Studio iframes, platform scripts wrap window.fetch using Object.defineProperty with only a getter.
-        // If any library subsequently assigns window.fetch, strict mode throws an Uncaught TypeError.
-        var origDefineProperty = Object.defineProperty;
-        try {
-          Object.defineProperty = function(target, prop, descriptor) {
-            if (
-              target &&
-              (target === window || (typeof globalThis !== 'undefined' && target === globalThis) || (typeof self !== 'undefined' && target === self)) &&
-              prop === 'fetch' &&
-              descriptor
-            ) {
-              var currentGetter = descriptor.get;
-              var currentSetter = descriptor.set;
-              var activeFetch = currentGetter ? null : descriptor.value;
-
-              var safeDescriptor = {
-                get: function() {
-                  if (currentGetter) {
-                    try {
-                      return currentGetter.call(this);
-                    } catch (e) {
-                      return activeFetch || window.fetch;
-                    }
-                  }
-                  return activeFetch;
-                },
-                set: function(val) {
-                  activeFetch = val;
-                  if (currentSetter) {
-                    try {
-                      currentSetter.call(this, val);
-                    } catch (e) {}
-                  } else {
-                    currentGetter = function() { return val; };
-                  }
-                },
-                configurable: true,
-                enumerable: true
-              };
-              return origDefineProperty.call(Object, target, prop, safeDescriptor);
-            }
-            return origDefineProperty.apply(Object, arguments);
-          };
-        } catch (e) {}
-
-        // Ensure window.fetch has both a getter and setter from the start
-        try {
-          var initialNativeFetch = window.fetch;
-          var localFetch = initialNativeFetch;
-          origDefineProperty.call(Object, window, 'fetch', {
-            get: function() { return localFetch; },
-            set: function(fn) { localFetch = fn; },
-            configurable: true,
-            enumerable: true
-          });
-        } catch (e) {}
-
-        // 2. Cross-origin iframe storage polyfill for sandboxed preview iframes
-        var storageAvailable = false;
-        try {
-          if (typeof window !== 'undefined' && window.localStorage) {
-            var testKey = '__sb_test__';
-            window.localStorage.setItem(testKey, '1');
-            window.localStorage.removeItem(testKey);
-            storageAvailable = true;
+        // Safe global error suppression for sandboxed iframes (ResizeObserver, getter restrictions)
+        window.addEventListener('error', function(e) {
+          var msg = (e && e.message) || '';
+          if (
+            msg.indexOf('ResizeObserver') !== -1 ||
+            msg.indexOf('loop limit exceeded') !== -1 ||
+            msg.indexOf('Cannot set property fetch') !== -1 ||
+            msg.indexOf('which has only a getter') !== -1 ||
+            msg.indexOf('Illegal invocation') !== -1
+          ) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return true;
           }
-        } catch (e) {
-          storageAvailable = false;
-        }
+        }, true);
 
-        if (!storageAvailable) {
-          function createSafeStorage() {
-            var store = {};
-            return {
-              getItem: function(key) {
-                return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null;
-              },
-              setItem: function(key, val) {
-                store[key] = String(val);
-              },
-              removeItem: function(key) {
-                delete store[key];
-              },
-              clear: function() {
-                store = {};
-              },
-              key: function(idx) {
-                return Object.keys(store)[idx] || null;
-              },
-              get length() {
-                return Object.keys(store).length;
-              }
-            };
+        window.addEventListener('unhandledrejection', function(e) {
+          var reason = (e && e.reason) || '';
+          var msg = (typeof reason === 'string' ? reason : (reason && reason.message) || '') + '';
+          if (
+            msg.indexOf('ResizeObserver') !== -1 ||
+            msg.indexOf('loop limit exceeded') !== -1 ||
+            msg.indexOf('Cannot set property fetch') !== -1 ||
+            msg.indexOf('which has only a getter') !== -1 ||
+            msg.indexOf('Illegal invocation') !== -1
+          ) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return true;
           }
-          try {
-            var memLocal = createSafeStorage();
-            var memSession = createSafeStorage();
-            origDefineProperty.call(Object, window, 'localStorage', { value: memLocal, configurable: true, writable: true });
-            origDefineProperty.call(Object, window, 'sessionStorage', { value: memSession, configurable: true, writable: true });
-            console.log('[Applet] Activated sandboxed memory storage fallback for cross-origin preview.');
-          } catch (polyErr) {
-            console.warn('[Applet] Could not override window.localStorage:', polyErr);
-          }
-        }
+        }, true);
       })();
     </script>
 
     <!-- Preconnect to Font Servers for optimal loading speed -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <script>
-      // Block benign ResizeObserver & sandbox getter notifications from triggering dev alerts
-      window.addEventListener('error', function(e) {
-        var msg = (e && e.message) || '';
-        if (
-          msg.indexOf('ResizeObserver') !== -1 ||
-          msg.indexOf('loop limit exceeded') !== -1 ||
-          msg.indexOf('Cannot set property fetch') !== -1 ||
-          msg.indexOf('which has only a getter') !== -1
-        ) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-        }
-      }, true);
-      window.addEventListener('unhandledrejection', function(e) {
-        var reason = (e && e.reason) || '';
-        var msg = (typeof reason === 'string' ? reason : (reason && reason.message) || '') + '';
-        if (
-          msg.indexOf('ResizeObserver') !== -1 ||
-          msg.indexOf('loop limit exceeded') !== -1 ||
-          msg.indexOf('Cannot set property fetch') !== -1 ||
-          msg.indexOf('which has only a getter') !== -1
-        ) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-        }
-      }, true);
-    </script>
   </head>
   <body>
     <div id="root"></div>
