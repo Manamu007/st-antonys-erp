@@ -40,15 +40,94 @@ import { sortAlphabetically, getPersonDisplayName, getStaffDisplayName, isSynthe
 import { normalizeYear } from '../lib/feeUtils';
 import { motion } from 'motion/react';
 
-export const isNonAttendingPerson = (p?: any): boolean => {
+export const isNonAttendingPerson = (p?: any, resolvedClassBatch?: any): boolean => {
   if (!p) return false;
-  if (p.nonAttending === true || p.isNonAttending === true || p.attendanceStatus === 'non_attending') {
+  if (
+    p.nonAttending === true || p.nonAttending === 'true' ||
+    p.isNonAttending === true || p.isNonAttending === 'true' ||
+    p.attendanceStatus === 'non_attending' || p.attendanceStatus === 'non-attending'
+  ) {
     return true;
   }
-  const cleanStatus = String(p.status || '').toLowerCase().trim().replace(/[- ]/g, '_');
-  const cleanType = String(p.studentType || p.type || '').toLowerCase().trim().replace(/[- ]/g, '_');
-  return cleanStatus === 'non_attending' || cleanStatus === 'nonattending' || cleanStatus === 'non_attending_student' ||
-         cleanType === 'non_attending' || cleanType === 'nonattending' || cleanType === 'non_attending_student';
+
+  const fieldsToCheck = [
+    p.status,
+    p.studentStatus,
+    p.enrollmentStatus,
+    p.attendanceStatus,
+    p.attendanceType,
+    p.attendance_type,
+    p.studentType,
+    p.student_type,
+    p.type,
+    p.admissionType,
+    p.admission_type,
+    p.category,
+    p.studentCategory,
+    p.student_category,
+    p.feeCategory,
+    p.fee_category,
+    p.feeStructureId,
+    p.feeStructure,
+    p.feeStructureName,
+    p.fee_structure_id,
+    p.fee_structure,
+    p.fee_structure_name,
+    p.classId,
+    p.className,
+    p.class,
+    p.batchName,
+    p.batch,
+    p.section,
+    p.remarks,
+    p.notes,
+    resolvedClassBatch?.className,
+    resolvedClassBatch?.batchName,
+    resolvedClassBatch?.classId,
+    resolvedClassBatch?.batchId
+  ];
+
+  for (const field of fieldsToCheck) {
+    if (!field) continue;
+    const str = String(field).toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (str.includes('nonattend') || str.includes('nonattending')) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+export const matchesAttendanceRecord = (a: any, studentId: string, student: any, date: string): boolean => {
+  if (!a || a.date !== date) return false;
+  const s1 = String(studentId || '').trim();
+  const s2 = String(student?.uid || '').trim();
+  const s3 = String(student?.id || '').trim();
+  const targetIds = [s1, s2, s3].filter(Boolean);
+
+  const aStud = String(a.studentId || '').trim();
+  const aUser = String(a.userId || '').trim();
+  const aUid = String(a.studentUid || '').trim();
+  const aApp = String(a.applicantId || '').trim();
+
+  if (targetIds.some(tid => tid === aStud || tid === aUser || tid === aUid || tid === aApp)) {
+    return true;
+  }
+
+  const aId = String(a.id || '');
+  if (targetIds.some(tid => aId.endsWith(`_${tid}`) || aId === tid || aId.includes(`_${tid}_`))) {
+    return true;
+  }
+
+  return false;
+};
+
+export const getAttendanceRecordId = (date: string, student: any, studentId: string, classes: any[], batches: any[]): string => {
+  const sid = String(student?.uid || student?.id || studentId).trim().replace(/[\/\s]/g, '_');
+  const resolved = (student && classes.length > 0) ? resolveStudentClassAndBatch(student, classes, batches) : null;
+  const rawClass = resolved?.classId || student?.classId || student?.className || student?.class || 'class';
+  const cleanClass = String(rawClass).trim().replace(/[\/\s]/g, '_');
+  return `${date}_${cleanClass}_${sid}`;
 };
 
 interface StudentAttendancePortalProps {
@@ -844,8 +923,8 @@ const Attendance: React.FC = () => {
         // If viewing students with a specific batch or class, automatically assign missing roll numbers
         if (currentProfileCollection === 'students' && (filterBatch !== 'all' || filterClass !== 'all')) {
           const batchStudents = deduplicatedUsers.filter((u: any) => {
-            if (isNonAttendingPerson(u)) return false;
             const resolved = resolveStudentClassAndBatch(u, classes, batches);
+            if (isNonAttendingPerson(u, resolved)) return false;
             return (filterBatch === 'all' || resolved.batchId === filterBatch) &&
                    (filterClass === 'all' || resolved.classId === filterClass);
           });
@@ -940,62 +1019,78 @@ const Attendance: React.FC = () => {
     const dateStr = format(selectedDate, 'yyyy-MM-dd');
     const collectionName = (activeTab === 'staff' || activeTab === 'staff_auto') ? 'staff_attendance' : 'attendance';
     const student = people.find(s => s.uid === studentId || s.id === studentId);
-    const sid = student?.uid || student?.id || studentId;
-    const altSid = student?.id || student?.uid || studentId;
+    const sid = String(student?.uid || student?.id || studentId).trim();
+    const altSid = String(student?.id || student?.uid || studentId).trim();
 
-    const existing = attendance.find(a => 
-      (a.studentId === sid || a.userId === sid || a.studentId === altSid || a.userId === altSid || a.studentId === studentId || a.userId === studentId) && 
-      a.date === dateStr
-    );
+    const existing = attendance.find(a => matchesAttendanceRecord(a, sid, student, dateStr));
     
     try {
+      const resolved = (student && classes.length > 0) ? resolveStudentClassAndBatch(student, classes, batches) : null;
       let recordId = existing?.id;
-      if (existing) {
-        // Use set with merge to avoid 'No document to update' error
-        await dbService.set(collectionName, existing.id, { 
-          status, 
-          ...((activeTab === 'staff' || activeTab === 'staff_auto') ? { userId: sid } : { studentId: sid }),
-          date: dateStr,
-          updatedAt: new Date().toISOString() 
-        });
-      } else {
-        const classId = student?.classId || 'unknown_class';
-        recordId = `${dateStr}_${classId}_${sid}`;
-        
-        const payload = (activeTab === 'staff' || activeTab === 'staff_auto') 
-          ? { userId: sid, date: dateStr, status, timestamp: new Date().toISOString() }
-          : { studentId: sid, date: dateStr, status, timestamp: new Date().toISOString() };
-        await dbService.create(collectionName, recordId, payload);
+      if (!recordId) {
+        recordId = getAttendanceRecordId(dateStr, student, sid, classes, batches);
       }
+
+      const payload = (activeTab === 'staff' || activeTab === 'staff_auto') 
+        ? { 
+            id: recordId,
+            userId: sid, 
+            date: dateStr, 
+            status, 
+            timestamp: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          }
+        : { 
+            id: recordId,
+            studentId: sid, 
+            studentUid: sid,
+            classId: resolved?.classId || student?.classId || (filterClass !== 'all' ? filterClass : ''),
+            batchId: resolved?.batchId || student?.batchId || (filterBatch !== 'all' ? filterBatch : ''),
+            className: resolved?.className || student?.className || student?.class || '',
+            batchName: resolved?.batchName || student?.batchName || student?.batch || '',
+            date: dateStr, 
+            status, 
+            timestamp: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+
+      // Use dbService.set so document creation or update is always idempotent
+      await dbService.set(collectionName, recordId, payload);
 
       // Optimistic state update so UI updates immediately
       const optimisticRecord = {
+        ...payload,
         id: recordId,
         date: dateStr,
         status,
-        ...((activeTab === 'staff' || activeTab === 'staff_auto') ? { userId: sid } : { studentId: sid }),
+        ...((activeTab === 'staff' || activeTab === 'staff_auto') ? { userId: sid } : { studentId: sid, studentUid: sid }),
         timestamp: new Date().toISOString()
       };
+
       setAttendance(prev => {
-        const remaining = prev.filter(a => !(
-          (a.studentId === sid || a.userId === sid || a.studentId === altSid || a.userId === altSid || a.studentId === studentId || a.userId === studentId || a.id === recordId) &&
-          a.date === dateStr
-        ));
+        const remaining = prev.filter(a => !(matchesAttendanceRecord(a, sid, student, dateStr) || a.id === recordId));
         return [...remaining, optimisticRecord];
       });
 
       toast.success(`Attendance marked as ${status}`);
       
-      // Refresh local state for current date in background safely
+      // Refresh local state for current date in background safely without wiping out optimistic state
       try {
         const updated = await dbService.list(collectionName, [where('date', '==', dateStr)], true);
         if (updated && updated.length > 0) {
           setAttendance(prev => {
-            const remaining = updated.filter((a: any) => !(
-              (a.studentId === sid || a.userId === sid || a.studentId === altSid || a.userId === altSid || a.studentId === studentId || a.userId === studentId || a.id === recordId) &&
-              a.date === dateStr
-            ));
-            return [...remaining, optimisticRecord];
+            const map = new Map<string, any>();
+            prev.forEach(item => {
+              const k = `${item.date}_${item.studentId || item.userId || item.studentUid || item.id}`;
+              map.set(k, item);
+            });
+            updated.forEach((item: any) => {
+              const k = `${item.date}_${item.studentId || item.userId || item.studentUid || item.id}`;
+              if (!map.has(k)) {
+                map.set(k, item);
+              }
+            });
+            return Array.from(map.values());
           });
         }
       } catch (refetchErr) {
@@ -1012,7 +1107,8 @@ const Attendance: React.FC = () => {
     const collectionName = (activeTab === 'staff' || activeTab === 'staff_auto') ? 'staff_attendance' : 'attendance';
     
     const peopleToMark = sortedPeople.filter(p => {
-      const currentStatus = getStatus(p.uid);
+      const pid = p.uid || p.id;
+      const currentStatus = getStatus(pid);
       return currentStatus !== 'not_started' && currentStatus !== 'holiday';
     });
 
@@ -1025,22 +1121,37 @@ const Attendance: React.FC = () => {
 
     try {
       const batchItems = peopleToMark.map(p => {
-        const sid = p.uid || p.id;
-        const altSid = p.id || p.uid;
-        const existing = attendance.find(a => 
-          (a.studentId === sid || a.userId === sid || a.studentId === altSid || a.userId === altSid || a.studentId === p.uid || a.userId === p.uid) && 
-          a.date === dateStr
-        );
+        const sid = String(p.uid || p.id).trim();
+        const existing = attendance.find(a => matchesAttendanceRecord(a, sid, p, dateStr));
         
         let customId = existing?.id;
         if (!customId) {
-          const classId = p.classId || 'unknown_class';
-          customId = `${dateStr}_${classId}_${sid}`;
+          customId = getAttendanceRecordId(dateStr, p, sid, classes, batches);
         }
 
+        const resolved = resolveStudentClassAndBatch(p, classes, batches);
         const payload = (activeTab === 'staff' || activeTab === 'staff_auto')
-          ? { userId: sid, date: dateStr, status, timestamp: new Date().toISOString() }
-          : { studentId: sid, date: dateStr, status, timestamp: new Date().toISOString() };
+          ? { 
+              id: customId,
+              userId: sid, 
+              date: dateStr, 
+              status, 
+              timestamp: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            }
+          : { 
+              id: customId,
+              studentId: sid, 
+              studentUid: sid,
+              classId: resolved?.classId || p.classId || (filterClass !== 'all' ? filterClass : ''),
+              batchId: resolved?.batchId || p.batchId || (filterBatch !== 'all' ? filterBatch : ''),
+              className: resolved?.className || p.className || p.class || '',
+              batchName: resolved?.batchName || p.batchName || p.batch || '',
+              date: dateStr, 
+              status, 
+              timestamp: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            };
 
         return {
           id: customId,
@@ -1057,8 +1168,15 @@ const Attendance: React.FC = () => {
       // Optimistic state update
       setAttendance(prev => {
         const markedIdSet = new Set(batchItems.map(b => b.id));
-        const sidSet = new Set(peopleToMark.flatMap(p => [p.uid, p.id].filter(Boolean)));
-        const kept = prev.filter(a => !(a.date === dateStr && (markedIdSet.has(a.id) || sidSet.has(a.studentId) || sidSet.has(a.userId))));
+        const sidSet = new Set(peopleToMark.flatMap(p => [String(p.uid || '').trim(), String(p.id || '').trim()].filter(Boolean)));
+        const kept = prev.filter(a => !(
+          a.date === dateStr && (
+            markedIdSet.has(a.id) || 
+            sidSet.has(String(a.studentId || '').trim()) || 
+            sidSet.has(String(a.userId || '').trim()) ||
+            sidSet.has(String(a.studentUid || '').trim())
+          )
+        ));
         const newRecords = batchItems.map(b => ({
           id: b.id,
           ...b.data
@@ -1072,17 +1190,18 @@ const Attendance: React.FC = () => {
         const updated = await dbService.list(collectionName, [where('date', '==', dateStr)], true);
         if (updated && updated.length > 0) {
           setAttendance(prev => {
-            const batchMap = new Map<string, any>();
-            batchItems.forEach((b: any) => {
-              const sid = b.data.studentId || b.data.userId || b.id;
-              batchMap.set(`${dateStr}_${sid}`, { id: b.id, ...b.data });
+            const map = new Map<string, any>();
+            prev.forEach(item => {
+              const k = `${item.date}_${item.studentId || item.userId || item.studentUid || item.id}`;
+              map.set(k, item);
             });
-            const merged = updated.map((rec: any) => {
-              const sid = rec.studentId || rec.userId || rec.id;
-              const batchRecord = batchMap.get(`${rec.date}_${sid}`);
-              return batchRecord || rec;
+            updated.forEach((item: any) => {
+              const k = `${item.date}_${item.studentId || item.userId || item.studentUid || item.id}`;
+              if (!map.has(k)) {
+                map.set(k, item);
+              }
             });
-            return merged;
+            return Array.from(map.values());
           });
         }
       } catch (err) {
@@ -1125,7 +1244,7 @@ const Attendance: React.FC = () => {
     // Ensure all attendance records are synced to server first
     const toSync = filteredPeople.filter(p => {
       const pid = p.uid || p.id;
-      const existingRecord = attendance.find(a => (a.studentId === pid || a.userId === pid) && a.date === dateStr);
+      const existingRecord = attendance.find(a => matchesAttendanceRecord(a, pid, p, dateStr));
       return !existingRecord;
     });
 
@@ -1134,10 +1253,18 @@ const Attendance: React.FC = () => {
       try {
         const creates = toSync.map(p => {
           const pid = p.uid || p.id;
+          const resolved = resolveStudentClassAndBatch(p, classes, batches);
+          const customId = getAttendanceRecordId(dateStr, p, pid, classes, batches);
           return {
-            id: `${dateStr}_${p.classId || 'class'}_${pid}`,
+            id: customId,
             data: {
+              id: customId,
               studentId: pid,
+              studentUid: pid,
+              classId: resolved?.classId || p.classId || (filterClass !== 'all' ? filterClass : ''),
+              batchId: resolved?.batchId || p.batchId || (filterBatch !== 'all' ? filterBatch : ''),
+              className: resolved?.className || p.className || p.class || '',
+              batchName: resolved?.batchName || p.batchName || p.batch || '',
               date: dateStr,
               status: 'absent' as const,
               timestamp: new Date().toISOString(),
@@ -1145,10 +1272,25 @@ const Attendance: React.FC = () => {
             }
           };
         });
-        await dbService.createBatch('attendance', creates);
-        // Refresh local attendance state
+        await dbService.setBatch('attendance', creates);
+        // Refresh local attendance state safely
         const updated = await dbService.list('attendance', [where('date', '==', dateStr)], true);
-        setAttendance(updated);
+        if (updated && updated.length > 0) {
+          setAttendance(prev => {
+            const map = new Map<string, any>();
+            prev.forEach(item => {
+              const k = `${item.date}_${item.studentId || item.userId || item.studentUid || item.id}`;
+              map.set(k, item);
+            });
+            updated.forEach((item: any) => {
+              const k = `${item.date}_${item.studentId || item.userId || item.studentUid || item.id}`;
+              if (!map.has(k)) {
+                map.set(k, item);
+              }
+            });
+            return Array.from(map.values());
+          });
+        }
         toast.success(`Synced ${toSync.length} records`, { id: 'sync-records' });
       } catch (e) {
         console.error("Sync error:", e);
@@ -1295,39 +1437,97 @@ const Attendance: React.FC = () => {
     }
 
     const dateStr = format(selectedDate, 'yyyy-MM-dd');
+    const collectionName = (activeTab === 'staff' || activeTab === 'staff_auto') ? 'staff_attendance' : 'attendance';
     toast.info(`Marking ${identifiedIds.length} students as present...`);
     
     try {
-      const batchUpdates = identifiedIds.map(studentId => {
-        const existing = attendance.find(a => a.studentId === studentId && a.date === dateStr);
-        if (existing) {
-          return { id: existing.id, data: { status: 'present' as const } };
+      const batchItems = identifiedIds.map(studentId => {
+        const student = people.find(p => p.uid === studentId || p.id === studentId);
+        const sid = String(student?.uid || student?.id || studentId).trim();
+        const existing = attendance.find(a => matchesAttendanceRecord(a, sid, student, dateStr));
+        const resolved = (student && classes.length > 0) ? resolveStudentClassAndBatch(student, classes, batches) : null;
+        let customId = existing?.id;
+        if (!customId) {
+          customId = getAttendanceRecordId(dateStr, student, sid, classes, batches);
         }
-        return { data: { studentId, date: dateStr, status: 'present' as const } };
+
+        const payload = (activeTab === 'staff' || activeTab === 'staff_auto')
+          ? {
+              id: customId,
+              userId: sid,
+              date: dateStr,
+              status: 'present' as const,
+              timestamp: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            }
+          : {
+              id: customId,
+              studentId: sid,
+              studentUid: sid,
+              classId: resolved?.classId || student?.classId || (filterClass !== 'all' ? filterClass : ''),
+              batchId: resolved?.batchId || student?.batchId || (filterBatch !== 'all' ? filterBatch : ''),
+              className: resolved?.className || student?.className || student?.class || '',
+              batchName: resolved?.batchName || student?.batchName || student?.batch || '',
+              date: dateStr,
+              status: 'present' as const,
+              timestamp: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            };
+
+        return {
+          id: customId,
+          data: payload
+        };
       });
 
-      // Split into updates and creates
-      const toUpdate = batchUpdates.filter(u => u.id);
-      const toCreate = batchUpdates.filter(u => !u.id).map(u => u.data);
+      const chunkSize = 400;
+      for (let i = 0; i < batchItems.length; i += chunkSize) {
+        const chunk = batchItems.slice(i, i + chunkSize);
+        await dbService.setBatch(collectionName, chunk);
+      }
 
-      if (toUpdate.length > 0) {
-        await Promise.all(toUpdate.map(u => dbService.set('attendance', u.id!, u.data)));
-      }
-      if (toCreate.length > 0) {
-        await dbService.createBatch('attendance', toCreate.map(data => {
-          const student = people.find(p => p.uid === data.studentId || p.id === data.studentId);
-          const cid = student?.classId || 'unknown_class';
-          return { 
-            id: `${data.date}_${cid}_${data.studentId}`, 
-            data 
-          };
+      // Optimistic state update
+      setAttendance(prev => {
+        const markedIdSet = new Set(batchItems.map(b => b.id));
+        const sidSet = new Set(identifiedIds.map(id => String(id).trim()));
+        const kept = prev.filter(a => !(
+          a.date === dateStr && (
+            markedIdSet.has(a.id) ||
+            sidSet.has(String(a.studentId || '').trim()) ||
+            sidSet.has(String(a.userId || '').trim()) ||
+            sidSet.has(String(a.studentUid || '').trim())
+          )
+        ));
+        const newRecords = batchItems.map(b => ({
+          id: b.id,
+          ...b.data
         }));
-      }
+        return [...kept, ...newRecords];
+      });
 
       toast.success("Smart attendance processed successfully!");
-      // Refresh local state ONLY for current date
-      const updated = await dbService.list('attendance', [where('date', '==', dateStr)], true);
-      setAttendance(updated);
+      // Refresh local state safely without wiping out optimistic state
+      try {
+        const updated = await dbService.list(collectionName, [where('date', '==', dateStr)], true);
+        if (updated && updated.length > 0) {
+          setAttendance(prev => {
+            const map = new Map<string, any>();
+            prev.forEach(item => {
+              const k = `${item.date}_${item.studentId || item.userId || item.studentUid || item.id}`;
+              map.set(k, item);
+            });
+            updated.forEach((item: any) => {
+              const k = `${item.date}_${item.studentId || item.userId || item.studentUid || item.id}`;
+              if (!map.has(k)) {
+                map.set(k, item);
+              }
+            });
+            return Array.from(map.values());
+          });
+        }
+      } catch (err) {
+        console.warn("Could not reload attendance after smart mark:", err);
+      }
     } catch (error) {
       console.error("Smart attendance error:", error);
       toast.error("Failed to process smart attendance");
@@ -1360,13 +1560,9 @@ const Attendance: React.FC = () => {
 
     // Check if an explicit attendance record exists in database for this date (takes top priority!)
     const student = people.find(p => p.uid === personId || p.id === personId);
-    const sid = student?.uid || student?.id || personId;
-    const altSid = student?.id || student?.uid || personId;
+    const sid = String(student?.uid || student?.id || personId).trim();
 
-    const record = attendance.find(a => 
-      (a.studentId === sid || a.userId === sid || a.studentId === altSid || a.userId === altSid || a.studentId === personId || a.userId === personId) && 
-      a.date === dateStr
-    );
+    const record = attendance.find(a => matchesAttendanceRecord(a, sid, student, dateStr));
     
     if (record) return record.status;
 
@@ -2823,8 +3019,8 @@ const Attendance: React.FC = () => {
     const bNameLower = String(b.name || '').trim().toLowerCase();
     if (bNameLower === 'ipl' || bNameLower.includes('ipl')) {
       const hasStudents = people.some(p => {
-        if (activeTab === 'student' && isNonAttendingPerson(p)) return false;
         const res = resolveStudentClassAndBatch(p, classes, batches);
+        if (activeTab === 'student' && isNonAttendingPerson(p, res)) return false;
         return res.batchId === b.id || (b.name && String(res.batchName || '').toLowerCase() === bNameLower);
       });
       return hasStudents;
@@ -2867,7 +3063,7 @@ const Attendance: React.FC = () => {
     const matchesStatusActive = !isInactive && !isStub;
 
     // RULE: Non-attending students should not show in attendance module in 'Mark Students Attendance' tab
-    if (activeTab === 'student' && isNonAttendingPerson(p)) {
+    if (activeTab === 'student' && isNonAttendingPerson(p, resolved)) {
       return false;
     }
 
@@ -2943,8 +3139,8 @@ const Attendance: React.FC = () => {
     if (!people || people.length === 0) return;
 
     const batchStudents = people.filter(p => {
-      if (isNonAttendingPerson(p)) return false;
       const resolved = resolveStudentClassAndBatch(p, classes, batches);
+      if (isNonAttendingPerson(p, resolved)) return false;
       return resolved.batchId === filterBatch;
     });
 
@@ -3807,7 +4003,7 @@ const Attendance: React.FC = () => {
       <SmartAttendanceModal 
         isOpen={showSmartModal}
         onClose={() => setShowSmartModal(false)}
-        people={people.filter(p => activeTab === 'staff' ? (p.role !== 'student' && p.role !== 'parent') : (p.role === 'student' || !p.role || p.role === ''))}
+        people={sortedPeople}
         type={activeTab === 'staff' ? 'staff' : 'student'}
         onMarkAttendance={handleSmartAttendance}
       />
