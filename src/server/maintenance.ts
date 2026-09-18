@@ -601,7 +601,7 @@ router.get("/db-proxy", async (req, res) => {
       return res.status(400).json({ error: "Missing collection query parameter (e.g. ?collection=examMarks)" });
     }
 
-    const { class: selectedClass, classId, exam: selectedExam, examId, batch, batchId, limit: qLimit } = req.query;
+    const { class: selectedClass, classId, exam: selectedExam, examId, batch, batchId, date, limit: qLimit } = req.query;
     const effectiveLimit = Number(qLimit) || 15000;
 
     const constraints: any[] = [
@@ -611,6 +611,7 @@ router.get("/db-proxy", async (req, res) => {
     const targetClass = (selectedClass || classId) as string;
     const targetExam = (selectedExam || examId) as string;
     const targetBatch = (batch || batchId) as string;
+    const targetDate = (date as string);
 
     if (targetExam) {
       constraints.push({ type: "where", field: "examId", op: "==", value: targetExam });
@@ -620,6 +621,9 @@ router.get("/db-proxy", async (req, res) => {
     }
     if (targetBatch) {
       constraints.push({ type: "where", field: "batchId", op: "==", value: targetBatch });
+    }
+    if (targetDate) {
+      constraints.push({ type: "where", field: "date", op: "==", value: targetDate });
     }
 
     const cacheKey = `get:${colPath}:${JSON.stringify(constraints)}`;
@@ -645,6 +649,9 @@ router.get("/db-proxy", async (req, res) => {
       }
       if (targetBatch) {
         data = data.filter((d: any) => d.batchId === targetBatch);
+      }
+      if (targetDate) {
+        data = data.filter((d: any) => d.date === targetDate);
       }
       const responsePayload = { success: true, count: data.length, data };
       dbProxyCache.set(cacheKey, { data: responsePayload, timestamp: Date.now() });

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { dbService, where, limit } from '../services/dbService';
+import { dbService, where, limit, normalizeStudentData, sortStudentsNumerically } from '../services/dbService';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
 import { 
@@ -869,23 +869,10 @@ const Attendance: React.FC = () => {
           }
         } else if (currentProfileCollection === 'students') {
           cleanedUserList = cleanedUserList.map((st: any) => {
-            const studentId = st.uid || st.id;
-            const effectiveRoll = String(
-              st.rollNumber ||
-              st.rollNo ||
-              st.roll_number ||
-              st.roll ||
-              st.batchRollNo ||
-              st.batchRollNumber ||
-              ''
-            ).trim();
+            const norm = normalizeStudentData(st);
             return {
-              ...st,
-              uid: studentId,
-              id: studentId,
-              rollNumber: effectiveRoll || st.rollNumber || '',
-              rollNo: effectiveRoll || st.rollNo || '',
-              name: getPersonDisplayName(st, 'Student')
+              ...norm,
+              name: getPersonDisplayName(norm, 'Student')
             };
           });
         }
@@ -920,43 +907,11 @@ const Attendance: React.FC = () => {
           return true;
         });
 
-        // If viewing students with a specific batch or class, automatically assign missing roll numbers
-        if (currentProfileCollection === 'students' && (filterBatch !== 'all' || filterClass !== 'all')) {
-          const batchStudents = deduplicatedUsers.filter((u: any) => {
-            const resolved = resolveStudentClassAndBatch(u, classes, batches);
-            if (isNonAttendingPerson(u, resolved)) return false;
-            return (filterBatch === 'all' || resolved.batchId === filterBatch) &&
-                   (filterClass === 'all' || resolved.classId === filterClass);
-          });
+        const sortedUsers = currentProfileCollection === 'students'
+          ? sortStudentsNumerically(deduplicatedUsers)
+          : deduplicatedUsers;
 
-          const anyMissingRoll = batchStudents.some((s: any) => !s.rollNumber && !s.rollNo);
-          if (anyMissingRoll && batchStudents.length > 0) {
-            const males = batchStudents.filter(s => String(s.gender || '').toLowerCase() === 'male');
-            const females = batchStudents.filter(s => String(s.gender || '').toLowerCase() === 'female');
-            const others = batchStudents.filter(s => {
-              const g = String(s.gender || '').toLowerCase();
-              return g !== 'male' && g !== 'female';
-            });
-            const sortFn = (arr: any[]) => arr.slice().sort((a, b) => getPersonDisplayName(a).localeCompare(getPersonDisplayName(b)));
-            const ordered = [...sortFn(males), ...sortFn(females), ...sortFn(others)];
-
-            ordered.forEach((s: any, idx: number) => {
-              const expectedRoll = String(idx + 1);
-              if (!s.rollNumber && !s.rollNo) {
-                s.rollNumber = expectedRoll;
-                s.rollNo = expectedRoll;
-                const sId = s.uid || s.id;
-                dbService.update('students', sId, {
-                  rollNumber: expectedRoll,
-                  rollNo: expectedRoll,
-                  updatedAt: new Date().toISOString()
-                }).catch(() => {});
-              }
-            });
-          }
-        }
-
-        setPeople(deduplicatedUsers);
+        setPeople(sortedUsers);
         setAttendance((attendanceList || []) as any[]);
         setLeaves(activeLeaves);
         setAlertsSent(!!alertDocPrimary || !!alertDocFallback);
@@ -3062,11 +3017,6 @@ const Attendance: React.FC = () => {
     const isInactive = pStatusClean === 'inactive' || pStatusClean === 'dropped' || pStatusClean === 'tc_issued' || pStatusClean === 'withdrawn' || pStatusClean === 'left' || pStatusClean === 'archived' || pStatusClean === 'deleted';
     const matchesStatusActive = !isInactive && !isStub;
 
-    // RULE: Non-attending students should not show in attendance module in 'Mark Students Attendance' tab
-    if (activeTab === 'student' && isNonAttendingPerson(p, resolved)) {
-      return false;
-    }
-
     return matchesClass && matchesBatch && matchesTab && matchesStatusActive && matchesTeacherAccess;
   });
 
@@ -3095,18 +3045,23 @@ const Attendance: React.FC = () => {
   const sortedPeople = [...filteredPeople].sort((a, b) => {
     const config = sortConfig || { key: 'rollNumber', direction: 'asc' };
     
-    if (config.key === 'rollNumber') {
-      const rollA = String(a.rollNumber || a.rollNo || a.roll_number || a.roll || a.admissionNumber || '').trim();
-      const rollB = String(b.rollNumber || b.rollNo || b.roll_number || b.roll || b.admissionNumber || '').trim();
-      if (rollA && rollB) {
-        const comparison = rollA.localeCompare(rollB, undefined, { numeric: true, sensitivity: 'base' });
-        return config.direction === 'asc' ? comparison : -comparison;
+    if (config.key === 'rollNumber' || config.key === 'rollNo') {
+      const rawA = a.rollNo !== undefined && a.rollNo !== null && a.rollNo !== '' ? a.rollNo : a.rollNumber;
+      const rawB = b.rollNo !== undefined && b.rollNo !== null && b.rollNo !== '' ? b.rollNo : b.rollNumber;
+
+      const numA = rawA !== undefined && rawA !== null && rawA !== '' ? parseInt(String(rawA).trim(), 10) : NaN;
+      const numB = rawB !== undefined && rawB !== null && rawB !== '' ? parseInt(String(rawB).trim(), 10) : NaN;
+
+      const hasA = !isNaN(numA);
+      const hasB = !isNaN(numB);
+
+      if (hasA && hasB) {
+        if (numA !== numB) return config.direction === 'asc' ? numA - numB : numB - numA;
+        return 0; // Preserve live student order
       }
-      if (rollA && !rollB) return config.direction === 'asc' ? -1 : 1;
-      if (!rollA && rollB) return config.direction === 'asc' ? 1 : -1;
-      const nameA = getPersonDisplayName(a).toLowerCase();
-      const nameB = getPersonDisplayName(b).toLowerCase();
-      return nameA.localeCompare(nameB);
+      if (hasA && !hasB) return config.direction === 'asc' ? -1 : 1;
+      if (!hasA && hasB) return config.direction === 'asc' ? 1 : -1;
+      return 0; // Preserve live order when neither has numeric roll
     }
     
     if (config.key === 'name') {
@@ -3131,58 +3086,6 @@ const Attendance: React.FC = () => {
 
   const totalPages = Math.ceil(sortedPeople.length / pageSize);
   const paginatedPeople = sortedPeople.slice((currentPage - 1) * pageSize, currentPage * pageSize);
-
-  // Auto-assign and persist roll numbers for students in selected batch if missing
-  useEffect(() => {
-    if (activeTab !== 'student' && activeTab !== 'register') return;
-    if (filterBatch === 'all') return;
-    if (!people || people.length === 0) return;
-
-    const batchStudents = people.filter(p => {
-      const resolved = resolveStudentClassAndBatch(p, classes, batches);
-      if (isNonAttendingPerson(p, resolved)) return false;
-      return resolved.batchId === filterBatch;
-    });
-
-    if (batchStudents.length === 0) return;
-
-    const missingRoll = batchStudents.some(s => !s.rollNumber && !s.rollNo);
-    if (!missingRoll) return;
-
-    const males = batchStudents.filter(s => String(s.gender || '').toLowerCase() === 'male');
-    const females = batchStudents.filter(s => String(s.gender || '').toLowerCase() === 'female');
-    const others = batchStudents.filter(s => {
-      const g = String(s.gender || '').toLowerCase();
-      return g !== 'male' && g !== 'female';
-    });
-
-    const sortFn = (arr: any[]) => arr.slice().sort((a, b) => getPersonDisplayName(a).localeCompare(getPersonDisplayName(b)));
-    const ordered = [...sortFn(males), ...sortFn(females), ...sortFn(others)];
-
-    let changed = false;
-    const updatedPeople = people.map(p => {
-      const idx = ordered.findIndex(o => (o.uid || o.id) === (p.uid || p.id));
-      if (idx !== -1) {
-        const expectedRoll = String(idx + 1);
-        if (!p.rollNumber && !p.rollNo) {
-          changed = true;
-          const sId = p.uid || p.id;
-          dbService.update('students', sId, {
-            rollNumber: expectedRoll,
-            rollNo: expectedRoll,
-            updatedAt: new Date().toISOString()
-          }).catch(err => console.warn('Could not persist roll number update:', err));
-
-          return { ...p, rollNumber: expectedRoll, rollNo: expectedRoll };
-        }
-      }
-      return p;
-    });
-
-    if (changed) {
-      setPeople(updatedPeople);
-    }
-  }, [filterBatch, activeTab, people.length, classes, batches]);
 
   // Auto-select first available for teachers & play school incharge
   useEffect(() => {
@@ -3718,12 +3621,7 @@ const Attendance: React.FC = () => {
                       {activeTab === 'student' ? (
                         <>
                           <td className="px-6 py-4 text-lg text-neutral-800 font-mono font-bold">
-                            {person.rollNumber || person.rollNo || person.roll_number || person.roll || (
-                              (() => {
-                                const idx = sortedPeople.findIndex(p => (p.uid || p.id) === personId);
-                                return idx >= 0 ? String(idx + 1) : '-';
-                              })()
-                            )}
+                            {person.rollNo || person.rollNumber || person.roll_number || person.roll || '-'}
                           </td>
                           <td className="px-6 py-4">
                             <div className="flex items-center gap-3">
@@ -3735,7 +3633,7 @@ const Attendance: React.FC = () => {
                                 </div>
                               )}
                               <span className={`font-bold text-lg ${(person.role === 'student' || !person.role || person.role === '') && (String(person.gender || "")).toLowerCase() === 'female' ? 'text-blue-600' : 'text-sidebar'}`}>{personDisplayName}</span>
-                              {(person.status === 'non_attending' || person.status === 'non-attending' || person.nonAttending === true || person.isNonAttending === true) && (
+                              {(person.status === 'non_attending' || person.status === 'non-attending' || person.nonAttending === true || person.isNonAttending === true || person.isAttending === false || person.isAttending === 'false' || isNonAttendingPerson(person)) && (
                                 <span className="px-2 py-0.5 text-[11px] font-bold rounded bg-amber-100 text-amber-800 border border-amber-200 whitespace-nowrap">
                                   Non-Attending
                                 </span>

@@ -487,6 +487,64 @@ export function formatNameFields(path: string, item: any): any {
   return item;
 }
 
+export function normalizeStudentData(item: any): any {
+  if (!item || typeof item !== 'object') return item;
+  const s = { ...item };
+  const sId = s.id || s.uid || s._id || s.studentId;
+  s.id = sId;
+  s.uid = sId;
+
+  // Extract effective roll number without synthesizing or overriding
+  const rawRoll = s.rollNo !== undefined && s.rollNo !== null ? s.rollNo : (s.rollNumber !== undefined && s.rollNumber !== null ? s.rollNumber : (s.roll_number || s.roll || s.batchRollNo || s.batchRollNumber || ''));
+  const effectiveRoll = String(rawRoll).trim();
+  s.rollNo = effectiveRoll;
+  s.rollNumber = effectiveRoll;
+
+  // Accurately determine non-attending status
+  const stat = String(s.status || '').toLowerCase().trim().replace(/[- ]/g, '_');
+  const isNonAttending = s.isAttending === false || 
+                         s.isAttending === 'false' || 
+                         s.isAttending === 0 || 
+                         stat === 'non_attending' || 
+                         stat === 'nonattending' ||
+                         s.isNonAttending === true || 
+                         s.nonAttending === true;
+
+  if (isNonAttending) {
+    s.isAttending = false;
+    s.status = 'non_attending';
+    s.isNonAttending = true;
+    s.nonAttending = true;
+  } else if (!s.status || stat === 'active') {
+    s.isAttending = true;
+    s.status = 'active';
+  }
+
+  s.uniqueStudentId = s.uniqueStudentId || generateUniqueStudentId(s);
+  return s;
+}
+
+export function sortStudentsNumerically<T extends { rollNo?: any; rollNumber?: any }>(students: T[]): T[] {
+  return [...students].sort((a, b) => {
+    const rawA = a.rollNo !== undefined && a.rollNo !== null && a.rollNo !== '' ? a.rollNo : a.rollNumber;
+    const rawB = b.rollNo !== undefined && b.rollNo !== null && b.rollNo !== '' ? b.rollNo : b.rollNumber;
+
+    const numA = rawA !== undefined && rawA !== null && rawA !== '' ? parseInt(String(rawA).trim(), 10) : NaN;
+    const numB = rawB !== undefined && rawB !== null && rawB !== '' ? parseInt(String(rawB).trim(), 10) : NaN;
+
+    const hasA = !isNaN(numA);
+    const hasB = !isNaN(numB);
+
+    if (hasA && hasB) {
+      if (numA !== numB) return numA - numB;
+      return 0; // Preserve live order when equal
+    }
+    if (hasA && !hasB) return -1;
+    if (!hasA && hasB) return 1;
+    return 0; // Preserve live order when both missing
+  });
+}
+
 export function enforceSecuredAccess(path: string, item: any): any | null {
   if (!item) return null;
   
@@ -1628,6 +1686,127 @@ export const dbService = {
   },
 
   async list(path: string, constraints: QueryConstraint[] = [], bypassCache = false) {
+    if (path === 'students') {
+      try {
+        const cacheKey = getListCacheKey(path, constraints);
+        if (!bypassCache) {
+          const cached = listCache.get(cacheKey);
+          if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+            return cached.data;
+          }
+        }
+
+        let studentsList: any[] = [];
+        try {
+          const directRes = await fetch('https://antonyschool.in/api/maintenance/db-proxy?collection=students', { mode: 'cors' });
+          const contentType = directRes.headers.get('content-type') || '';
+          if (directRes.ok && contentType.includes('application/json')) {
+            const parsed = await directRes.json();
+            studentsList = Array.isArray(parsed) ? parsed : (parsed.data || []);
+          }
+        } catch (err) {}
+
+        if (!studentsList || studentsList.length === 0) {
+          try {
+            const proxyRes = await fetch('/api/maintenance/db-proxy?collection=students', { mode: 'cors' });
+            if (proxyRes.ok) {
+              const parsed = await proxyRes.json();
+              studentsList = Array.isArray(parsed) ? parsed : (parsed.data || []);
+            }
+          } catch (err) {}
+        }
+
+        if (!studentsList || studentsList.length === 0) {
+          try {
+            const postRes = await proxyRequest('list', 'students', { constraints });
+            if (postRes && Array.isArray(postRes.data)) {
+              studentsList = postRes.data;
+            }
+          } catch (err) {}
+        }
+
+        if (Array.isArray(studentsList) && studentsList.length > 0) {
+          const normalized = studentsList.map(s => normalizeStudentData(s));
+          const sorted = sortStudentsNumerically(normalized);
+          const secured = sorted.map(s => enforceSecuredAccess(path, s)).filter(Boolean);
+          const deduped = deduplicateArrayByID(secured);
+          listCache.set(cacheKey, { data: deduped, timestamp: Date.now() });
+          return deduped;
+        }
+      } catch (error) {
+        console.warn("Failed to fetch students from live db-proxy:", error);
+      }
+    }
+
+    if (path === 'attendance') {
+      try {
+        const cacheKey = getListCacheKey(path, constraints);
+        if (!bypassCache) {
+          const cached = listCache.get(cacheKey);
+          if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+            return cached.data;
+          }
+        }
+
+        let dateParam = '';
+        for (const c of constraints) {
+          if (c && (c as any).type === 'where') {
+            const field = (c as any)._field?.segments?.[0] || (c as any).field;
+            const op = (c as any)._op || (c as any).op;
+            const val = (c as any)._value !== undefined ? (c as any)._value : (c as any).value;
+            if (field === 'date' && (op === '==' || op === 'equal') && val) {
+              dateParam = String(val);
+              break;
+            }
+          }
+        }
+
+        let attendanceList: any[] = [];
+        const querySuffix = dateParam ? `&date=${encodeURIComponent(dateParam)}` : '';
+
+        try {
+          const directRes = await fetch(`https://antonyschool.in/api/maintenance/db-proxy?collection=attendance${querySuffix}`, { mode: 'cors' });
+          const contentType = directRes.headers.get('content-type') || '';
+          if (directRes.ok && contentType.includes('application/json')) {
+            const parsed = await directRes.json();
+            attendanceList = Array.isArray(parsed) ? parsed : (parsed.data || []);
+          }
+        } catch (err) {}
+
+        if (!attendanceList || attendanceList.length === 0) {
+          try {
+            const proxyRes = await fetch(`/api/maintenance/db-proxy?collection=attendance${querySuffix}`, { mode: 'cors' });
+            if (proxyRes.ok) {
+              const parsed = await proxyRes.json();
+              attendanceList = Array.isArray(parsed) ? parsed : (parsed.data || []);
+            }
+          } catch (err) {}
+        }
+
+        if (!attendanceList || attendanceList.length === 0) {
+          try {
+            const postRes = await proxyRequest('list', 'attendance', { constraints });
+            if (postRes && Array.isArray(postRes.data)) {
+              attendanceList = postRes.data;
+            }
+          } catch (err) {}
+        }
+
+        if (Array.isArray(attendanceList)) {
+          let filtered = attendanceList;
+          if (dateParam) {
+            filtered = attendanceList.filter((a: any) => a.date === dateParam);
+          }
+          const secured = filtered.map(a => enforceSecuredAccess(path, a)).filter(Boolean);
+          const deduped = deduplicateArrayByID(secured);
+          listCache.set(cacheKey, { data: deduped, timestamp: Date.now() });
+          return deduped;
+        }
+      } catch (error) {
+        console.warn("Failed to fetch attendance from live db-proxy:", error);
+      }
+    }
+
     if (path === 'exams') {
       try {
         const cacheKey = getListCacheKey(path, constraints);
