@@ -1,6 +1,7 @@
 import mongoose, { Schema, Document, Model } from 'mongoose';
 import fs from 'fs';
 import path from 'path';
+import { checkWhatsAppDuplicate, recordWhatsAppIdempotency } from './WhatsAppIdempotency.js';
 
 export interface IWhatsAppQueue extends Document {
   recipient: string;
@@ -137,6 +138,31 @@ export async function createQueueItem(data: {
   const targetType = data.type || 'single';
   const targetStatus = data.status || 'pending';
 
+  // Strict Deduplication Check: Prevent same message from being queued twice
+  const checkResult = await checkWhatsAppDuplicate({
+    idempotencyKey: data.idempotencyKey,
+    recipient: targetRecipient,
+    text: targetMessage,
+    templateType: data.options?.templateType,
+    messageType: data.options?.messageType || data.type,
+    studentId: data.options?.studentId,
+    forceSend: data.options?.forceSend === true
+  });
+
+  if (checkResult.isDuplicate) {
+    console.warn(`[WhatsAppQueue Deduplication] Blocked duplicate queue item for ${targetRecipient}: ${checkResult.reason}`);
+    return {
+      _id: checkResult.existingId || `duplicate_${Date.now()}`,
+      recipient: targetRecipient,
+      message: targetMessage,
+      mediaUrl: targetMediaUrl,
+      status: 'duplicate',
+      duplicate: true,
+      skipped: true,
+      reason: checkResult.reason
+    };
+  }
+
   if (isMongoConnected) {
     try {
       const doc = await WhatsAppQueue.create({
@@ -153,6 +179,21 @@ export async function createQueueItem(data: {
         attempts: 0,
         createdAt: new Date()
       });
+
+      // Record in MongoDB idempotency store if key present
+      if (data.idempotencyKey) {
+        recordWhatsAppIdempotency({
+          key: data.idempotencyKey,
+          recipient: targetRecipient,
+          text: targetMessage,
+          status: targetStatus,
+          templateType: data.options?.templateType,
+          messageType: data.options?.messageType || data.type,
+          studentId: data.options?.studentId,
+          source: data.options?.source
+        }).catch(() => {});
+      }
+
       return {
         ...doc.toObject(),
         _id: doc._id.toString()
@@ -249,15 +290,68 @@ export async function fetchNextPendingItem(): Promise<any | null> {
       return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
     });
 
-  if (pendingItems.length === 0) return null;
+  if (pendingItems.length > 0) {
+    const next = pendingItems[0];
+    next.status = 'processing';
+    next.attempts = (next.attempts || 0) + 1;
+    next.startedAt = new Date();
+    memoryQueue.set(next._id, next);
+    persistLocalQueue();
+    return next;
+  }
 
-  const next = pendingItems[0];
-  next.status = 'processing';
-  next.attempts = (next.attempts || 0) + 1;
-  next.startedAt = new Date();
-  memoryQueue.set(next._id, next);
-  persistLocalQueue();
-  return next;
+  // Fallback to check Firestore whatsapp_queue collection for any direct writes
+  try {
+    const { getDbAdmin, isDatabaseDenied } = await import('../db.js');
+    if (typeof isDatabaseDenied === 'function' ? !isDatabaseDenied() : true) {
+      const db = getDbAdmin();
+      if (db && typeof db.collection === 'function') {
+        const snap = await db.collection('whatsapp_queue')
+          .where('status', '==', 'pending')
+          .limit(5)
+          .get()
+          .catch(() => null);
+
+        if (snap && !snap.empty) {
+          for (const doc of snap.docs) {
+            const d = doc.data();
+            // Verify if already handled in memory
+            if (memoryQueue.has(doc.id)) {
+              const mem = memoryQueue.get(doc.id);
+              if (mem.status === 'sent' || mem.status === 'processing') {
+                doc.ref.update({ status: mem.status }).catch(() => {});
+                continue;
+              }
+            }
+
+            // Claim atomically in Firestore
+            await doc.ref.update({
+              status: 'processing',
+              startedAt: new Date().toISOString(),
+              attempts: (d.attempts || 0) + 1,
+              updatedAt: new Date().toISOString()
+            }).catch(() => {});
+
+            return {
+              _id: doc.id,
+              recipient: d.to || d.recipient || d.phone,
+              to: d.to || d.recipient || d.phone,
+              message: d.text || d.message || '',
+              text: d.text || d.message || '',
+              options: d.options || {},
+              priority: typeof d.priority === 'number' ? d.priority : 3,
+              type: d.type || 'single',
+              idempotencyKey: d.idempotencyKey,
+              status: 'processing',
+              attempts: (d.attempts || 0) + 1
+            };
+          }
+        }
+      }
+    }
+  } catch (_) {}
+
+  return null;
 }
 
 /**
@@ -279,7 +373,20 @@ export async function updateQueueItem(
 
   if (isMongoConnected) {
     try {
-      await WhatsAppQueue.findByIdAndUpdate(id, { $set: updates });
+      const updatedDoc = await WhatsAppQueue.findByIdAndUpdate(id, { $set: updates }, { new: true });
+      if (updatedDoc?.idempotencyKey && updates.status) {
+        const { WhatsAppIdempotency } = await import('./WhatsAppIdempotency.js');
+        await WhatsAppIdempotency.findOneAndUpdate(
+          { key: updatedDoc.idempotencyKey },
+          { 
+            $set: { 
+              status: updates.status, 
+              waMessageId: updates.waMessageId || updatedDoc.waMessageId,
+              updatedAt: new Date() 
+            } 
+          }
+        ).catch(() => {});
+      }
     } catch (err) {
       console.warn('[WhatsAppQueue] Mongoose updateQueueItem error:', err);
     }

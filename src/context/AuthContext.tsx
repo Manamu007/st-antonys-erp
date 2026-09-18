@@ -732,21 +732,61 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   const isTeacher = isTeacherRole(staffDoc.role || pRole, pEmail, staffDoc.name || p.name);
                   const sysTeacher = (isTeacher && pEmail) ? SYSTEM_TEACHER_PROFILES[pEmail] : null;
                   const finalName = staffDoc.name || p.name || (p as any).displayName || sysTeacher?.name || '';
+                  
+                  // Dynamically resolve Class Teacher assignment directly from Academics module batches
+                  let assignedAsClassTeacher = false;
+                  let matchedBatchInfo: any = null;
+                  if (isTeacher) {
+                    try {
+                      const allBatches = await dbService.list('batches').catch(() => []);
+                      const sIds = new Set([
+                        String(staffDoc.id || '').toLowerCase().trim(),
+                        String(staffDoc.uid || '').toLowerCase().trim(),
+                        String(p.uid || '').toLowerCase().trim(),
+                        String(p.id || '').toLowerCase().trim()
+                      ].filter(Boolean));
+
+                      matchedBatchInfo = (allBatches as any[]).find((b: any) => {
+                        const bCTId = String(b.classTeacherId || '').toLowerCase().trim();
+                        const bCTEmail = String(b.classTeacherEmail || '').toLowerCase().trim();
+                        const bCTName = String(b.classTeacherName || b.classTeacher || '').toLowerCase().trim();
+                        return (
+                          (bCTId && sIds.has(bCTId)) ||
+                          (pEmail && bCTEmail && bCTEmail === pEmail) ||
+                          (finalName && bCTName && bCTName === finalName.toLowerCase().trim())
+                        );
+                      });
+                      if (matchedBatchInfo) {
+                        assignedAsClassTeacher = true;
+                      }
+                    } catch (e) {
+                      console.warn('Academics batch lookup for class teacher:', e);
+                    }
+                  }
+
+                  const teacherResolvedRole = isTeacher
+                    ? (assignedAsClassTeacher ? 'teacher_class' : 'teacher_subject')
+                    : (staffDoc.role || p.role || 'staff');
+
                   return {
                     ...p,
                     ...staffDoc,
                     name: finalName,
-                    role: staffDoc.role || p.role || (isTeacher ? 'teacher_class' : 'staff'),
-                    designation: staffDoc.designation || p.designation || sysTeacher?.designation || (isTeacher ? 'Class Teacher' : 'Staff'),
+                    role: teacherResolvedRole,
+                    isClassTeacher: assignedAsClassTeacher,
+                    classTeacherBatchId: matchedBatchInfo?.id || staffDoc.classTeacherBatchId || p.classTeacherBatchId || '',
+                    classTeacherBatchName: matchedBatchInfo?.name || matchedBatchInfo?.batchName || staffDoc.classTeacherBatchName || p.classTeacherBatchName || '',
+                    class: matchedBatchInfo?.className || matchedBatchInfo?.class || staffDoc.class || p.class || '',
+                    section: matchedBatchInfo?.section || staffDoc.section || p.section || '',
+                    designation: isTeacher 
+                      ? (assignedAsClassTeacher ? 'Class Teacher' : 'Subject Teacher') 
+                      : (staffDoc.designation || p.designation || sysTeacher?.designation || 'Staff'),
                     department: staffDoc.department || p.department || sysTeacher?.department || 'Primary',
                     gender: staffDoc.gender || p.gender || sysTeacher?.gender || 'Female',
                     qualification: staffDoc.qualification || p.qualification || sysTeacher?.qualification || '',
                     experience: staffDoc.experience || p.experience || sysTeacher?.experience || '',
                     subjects: (staffDoc.subjects && staffDoc.subjects.length > 0) ? staffDoc.subjects : (p.subjects || sysTeacher?.subjects || []),
                     teachingClasses: (staffDoc.teachingClasses && staffDoc.teachingClasses.length > 0) ? staffDoc.teachingClasses : (p.teachingClasses || sysTeacher?.teachingClasses || []),
-                    class: staffDoc.class || p.class || sysTeacher?.class || '',
-                    section: staffDoc.section || p.section || sysTeacher?.section || '',
-                    classTeacherBatchName: staffDoc.classTeacherBatchName || p.classTeacherBatchName || sysTeacher?.classTeacherBatchName || '',
                     id: staffDoc.id || staffDoc.uid,
                     uid: p.uid || p.id
                   };
@@ -1613,11 +1653,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let isSubscribed = true;
     dbService.get('roles', roleKey).then((roleData: any) => {
       if (!isSubscribed) return;
-      if (roleData && !roleData.isDeleted && roleData.permissions && roleData.permissions.length > 0) {
-        // Safe merge with system defaults of the role to ensure they never lose core capability
-        const defaults = ROLE_PERMISSIONS[roleKey as Role] || [];
-        const merged = Array.from(new Set([...defaults, ...roleData.permissions]));
-        setStablePermissions(merged);
+      if (roleData && !roleData.isDeleted && Array.isArray(roleData.permissions)) {
+        // Respect database saved role permissions accurately
+        setStablePermissions(roleData.permissions);
       } else {
         setStablePermissions(ROLE_PERMISSIONS[roleKey as Role] || []);
       }
@@ -1695,11 +1733,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const isSuper = (rKey === 'super_admin' || isDeveloperAccount(user?.email)) && !isTeacherUser;
     if (isSuper || (rKey === 'admin' && !isTeacherUser)) return true;
     
-    let permissions = rolePermissions;
-    if (rKey === 'student' || rKey === 'parent' || rKey === 'clerk' || rKey === 'receptionist' || rKey === 'accountant' || rKey === 'warden' || rKey === 'driver' || rKey === 'doctor' || rKey === 'play_school_incharge') {
-      const defaults = ROLE_PERMISSIONS[rKey as Role] || [];
-      permissions = Array.from(new Set([...defaults, ...permissions]));
-    }
+    const permissions = rolePermissions.length > 0 ? rolePermissions : (ROLE_PERMISSIONS[rKey as Role] || []);
     return permissions.includes(permission);
   }, [profile, user?.email, rolePermissions]);
 

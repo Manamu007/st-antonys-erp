@@ -82,6 +82,229 @@ export const sortByRollNumber = (a: any, b: any) => {
   return rollA.localeCompare(rollB, undefined, { numeric: true, sensitivity: 'base' });
 };
 
+/**
+ * Live MongoDB fetching for Exams list directly via browser fetch() with { mode: 'cors' }
+ */
+export async function fetchExamsFromLiveProxy(): Promise<any[]> {
+  const directUrl = 'https://antonyschool.in/api/maintenance/db-proxy?collection=exams';
+  const localUrl = '/api/maintenance/db-proxy?collection=exams';
+
+  try {
+    const res = await fetch(directUrl, { mode: 'cors' });
+    const ct = res.headers.get('content-type') || '';
+    if (res.ok && ct.includes('application/json')) {
+      const data = await res.json();
+      const list = Array.isArray(data) ? data : (data?.data || []);
+      if (Array.isArray(list) && list.length > 0) return list;
+    }
+  } catch (e) {}
+
+  try {
+    const res2 = await fetch(localUrl, { mode: 'cors' });
+    if (res2.ok) {
+      const data = await res2.json();
+      const list = Array.isArray(data) ? data : (data?.data || []);
+      if (Array.isArray(list) && list.length > 0) return list;
+    }
+  } catch (e) {
+    console.warn('Failed to fetch exams from local db-proxy:', e);
+  }
+  return [];
+}
+
+/**
+ * Live MongoDB fetching for Exam Marks directly via browser fetch() with { mode: 'cors' }
+ */
+export async function fetchExamMarksFromLiveProxy(selectedClass?: string, selectedExam?: string, selectedBatch?: string): Promise<any[]> {
+  const params = new URLSearchParams();
+  params.append('collection', 'examMarks');
+  params.append('limit', '15000');
+  if (selectedClass) params.append('class', selectedClass);
+  if (selectedExam) params.append('exam', selectedExam);
+  if (selectedBatch) params.append('batch', selectedBatch);
+
+  const queryStr = params.toString();
+
+  const endpoints = [
+    `https://antonyschool.in/api/maintenance/db-proxy?${queryStr}`,
+    `https://antonyschool.in/api/exam-marks?class=${encodeURIComponent(selectedClass || '')}&exam=${encodeURIComponent(selectedExam || '')}`,
+    `/api/exam-marks?class=${encodeURIComponent(selectedClass || '')}&exam=${encodeURIComponent(selectedExam || '')}&batch=${encodeURIComponent(selectedBatch || '')}`,
+    `/api/maintenance/db-proxy?${queryStr}`
+  ];
+
+  for (const url of endpoints) {
+    try {
+      const res = await fetch(url, { mode: 'cors' });
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && (ct.includes('application/json') || !url.startsWith('https://antonyschool.in'))) {
+        const data = await res.json();
+        const list = Array.isArray(data) ? data : (data?.data || []);
+        if (Array.isArray(list) && list.length > 0) {
+          return list;
+        }
+      }
+    } catch (err) {
+      // try next fallback
+    }
+  }
+
+  return [];
+}
+
+/**
+ * Match an examMarks document to a student record
+ * Matches studentId === student._id OR student.id OR student.uid OR rollNo === student.rollNo (with optional class check)
+ */
+export const isMarkForStudent = (mark: any, student: any): boolean => {
+  if (!mark || !student) return false;
+  const sId = String(student._id || student.id || student.uid || '').trim();
+  const sRoll = String(student.rollNumber || student.rollNo || student.batchRollNo || student.batchRollNumber || '').trim();
+  const mStudentId = String(mark.studentId || mark._studentId || mark.uid || '').trim();
+  const mRollNo = String(mark.rollNo || mark.rollNumber || '').trim();
+
+  // 1. Direct student ID match
+  if (sId && mStudentId && (mStudentId === sId || mStudentId.toLowerCase() === sId.toLowerCase())) {
+    return true;
+  }
+  // 2. Roll number match
+  if (sRoll && mRollNo && sRoll === mRollNo) {
+    if (!mark.classId || !student.classId || mark.classId === student.classId) {
+      return true;
+    }
+  }
+  // 3. Name match fallback
+  const sName = String(student.name || student.studentName || '').toLowerCase().trim();
+  const mName = String(mark.studentName || mark.name || '').toLowerCase().trim();
+  if (sName && mName && sName === mName) {
+    if (!mark.classId || !student.classId || mark.classId === student.classId) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/**
+ * Normalize subject identifier to one of the standard subjects:
+ * Telugu, Hindi, English, Mathematics, Environmental Studies, General Science, Social Studies, Computers
+ */
+export const normalizeSubjectKey = (subjIdOrName: any): string => {
+  if (!subjIdOrName) return '';
+  const s = String(subjIdOrName).trim().toLowerCase();
+  const clean = s.replace(/[^a-z0-9]/g, '');
+
+  // 1. Telugu
+  if (clean.includes('telugu') || clean === 'tel' || clean === 'ouf7g6yjlrc1a4zknulv' || clean === 'subjtel') {
+    return 'Telugu';
+  }
+  // 2. Hindi
+  if (clean.includes('hindi') || clean.includes('hindhi') || clean === 'hin' || clean === 'q2x4r3hknkqrnbdqi37f' || clean === 'subjhin') {
+    return 'Hindi';
+  }
+  // 3. English
+  if (clean.includes('english') || clean === 'eng' || clean === 'yueqowjdv5qtnljlez7x' || clean === 'subjeng') {
+    return 'English';
+  }
+  // 4. Mathematics
+  if (clean.includes('math') || clean.includes('mathematics') || clean.includes('maths') || clean === '3elrlgjud3akh0l7kzie' || clean === 'subjmath') {
+    return 'Mathematics';
+  }
+  // 5. Environmental Studies
+  if (clean.includes('evs') || clean.includes('environment') || clean.includes('envstudies') || clean === 'odvz1bsg7bahmqabo7o3' || clean === 'subjevs') {
+    return 'Environmental Studies';
+  }
+  // 6. General Science
+  if ((clean.includes('science') || clean === 'sci' || clean.includes('genscience') || clean.includes('physics') || clean === 'ps' || clean === 'phy' || clean.includes('biology') || clean === 'bio' || clean === 'ns') &&
+      !clean.includes('social') && !clean.includes('computer')) {
+    return 'General Science';
+  }
+  // 7. Social Studies
+  if (clean.includes('social') || clean.includes('sst') || clean.includes('soc') || clean === 'subjsoc') {
+    return 'Social Studies';
+  }
+  // 8. Computers
+  if (clean.includes('computer') || clean.includes('computers') || clean === 'cs' || clean.includes('it') || clean === 'subjcomp') {
+    return 'Computers';
+  }
+
+  return clean;
+};
+
+/**
+ * Match an examMarks document to a subject
+ */
+export const isMarkForSubject = (mark: any, targetSubj: any): boolean => {
+  if (!mark || !targetSubj) return false;
+  const targetKey = normalizeSubjectKey(targetSubj.name || targetSubj.id);
+  const markKey = normalizeSubjectKey(mark.subjectId || mark.subjectName || mark.subject);
+
+  if (targetKey && markKey && targetKey === markKey) {
+    return true;
+  }
+  if (mark.subjectId && targetSubj.id && String(mark.subjectId).toLowerCase().trim() === String(targetSubj.id).toLowerCase().trim()) {
+    return true;
+  }
+  if (mark.subjectName && targetSubj.name && String(mark.subjectName).toLowerCase().trim() === String(targetSubj.name).toLowerCase().trim()) {
+    return true;
+  }
+  return false;
+};
+
+/**
+ * Match an examMarks document to an exam
+ */
+export const isMarkForExam = (mark: any, exam: any): boolean => {
+  if (!exam) return true;
+  const exId = String(exam.id || exam._id || exam.uid || '').trim();
+  const exTitle = String(exam.title || '').trim().toLowerCase();
+  const mExId = String(mark.examId || mark._examId || mark.exam || '').trim();
+
+  if (!mExId) return true;
+  if (exId && (mExId === exId || mExId.toLowerCase() === exId.toLowerCase())) return true;
+
+  const exClean = (exId + ' ' + exTitle).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const mExClean = mExId.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  const isFa1Target = exClean.includes('fa1') || exClean.includes('formative1') || exClean.includes('ogbtxoj');
+  const isFa1Doc = mExClean.includes('fa1') || mExClean === '0qdcty1rrnqrrcavpk5v' || mExClean === 'ogbtxojta6coskpbaf7b' || mExClean === 'wvy1u6wwttuqdertoh5w' || mExClean === 'donlrxyccsql4eexhuoi' || mExClean === 'wkpec0xmov3cddyosw2b';
+
+  if (isFa1Target && isFa1Doc) return true;
+
+  const isFa3Target = exClean.includes('fa3') || exClean.includes('formative3');
+  const isFa3Doc = mExClean.includes('fa3') || mExClean === 'fa320262027';
+
+  if (isFa3Target && isFa3Doc) return true;
+
+  const isFa2Target = exClean.includes('fa2') || exClean.includes('formative2');
+  const isFa2Doc = mExClean.includes('fa2');
+  if (isFa2Target && isFa2Doc) return true;
+
+  const isFa4Target = exClean.includes('fa4') || exClean.includes('formative4');
+  const isFa4Doc = mExClean.includes('fa4');
+  if (isFa4Target && isFa4Doc) return true;
+
+  const isSa1Target = exClean.includes('sa1') || exClean.includes('summative1');
+  const isSa1Doc = mExClean.includes('sa1');
+  if (isSa1Target && isSa1Doc) return true;
+
+  const isSa2Target = exClean.includes('sa2') || exClean.includes('summative2');
+  const isSa2Doc = mExClean.includes('sa2');
+  if (isSa2Target && isSa2Doc) return true;
+
+  return false;
+};
+
+/**
+ * Universal helper to find a student mark matching student, subject, and exam
+ */
+export const findMatchingMark = (marksList: any[], student: any, subject: any, exam: any): any => {
+  if (!marksList || !Array.isArray(marksList) || marksList.length === 0) return null;
+  return marksList.find(m => 
+    isMarkForStudent(m, student) &&
+    isMarkForSubject(m, subject) &&
+    isMarkForExam(m, exam)
+  ) || null;
+};
+
 export const getStandardSubjectRank = (subjectName: string): number => {
   const raw = (subjectName || '').trim();
   const lower = raw.toLowerCase();
@@ -176,6 +399,228 @@ export const compareSubjectsStandard = (a: any, b: any) => {
     return rankA - rankB;
   }
   return nameA.localeCompare(nameB);
+};
+
+/**
+ * Universal helper: Extracts strictly scheduled and configured subjects for an exam, class, and batch.
+ * Ensures that ONLY subjects configured in examSchedules appear across:
+ * - Subject Teacher Marks Entry
+ * - Class Teacher View
+ * - Central Marks Register
+ * - Abstract Summary
+ */
+export const getScheduledConfiguredSubjects = ({
+  selectedExam,
+  selectedClass,
+  selectedBatch,
+  examSchedules,
+  subjects,
+  classes = [],
+  batches = [],
+  exams = []
+}: {
+  selectedExam?: any;
+  selectedClass?: string;
+  selectedBatch?: string;
+  examSchedules: any[];
+  subjects: any[];
+  classes?: any[];
+  batches?: any[];
+  exams?: any[];
+}): any[] => {
+  if (!examSchedules || !Array.isArray(examSchedules) || examSchedules.length === 0) {
+    return [];
+  }
+
+  // 1. Resolve Target Exam
+  const examObj = (exams || []).find((e: any) => 
+    (selectedExam && (e.id === selectedExam || e.title === selectedExam || (selectedExam.id && e.id === selectedExam.id)))
+  ) || (selectedExam && typeof selectedExam === 'object' ? selectedExam : null);
+
+  const targetExamId = String(examObj?.id || (typeof selectedExam === 'string' ? selectedExam : '')).trim();
+  const targetExamTitle = String(examObj?.title || examObj?.name || (typeof selectedExam === 'string' ? selectedExam : '')).toLowerCase().trim();
+  const targetExamClean = (targetExamId + ' ' + targetExamTitle).toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  const isAllExams = !selectedExam || selectedExam === 'all' || targetExamId === 'all';
+
+  // 2. Resolve Target Batch and Class
+  const activeBatchObj = (batches || []).find((b: any) => 
+    (selectedBatch && selectedBatch !== 'all' && (
+      b.id === selectedBatch || 
+      b.name === selectedBatch || 
+      String(b.name || '').toLowerCase().trim() === String(selectedBatch || '').toLowerCase().trim()
+    ))
+  );
+  const targetBatchId = activeBatchObj?.id || (selectedBatch && selectedBatch !== 'all' ? selectedBatch : '');
+  const targetBatchName = (activeBatchObj?.name || (selectedBatch && selectedBatch !== 'all' ? selectedBatch : '')).toLowerCase().trim();
+
+  const effectiveClassId = selectedClass && selectedClass !== 'all' ? selectedClass : activeBatchObj?.classId;
+  const activeClassObj = (classes || []).find((c: any) => 
+    (effectiveClassId && (
+      c.id === effectiveClassId || 
+      c.name === effectiveClassId || 
+      String(c.name || '').toLowerCase().trim() === String(effectiveClassId || '').toLowerCase().trim()
+    ))
+  );
+  const targetClassId = activeClassObj?.id || effectiveClassId || '';
+  const targetClassName = (activeClassObj?.name || effectiveClassId || '').toLowerCase().trim();
+
+  // 3. Filter schedules matching Exam
+  const examMatchingSchedules = examSchedules.filter((sch: any) => {
+    if (!sch) return false;
+    if (isAllExams) return true;
+
+    const schExamId = String(sch.examId || '').trim();
+    const schExamTitle = String(sch.examTitle || sch.examId || '').toLowerCase().trim();
+    const schClean = (schExamId + ' ' + schExamTitle).toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    const directMatch = 
+      (targetExamId && schExamId === targetExamId) ||
+      (targetExamTitle && (schExamTitle === targetExamTitle || schExamId.toLowerCase().trim() === targetExamTitle));
+
+    if (directMatch) return true;
+
+    // Fuzzy / prefix match (e.g. "fa1" vs "fa-1")
+    if (targetExamClean && schClean) {
+      if (schClean === targetExamClean) return true;
+      if (targetExamClean.length >= 3 && schClean.includes(targetExamClean)) return true;
+      if (schClean.length >= 3 && targetExamClean.includes(schClean)) return true;
+    }
+
+    return false;
+  });
+
+  if (examMatchingSchedules.length === 0) {
+    return [];
+  }
+
+  // 4. Filter schedules matching Class & Batch
+  const matchingSchedules = examMatchingSchedules.filter((sch: any) => {
+    const schBatchId = String(sch.batchId || '').trim();
+    const schBatchName = String(sch.batchName || '').toLowerCase().trim();
+    const schClassId = String(sch.classId || '').trim();
+    const schClassName = String(sch.className || '').toLowerCase().trim();
+
+    const schBatchObj = (batches || []).find((b: any) => 
+      (schBatchId && (b.id === schBatchId || b.name === schBatchId)) ||
+      (schBatchName && String(b.name || '').toLowerCase().trim() === schBatchName)
+    );
+
+    const resolvedSchClassId = schClassId || schBatchObj?.classId || '';
+    const resolvedSchClassName = schClassName || (classes || []).find((c: any) => c.id === resolvedSchClassId)?.name?.toLowerCase()?.trim() || '';
+
+    // If a specific section / batch is targeted:
+    if (targetBatchId && targetBatchId !== 'all') {
+      // Exact batch ID / name match
+      if (schBatchId && (schBatchId === targetBatchId || schBatchId.toLowerCase() === targetBatchId.toLowerCase())) return true;
+      if (targetBatchName && schBatchName && (schBatchName === targetBatchName || schBatchId.toLowerCase() === targetBatchName)) return true;
+      if (targetBatchName && schBatchObj && String(schBatchObj.name || '').toLowerCase().trim() === targetBatchName) return true;
+
+      // Normalized batch comparisons
+      const normSchBatchId = schBatchId.toLowerCase().replace(/[-_\s]/g, '');
+      const normTargetBatchId = targetBatchId.toLowerCase().replace(/[-_\s]/g, '');
+      const normTargetBatchName = targetBatchName.toLowerCase().replace(/[-_\s]/g, '');
+
+      if (normSchBatchId && (normSchBatchId === normTargetBatchId || normSchBatchId === normTargetBatchName)) return true;
+
+      // Compound class_batch comparisons like "1classipl" or "1_class_ipl"
+      if (targetClassName && normTargetBatchName) {
+        const normClassBatch = `${targetClassName}${normTargetBatchName}`.replace(/[-_\s]/g, '');
+        if (normSchBatchId === normClassBatch || normSchBatchId.includes(normClassBatch)) return true;
+      }
+
+      // If this batch is 'Main' or single-section class
+      if (targetBatchName === 'main' || targetBatchId === targetClassId) {
+        if (targetClassId && resolvedSchClassId && (resolvedSchClassId === targetClassId || resolvedSchClassId.toLowerCase() === targetClassId.toLowerCase())) return true;
+        if (targetClassName && resolvedSchClassName && (resolvedSchClassName === targetClassName || resolvedSchClassName.toLowerCase() === targetClassName.toLowerCase())) return true;
+      }
+
+      // If the schedule did NOT specify any batch at all, but was configured for this class, it applies to all sections of this class
+      if (!schBatchId && !schBatchName) {
+        if (targetClassId && resolvedSchClassId && resolvedSchClassId === targetClassId) return true;
+        if (targetClassName && resolvedSchClassName && resolvedSchClassName === targetClassName) return true;
+      }
+
+      // Otherwise it was scheduled for another batch, so do NOT match
+      return false;
+    }
+
+    // If only Class is selected (no batch, or batch is 'all'):
+    if (targetClassId && targetClassId !== 'all') {
+      if (resolvedSchClassId && (resolvedSchClassId === targetClassId || resolvedSchClassId.toLowerCase() === targetClassId.toLowerCase())) return true;
+      if (targetClassName && resolvedSchClassName && (resolvedSchClassName === targetClassName || resolvedSchClassName.toLowerCase() === targetClassName.toLowerCase())) return true;
+
+      const normSchClassId = resolvedSchClassId.toLowerCase().replace(/[-_\s]/g, '');
+      const normTargetClassId = targetClassId.toLowerCase().replace(/[-_\s]/g, '');
+      const normTargetClassName = targetClassName.toLowerCase().replace(/[-_\s]/g, '');
+
+      if (normSchClassId && (normSchClassId === normTargetClassId || normSchClassId === normTargetClassName)) return true;
+
+      return false;
+    }
+
+    // If neither class nor batch is selected, all exam schedules match
+    return true;
+  });
+
+  if (matchingSchedules.length === 0) {
+    return [];
+  }
+
+  // 5. Extract Unique Scheduled Subjects
+  const scheduledSubjectIds = new Set<string>();
+  const scheduledSubjectNames = new Set<string>();
+  const scheduledSubjectCleanNames = new Set<string>();
+
+  matchingSchedules.forEach((sch: any) => {
+    if (sch.subjectId) scheduledSubjectIds.add(String(sch.subjectId).trim());
+    if (sch.subjectName) {
+      const raw = String(sch.subjectName).trim();
+      scheduledSubjectNames.add(raw.toLowerCase());
+      scheduledSubjectCleanNames.add(raw.toLowerCase().replace(/[^a-z0-9]/g, ''));
+    }
+  });
+
+  const matched: any[] = (subjects || []).filter((s: any) => {
+    const sId = String(s.id || '').trim();
+    const sName = String(s.name || '').trim().toLowerCase();
+    const sClean = sName.replace(/[^a-z0-9]/g, '');
+
+    return (
+      scheduledSubjectIds.has(sId) ||
+      scheduledSubjectNames.has(sName) ||
+      scheduledSubjectCleanNames.has(sClean) ||
+      Array.from(scheduledSubjectCleanNames).some(schClean => schClean && (sClean.includes(schClean) || schClean.includes(sClean)))
+    );
+  });
+
+  // Include any scheduled subjects from schedule not already in matched
+  matchingSchedules.forEach((sch: any) => {
+    const schId = String(sch.subjectId || '').trim();
+    const schName = (sch.subjectName || '').trim();
+    const schClean = schName.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    const exists = matched.some((s: any) => {
+      const sId = String(s.id || '').trim();
+      const sName = String(s.name || '').trim().toLowerCase();
+      const sClean = sName.replace(/[^a-z0-9]/g, '');
+      return (
+        (schId && sId === schId) ||
+        (schName && sName === schName.toLowerCase()) ||
+        (schClean && sClean === schClean)
+      );
+    });
+
+    if (!exists && schName) {
+      matched.push({
+        id: sch.subjectId || `sched_${schName.replace(/\s+/g, '_')}`,
+        name: schName,
+        code: schName.toUpperCase()
+      });
+    }
+  });
+
+  return [...matched].sort(compareSubjectsStandard);
 };
 
 const calculateAutoWorkingDaysForYear = (startYear: number, endYear: number, holidayList: any[]) => {
@@ -707,21 +1152,36 @@ const Exams: React.FC = () => {
 
     const hasBaseAccess = isAdmin || profile?.role === 'admin' || profile?.role === 'principal' || (hasPermission('exams_manage') && !isTeacherRole);
 
-    // 1. Class-specific subject filtering (if subject specifies classId)
-    let classFiltered = subjects.filter(s => {
-      if (!s) return false;
-      if (selectedClass && s.classId && s.classId !== selectedClass) return false;
-      return true;
-    });
+    // 1. If an exam is selected, get scheduled configured subjects
+    let baseList: any[] = [];
+    if (selectedExam) {
+      baseList = getScheduledConfiguredSubjects({
+        selectedExam,
+        selectedClass,
+        selectedBatch,
+        examSchedules,
+        subjects,
+        classes,
+        batches,
+        exams
+      });
+    } else {
+      // If no exam selected yet, class-specific filter
+      let classFiltered = subjects.filter(s => {
+        if (!s) return false;
+        if (selectedClass && s.classId && s.classId !== selectedClass) return false;
+        return true;
+      });
+      baseList = classFiltered.length > 0 ? classFiltered : subjects;
+    }
 
-    if (classFiltered.length === 0) {
-      classFiltered = subjects;
+    if (baseList.length === 0) {
+      return [];
     }
 
     // 2. Role-based subject filtering for teachers
-    let teacherFiltered = classFiltered;
     if (!hasBaseAccess && (teacherAssignedSubjects.names.size > 0 || teacherAssignedSubjects.ids.size > 0)) {
-      const filtered = classFiltered.filter(s => {
+      const filtered = baseList.filter(s => {
         const sId = String(s.id || '');
         const sCode = String(s.code || '');
         const sName = String(s.name || '').toLowerCase().trim();
@@ -737,74 +1197,11 @@ const Exams: React.FC = () => {
         return matchesId || matchesName || matchesTeacherId || matchesTeacherName;
       });
 
-      if (filtered.length > 0) {
-        teacherFiltered = filtered;
-      }
+      return [...filtered].sort(compareSubjectsStandard);
     }
 
-    // 3. Exam Schedule filtering for subject-entry (only if schedules exist for this exam)
-    if (activeTab === 'subject-entry' && selectedExam) {
-      const activeExamObj = (exams || []).find((e: any) => e.id === selectedExam || e.title === selectedExam);
-      const activeExamTitle = (activeExamObj?.title || selectedExam || '').toLowerCase().trim();
-      const activeBatchObj = (batches || []).find((b: any) => b.id === selectedBatch);
-      const activeBatchName = (activeBatchObj?.name || selectedBatch || '').toLowerCase().trim();
-      const activeClassObj = (classes || []).find((c: any) => c.id === selectedClass);
-      const activeClassName = (activeClassObj?.name || selectedClass || '').toLowerCase().trim();
-
-      const examSchedsForThisExam = (examSchedules || []).filter((sch: any) => {
-        const schExamId = String(sch.examId || '');
-        const schExamTitle = String(sch.examTitle || sch.examId || '').toLowerCase().trim();
-        const matchesExam = (schExamId === selectedExam) || (activeExamObj && schExamId === activeExamObj.id) || (schExamTitle === activeExamTitle);
-        if (!matchesExam) return false;
-
-        const schBatchId = String(sch.batchId || '');
-        const schBatchName = String(sch.batchName || '').toLowerCase().trim();
-        const schClassId = String(sch.classId || '');
-        const schClassName = String(sch.className || '').toLowerCase().trim();
-
-        if (selectedBatch && (schBatchId === selectedBatch || schBatchName === activeBatchName || schBatchId.toLowerCase().trim() === activeBatchName)) return true;
-        if (selectedClass && (schClassId === selectedClass || schClassName === activeClassName || schClassId.toLowerCase().trim() === activeClassName)) return true;
-        if (!selectedBatch && !selectedClass) return true;
-        return false;
-      });
-
-      if (examSchedsForThisExam.length > 0) {
-        const scheduledSubjectIds = new Set(examSchedsForThisExam.map((s: any) => String(s.subjectId || '')));
-        const scheduledSubjectNames = new Set(examSchedsForThisExam.map((s: any) => String(s.subjectName || '').toLowerCase().trim()));
-
-        const scheduled = teacherFiltered.filter((s: any) => {
-          const sId = String(s.id || '');
-          const sName = String(s.name || '').toLowerCase().trim();
-
-          return scheduledSubjectIds.has(sId) || 
-                 scheduledSubjectNames.has(sName) || 
-                 Array.from(scheduledSubjectNames).some(schName => schName && (sName.includes(schName) || schName.includes(sName)));
-        });
-
-        // Also add any scheduled subjects from schedule not already in teacherFiltered
-        examSchedsForThisExam.forEach((sch: any) => {
-          const schName = (sch.subjectName || '').trim();
-          const exists = scheduled.some((s: any) => 
-            (sch.subjectId && String(s.id) === String(sch.subjectId)) ||
-            (schName && (s.name || '').toLowerCase().trim() === schName.toLowerCase())
-          );
-          if (!exists && schName) {
-            scheduled.push({
-              id: sch.subjectId || `sched_${schName.replace(/\s+/g, '_')}`,
-              name: schName,
-              code: schName.toUpperCase()
-            });
-          }
-        });
-
-        if (scheduled.length > 0) {
-          return [...scheduled].sort(compareSubjectsStandard);
-        }
-      }
-    }
-
-    return [...teacherFiltered].sort(compareSubjectsStandard);
-  }, [subjects, isAdmin, profile, isTeacherRole, teacherAssignedSubjects, selectedClass, activeTab, selectedExam, examSchedules, selectedBatch, teacherIdentifiers, hasPermission]);
+    return [...baseList].sort(compareSubjectsStandard);
+  }, [subjects, isAdmin, profile, isTeacherRole, teacherAssignedSubjects, selectedClass, activeTab, selectedExam, examSchedules, selectedBatch, teacherIdentifiers, hasPermission, classes, batches, exams]);
 
   // Sync selected batch when class changes
   useEffect(() => {
@@ -924,11 +1321,16 @@ const Exams: React.FC = () => {
         
         setSubjects(sortAlphabetically(subjectsData as any[], 'name', globalSortDirection));
 
-        unsubscribeExams = dbService.subscribe('exams', [], (data) => {
+        unsubscribeExams = dbService.subscribe('exams', [], async (data) => {
+          let list = data || [];
+          if (!list || list.length === 0) {
+            const live = await fetchExamsFromLiveProxy();
+            if (live && live.length > 0) list = live;
+          }
           if ((profile?.role === 'student' || profile?.role === 'parent' || isTeacherRole || hasPermission('exams_view_my_strict')) && !hasPermission('exams_manage')) {
-            setExams(data.filter(e => e.status === 'scheduled'));
+            setExams(list.filter(e => e.status === 'scheduled'));
           } else {
-            setExams(data);
+            setExams(list);
           }
         });
       } catch (error) {
@@ -1194,6 +1596,26 @@ const Exams: React.FC = () => {
           if (m.id) marksMap.set(m.id, m);
         });
 
+        // 4. Also fetch live MongoDB exam marks from proxy
+        try {
+          const liveProxyMarks = await fetchExamMarksFromLiveProxy(selectedClass, selectedExam, selectedBatch);
+          if (Array.isArray(liveProxyMarks) && liveProxyMarks.length > 0) {
+            liveProxyMarks.forEach((m: any) => {
+              const markId = m.id || m._id || m.uid || `${m.studentId}_${m.examId}_${m.subjectId}`;
+              if (markId) {
+                const existing = marksMap.get(markId);
+                if (!existing) {
+                  marksMap.set(markId, { ...m, id: markId });
+                } else {
+                  marksMap.set(markId, { ...existing, ...m });
+                }
+              }
+            });
+          }
+        } catch (err) {
+          console.warn('Error fetching live proxy marks in loadBatchData:', err);
+        }
+
         if (active) {
           setMarks(Array.from(marksMap.values()));
         }
@@ -1209,7 +1631,7 @@ const Exams: React.FC = () => {
     return () => {
       active = false;
     };
-  }, [selectedBatch, selectedClass, globalSortDirection, batches]);
+  }, [selectedBatch, selectedClass, selectedExam, globalSortDirection, batches]);
 
   // Dynamically resolve/augment marks to include automatic ones for non-attending students
   const resolvedMarks = React.useMemo(() => {
@@ -1327,9 +1749,16 @@ const Exams: React.FC = () => {
         doc.setFontSize(10);
         doc.text(`Class Teacher: ${teacher?.name || 'Not Assigned'}`, pageWidth / 2, 100, { align: 'center' });
 
-        const activeSubjects = subjects.filter(s => 
-          allBatchMarks.some(m => m.subjectId === s.id) || getStandardSubjectRank(s.name) < 100
-        ).sort(compareSubjectsStandard);
+        const activeSubjects = getScheduledConfiguredSubjects({
+          selectedExam: selectedExam || undefined,
+          selectedClass,
+          selectedBatch,
+          examSchedules,
+          subjects,
+          classes,
+          batches,
+          exams
+        });
 
         const headRow1: any[] = [
           { content: 'Admn No', rowSpan: 2 },
@@ -3496,11 +3925,20 @@ const SubjectEntry = ({ students, marks, subjects, selectedSubject, selectedExam
   };
 
   const handleMarkChange = (studentId: string, field: string, value: string) => {
+    const selectedSubjObj = subjects?.find((s: any) => s.id === selectedSubject || s.name === selectedSubject) || { id: selectedSubject };
+    const targetStudent = students?.find((s: any) => s.id === studentId || s.uid === studentId) || { id: studentId };
+
+    const matchesDoc = (m: any) => 
+      isMarkForStudent(m, targetStudent) && 
+      isMarkForSubject(m, selectedSubjObj) && 
+      isMarkForExam(m, selectedExam);
+
     if (value === '' || value === null || value === undefined) {
-      const existing = localMarks.find(m => m.studentId === studentId && m.subjectId === selectedSubject && m.examId === selectedExam?.id);
+      const existingIdx = localMarks.findIndex(matchesDoc);
       let newMarks;
-      if (existing) {
-        newMarks = localMarks.map(m => (m.studentId === studentId && m.subjectId === selectedSubject && m.examId === selectedExam?.id) ? { ...m, [field]: null } : m);
+      if (existingIdx >= 0) {
+        newMarks = [...localMarks];
+        newMarks[existingIdx] = { ...newMarks[existingIdx], [field]: null };
       } else {
         newMarks = [...localMarks, { studentId, subjectId: selectedSubject, examId: selectedExam?.id, [field]: null }];
       }
@@ -3509,10 +3947,11 @@ const SubjectEntry = ({ students, marks, subjects, selectedSubject, selectedExam
     }
     const upperVal = String(value).trim().toUpperCase();
     if (upperVal === 'A' || upperVal === 'AB' || upperVal === 'ABSENT') {
-      const existing = localMarks.find(m => m.studentId === studentId && m.subjectId === selectedSubject && m.examId === selectedExam?.id);
+      const existingIdx = localMarks.findIndex(matchesDoc);
       let newMarks;
-      if (existing) {
-        newMarks = localMarks.map(m => (m.studentId === studentId && m.subjectId === selectedSubject && m.examId === selectedExam?.id) ? { ...m, [field]: 'Absent' } : m);
+      if (existingIdx >= 0) {
+        newMarks = [...localMarks];
+        newMarks[existingIdx] = { ...newMarks[existingIdx], [field]: 'Absent' };
       } else {
         newMarks = [...localMarks, { studentId, subjectId: selectedSubject, examId: selectedExam?.id, [field]: 'Absent' }];
       }
@@ -3544,10 +3983,11 @@ const SubjectEntry = ({ students, marks, subjects, selectedSubject, selectedExam
       }
     }
 
-    const existing = localMarks.find(m => m.studentId === studentId && m.subjectId === selectedSubject && m.examId === selectedExam?.id);
+    const existingIdx = localMarks.findIndex(matchesDoc);
     let newMarks;
-    if (existing) {
-      newMarks = localMarks.map(m => (m.studentId === studentId && m.subjectId === selectedSubject && m.examId === selectedExam?.id) ? { ...m, [field]: storedVal } : m);
+    if (existingIdx >= 0) {
+      newMarks = [...localMarks];
+      newMarks[existingIdx] = { ...newMarks[existingIdx], [field]: storedVal };
     } else {
       newMarks = [...localMarks, { studentId, subjectId: selectedSubject, examId: selectedExam?.id, [field]: storedVal }];
     }
@@ -3555,7 +3995,15 @@ const SubjectEntry = ({ students, marks, subjects, selectedSubject, selectedExam
   };
 
   const handleMarkBlur = (studentId: string, field: string) => {
-    const existing = localMarks.find(m => m.studentId === studentId && m.subjectId === selectedSubject && m.examId === selectedExam?.id);
+    const selectedSubjObj = subjects?.find((s: any) => s.id === selectedSubject || s.name === selectedSubject) || { id: selectedSubject };
+    const targetStudent = students?.find((s: any) => s.id === studentId || s.uid === studentId) || { id: studentId };
+
+    const matchesDoc = (m: any) => 
+      isMarkForStudent(m, targetStudent) && 
+      isMarkForSubject(m, selectedSubjObj) && 
+      isMarkForExam(m, selectedExam);
+
+    const existing = localMarks.find(matchesDoc);
     if (!existing || existing[field] === null || existing[field] === undefined || existing[field] === 'Absent') return;
 
     const strVal = String(existing[field]).trim();
@@ -3567,7 +4015,7 @@ const SubjectEntry = ({ students, marks, subjects, selectedSubject, selectedExam
     if (!isNaN(num)) {
       const max = getFieldMax(field);
       const clamped = Math.min(Math.max(num, 0), max);
-      const existingIdx = localMarks.findIndex(m => m.studentId === studentId && m.subjectId === selectedSubject && m.examId === selectedExam?.id);
+      const existingIdx = localMarks.findIndex(matchesDoc);
       if (existingIdx >= 0) {
         const newMarks = [...localMarks];
         newMarks[existingIdx] = { ...newMarks[existingIdx], [field]: clamped };
@@ -4033,7 +4481,8 @@ const SubjectEntry = ({ students, marks, subjects, selectedSubject, selectedExam
           </thead>
           <tbody className="divide-y divide-neutral-100">
             {sortedStudents.map((s: any) => {
-              const m = localMarks.find(mark => mark.studentId === s.id && mark.subjectId === selectedSubject && mark.examId === selectedExam?.id) || {};
+              const selectedSubjObj = subjects?.find((sub: any) => sub.id === selectedSubject || sub.name === selectedSubject) || { id: selectedSubject };
+              const m = findMatchingMark(localMarks, s, selectedSubjObj, selectedExam) || {};
               const isNonAttending = s.status === 'non_attending';
 
               // Calculate auto-totals
@@ -4527,11 +4976,8 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
   const examTitle = selectedExam?.title || (isFA ? 'FA' : 'SA');
 
   const getStudentTotal = (studentId: string, subjectId: string, subjectName?: string) => {
-    const m = marks.find((mark: any) => 
-      (mark.studentId === studentId) && 
-      (mark.subjectId === subjectId || (subjectName && mark.subjectName && mark.subjectName.toLowerCase().trim() === subjectName.toLowerCase().trim()) || (mark.subjectId && subjectId && String(mark.subjectId).toLowerCase().trim() === String(subjectId).toLowerCase().trim())) && 
-      mark.examId === selectedExam?.id
-    );
+    const student = students.find((s: any) => s.id === studentId || s.uid === studentId) || { id: studentId };
+    const m = findMatchingMark(marks, student, { id: subjectId, name: subjectName }, selectedExam);
     if (!m) return null;
     if (isFA) {
       const written = isMarkAbsent(m.faWritten) ? 0 : (parseFloat(m.faWritten) || 0);
@@ -4559,123 +5005,16 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
   const displaySubjects = useMemo(() => {
     if (!selectedExam) return [];
 
-    const activeBatchObj = (batches || []).find((b: any) => 
-      b.id === selectedBatch || 
-      b.name === selectedBatch || 
-      String(b.name || '').toLowerCase().trim() === String(selectedBatch || '').toLowerCase().trim()
-    );
-    const activeClassObj = (classes || []).find((c: any) => 
-      c.id === selectedClass || 
-      c.name === selectedClass || 
-      String(c.name || '').toLowerCase().trim() === String(selectedClass || '').toLowerCase().trim()
-    );
-
-    const targetExamId = String(selectedExam.id || '');
-    const targetExamTitle = String(selectedExam.title || '').toLowerCase().trim();
-    const targetBatchId = activeBatchObj?.id || selectedBatch;
-    const targetBatchName = (activeBatchObj?.name || selectedBatch || '').toLowerCase().trim();
-    const targetClassId = activeClassObj?.id || selectedClass || activeBatchObj?.classId;
-    const targetClassName = (activeClassObj?.name || selectedClass || '').toLowerCase().trim();
-
-    // 1. Check if exam schedules exist for this specific exam and batch/class
-    const matchingSchedules = (allExamSchedules || []).filter((sch: any) => {
-      const schExamId = String(sch.examId || '');
-      const schExamTitle = String(sch.examTitle || sch.examId || '').toLowerCase().trim();
-      const matchesExam = 
-        (targetExamId && schExamId === targetExamId) ||
-        (targetExamTitle && (schExamTitle === targetExamTitle || schExamId.toLowerCase().trim() === targetExamTitle));
-      
-      if (!matchesExam) return false;
-
-      // Match batch if selected
-      if (targetBatchId || targetBatchName) {
-        const schBatchId = String(sch.batchId || '');
-        const schBatchName = String(sch.batchName || '').toLowerCase().trim();
-        if (
-          (targetBatchId && schBatchId === String(targetBatchId)) ||
-          (targetBatchName && (schBatchName === targetBatchName || schBatchId.toLowerCase().trim() === targetBatchName))
-        ) {
-          return true;
-        }
-      }
-
-      // Match class if batch didn't specify
-      if (targetClassId || targetClassName) {
-        const schClassId = String(sch.classId || '');
-        const schClassName = String(sch.className || '').toLowerCase().trim();
-        if (
-          (targetClassId && schClassId === String(targetClassId)) ||
-          (targetClassName && (schClassName === targetClassName || schClassId.toLowerCase().trim() === targetClassName))
-        ) {
-          return true;
-        }
-      }
-
-      return false;
+    return getScheduledConfiguredSubjects({
+      selectedExam,
+      selectedClass,
+      selectedBatch,
+      examSchedules: allExamSchedules,
+      subjects,
+      classes,
+      batches
     });
-
-    // If schedules are defined for this exam and batch, ONLY show scheduled subjects!
-    if (matchingSchedules.length > 0) {
-      const scheduledSubjectIds = new Set<string>();
-      const scheduledSubjectNames = new Set<string>();
-      const scheduledSubjectCleanNames = new Set<string>();
-
-      matchingSchedules.forEach((sch: any) => {
-        if (sch.subjectId) scheduledSubjectIds.add(String(sch.subjectId));
-        if (sch.subjectName) {
-          const raw = String(sch.subjectName).trim();
-          scheduledSubjectNames.add(raw.toLowerCase());
-          scheduledSubjectCleanNames.add(raw.toLowerCase().replace(/[^a-z0-9]/g, ''));
-        }
-      });
-
-      const matched: any[] = (subjects || []).filter((s: any) => {
-        const sId = String(s.id || '');
-        const sName = (s.name || '').trim().toLowerCase();
-        const sClean = (s.name || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-        return (
-          scheduledSubjectIds.has(sId) ||
-          scheduledSubjectNames.has(sName) ||
-          scheduledSubjectCleanNames.has(sClean)
-        );
-      });
-
-      // Include any schedule item whose name or id was not directly in the `subjects` master list
-      matchingSchedules.forEach((sch: any) => {
-        const schId = String(sch.subjectId || '');
-        const schName = (sch.subjectName || '').trim();
-        const exists = matched.some((s: any) =>
-          (schId && String(s.id) === schId) ||
-          (schName && (s.name || '').toLowerCase().trim() === schName.toLowerCase()) ||
-          (schName && (s.name || '').toLowerCase().replace(/[^a-z0-9]/g, '') === schName.toLowerCase().replace(/[^a-z0-9]/g, ''))
-        );
-        if (!exists && schName) {
-          matched.push({
-            id: sch.subjectId || `sched_${schName.replace(/\s+/g, '_')}`,
-            name: schName,
-            code: schName.toUpperCase()
-          });
-        }
-      });
-
-      return [...matched].sort(compareSubjectsStandard);
-    }
-
-    // 2. If NO exam schedules exist, filter by subjects that have recorded marks for this exam
-    const marksSubjects = (subjects || []).filter((subj: any) => 
-      marks.some((m: any) => m.subjectId === subj.id && m.examId === selectedExam?.id)
-    );
-    if (marksSubjects.length > 0) {
-      return [...marksSubjects].sort(compareSubjectsStandard);
-    }
-
-    // 3. Otherwise fallback to class curriculum subjects
-    const classFiltered = (subjects || []).filter((s: any) => 
-      !s.classId || s.classId === selectedClass || (s.classes && s.classes.includes(selectedClass))
-    );
-    const rawList = classFiltered.length > 0 ? classFiltered : (subjects || []);
-    return [...rawList].sort(compareSubjectsStandard);
-  }, [allExamSchedules, selectedExam, selectedBatch, selectedClass, batches, classes, subjects, marks]);
+  }, [allExamSchedules, selectedExam, selectedBatch, selectedClass, batches, classes, subjects]);
 
   // Group attendance by month (with robust string-based matching to avoid timezone parsing bugs)
   const ACADEMIC_MONTHS = useMemo(() => [
@@ -4799,11 +5138,7 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
       let hasFailSubject = false;
 
       displaySubjects.forEach((subj: any) => {
-        const m = marks.find((mark: any) => 
-          (mark.studentId === studentId || mark.studentId === s.id || mark.studentId === s.uid) && 
-          (mark.subjectId === subj.id || (mark.subjectName && subj.name && mark.subjectName.toLowerCase().trim() === subj.name.toLowerCase().trim()) || (mark.subjectId && subj.id && String(mark.subjectId).toLowerCase().trim() === String(subj.id).toLowerCase().trim())) && 
-          mark.examId === selectedExam?.id
-        );
+        const m = findMatchingMark(marks, s, subj, selectedExam);
         if (m) {
           if (isFA) {
             const hasData = (m.st1 !== null && m.st1 !== undefined && m.st1 !== '') || 
@@ -4908,11 +5243,7 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
     const subjectCells: any[] = [];
     if (isFA) {
       displaySubjects.forEach((subj: any) => {
-        const m = marks.find((mark: any) => 
-          (mark.studentId === studentId || mark.studentId === s.id || mark.studentId === s.uid) && 
-          (mark.subjectId === subj.id || (mark.subjectName && subj.name && mark.subjectName.toLowerCase().trim() === subj.name.toLowerCase().trim()) || (mark.subjectId && subj.id && String(mark.subjectId).toLowerCase().trim() === String(subj.id).toLowerCase().trim())) && 
-          mark.examId === selectedExam?.id
-        );
+        const m = findMatchingMark(marks, s, subj, selectedExam);
         if (m) {
           allEmpty = false;
           const st1Absent = isMarkAbsent(m.st1);
@@ -4968,11 +5299,7 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
       });
     } else {
       displaySubjects.forEach((subj: any) => {
-        const m = marks.find((mark: any) => 
-          (mark.studentId === studentId || mark.studentId === s.id || mark.studentId === s.uid) && 
-          (mark.subjectId === subj.id || (mark.subjectName && subj.name && mark.subjectName.toLowerCase().trim() === subj.name.toLowerCase().trim()) || (mark.subjectId && subj.id && String(mark.subjectId).toLowerCase().trim() === String(subj.id).toLowerCase().trim())) && 
-          mark.examId === selectedExam?.id
-        );
+        const m = findMatchingMark(marks, s, subj, selectedExam);
         const maxMarks = getSubjectMaxMarks(subj, false);
         if (m && m.saWritten !== null && m.saWritten !== undefined && m.saWritten !== '') {
           allEmpty = false;
@@ -5281,6 +5608,17 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
         </div>
       </div>
 
+      {displaySubjects.length === 0 ? (
+        <div className="p-16 text-center bg-white rounded-2xl border border-neutral-200 flex flex-col items-center gap-3">
+          <div className="w-12 h-12 rounded-full bg-neutral-100 flex items-center justify-center text-neutral-400">
+            <Filter className="w-6 h-6" />
+          </div>
+          <h4 className="text-base font-black text-sidebar uppercase">No Scheduled Subjects Configured</h4>
+          <p className="text-xs text-neutral-500 max-w-md">
+            Only subjects configured in the <span className="font-bold text-primary">Exam Schedule</span> are displayed. No subjects have been scheduled for {examTitle || 'this exam'} in this section yet.
+          </p>
+        </div>
+      ) : (
       <div className="overflow-x-auto border border-neutral-300 rounded-2xl shadow-inner bg-neutral-50/50">
         <table className="w-full border-collapse border border-neutral-300">
           <thead>
@@ -5533,6 +5871,7 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
           </tbody>
         </table>
       </div>
+      )}
 
       {/* PDF Export Orientation Modal */}
       {showPDFModal && (
@@ -5672,6 +6011,7 @@ const WhatsAppTab = ({
   subjects,
   classes,
   batches,
+  examSchedules,
   isClass10,
   isClass6to9: propIsClass6to9,
   isPrimary,
@@ -6024,8 +6364,19 @@ const WhatsAppTab = ({
     let totalObtained = 0;
     let totalMax = 0;
 
-    // Sort subjects by standard curriculum order: Telugu, Hindi, English, Mathematics, Physics, Biology, Social Studies
-    const sortedSubs = [...(subjects || [])].sort(compareSubjectsStandard);
+    // Filter to scheduled configured subjects only for this exam, class, and batch
+    const scheduledSubs = getScheduledConfiguredSubjects({
+      selectedExam,
+      selectedClass,
+      selectedBatch,
+      examSchedules,
+      subjects,
+      classes,
+      batches,
+      exams
+    });
+
+    const sortedSubs = scheduledSubs.length > 0 ? scheduledSubs : [...(subjects || [])].sort(compareSubjectsStandard);
 
     sortedSubs.forEach((sub: any) => {
       const m = studentMarks.find((mark: any) => mark.subjectId === sub.id);
@@ -7438,69 +7789,17 @@ const CentralRegister = ({
 
   // Filter active subjects strictly to scheduled subjects for this batch/class/exam
   const activeSubjects = useMemo(() => {
-    const activeBatchObj = (batches || []).find((b: any) => b.id === selectedBatch);
-    const activeBatchName = (activeBatchObj?.name || selectedBatch || '').toLowerCase().trim();
-    const activeClassObj = (classes || []).find((c: any) => c.id === selectedClass);
-    const activeClassName = (activeClassObj?.name || selectedClass || '').toLowerCase().trim();
-
-    // 1. Filter schedules for the selected batch / class
-    const matchingSchedules = (allExamSchedules || []).filter((sch: any) => {
-      const schExamId = String(sch.examId || '');
-      const schExamTitle = String(sch.examTitle || sch.examId || '').toLowerCase().trim();
-
-      if (selectedExamId !== 'all') {
-        const activeExamObj = (exams || []).find((e: any) => e.id === selectedExamId);
-        const targetExamTitle = String(activeExamObj?.title || selectedExamId || '').toLowerCase().trim();
-        const matchesExam = (schExamId === selectedExamId) || (activeExamObj && schExamId === activeExamObj.id) || (schExamTitle && schExamTitle === targetExamTitle);
-        if (!matchesExam) return false;
-      }
-
-      const schBatchId = String(sch.batchId || '');
-      const schBatchName = String(sch.batchName || '').toLowerCase().trim();
-      const schClassId = String(sch.classId || '');
-      const schClassName = String(sch.className || '').toLowerCase().trim();
-
-      if (selectedBatch && (schBatchId === selectedBatch || schBatchName === activeBatchName || schBatchId.toLowerCase().trim() === activeBatchName)) return true;
-      if (selectedClass && (schClassId === selectedClass || schClassName === activeClassName || schClassId.toLowerCase().trim() === activeClassName)) return true;
-      if (!selectedBatch && !selectedClass) return true;
-      return false;
+    return getScheduledConfiguredSubjects({
+      selectedExam: selectedExamId !== 'all' ? selectedExamId : undefined,
+      selectedClass,
+      selectedBatch,
+      examSchedules: allExamSchedules,
+      subjects,
+      classes,
+      batches,
+      exams
     });
-
-    if (matchingSchedules.length > 0) {
-      const scheduledSubjectIds = new Set(matchingSchedules.map((s: any) => String(s.subjectId || '')));
-      const scheduledSubjectNames = new Set(matchingSchedules.map((s: any) => String(s.subjectName || '').toLowerCase().trim()));
-
-      const matched = (subjects || []).filter((s: any) => 
-        scheduledSubjectIds.has(String(s.id)) || 
-        scheduledSubjectNames.has(String(s.name || '').toLowerCase().trim()) ||
-        Array.from(scheduledSubjectNames).some((schName: string) => schName && ((s.name || '').toLowerCase().includes(schName) || schName.includes((s.name || '').toLowerCase())))
-      );
-
-      matchingSchedules.forEach((sch: any) => {
-        const schName = (sch.subjectName || '').trim();
-        const exists = matched.some((s: any) => 
-          (sch.subjectId && String(s.id) === String(sch.subjectId)) ||
-          (schName && (s.name || '').toLowerCase().trim() === schName.toLowerCase())
-        );
-        if (!exists && schName) {
-          matched.push({
-            id: sch.subjectId || `sched_${schName.replace(/\s+/g, '_')}`,
-            name: schName,
-            code: schName.toUpperCase()
-          });
-        }
-      });
-
-      return [...matched].sort(compareSubjectsStandard);
-    }
-
-    // Fallback: If no schedules configured yet, filter by class curriculum if available, or marks presence
-    const marksSubjectIds = new Set((marks || []).map((m: any) => String(m.subjectId)));
-    const classFiltered = (subjects || []).filter((s: any) => 
-      marksSubjectIds.has(String(s.id)) || !s.classId || s.classId === selectedClass || (s.classes && s.classes.includes(selectedClass))
-    );
-    return (classFiltered.length > 0 ? classFiltered : (subjects || [])).sort(compareSubjectsStandard);
-  }, [subjects, allExamSchedules, selectedBatch, selectedClass, selectedExamId, exams, batches, classes, marks]);
+  }, [subjects, allExamSchedules, selectedBatch, selectedClass, selectedExamId, exams, batches, classes]);
 
   // Load attendance data and settings
   useEffect(() => {
@@ -7604,14 +7903,20 @@ const CentralRegister = ({
   }, [scheduledExams]);
 
   const getStudentTotal = (studentId: string, examId: string, subjectId: string) => {
-    const m = marks.find((mark: any) => mark.studentId === studentId && mark.examId === examId && mark.subjectId === subjectId);
+    const student = students.find((s: any) => s.id === studentId || s.uid === studentId) || { id: studentId };
+    const exam = exams.find((e: any) => e.id === examId) || { id: examId };
+    const subj = (subjects || []).find((s: any) => s.id === subjectId || s.name === subjectId) || { id: subjectId };
+    const m = findMatchingMark(marks, student, subj, exam);
     if (!m) return null;
-    const exam = exams.find((e: any) => e.id === examId);
     const isFA = exam ? exam.type === 'FA' : true;
     if (isFA) {
-      return (m.st1 || 0) + (m.st2 || 0) + (m.hw || 0) + (m.faWritten || 0);
+      const st1 = isMarkAbsent(m.st1) ? 0 : (parseFloat(m.st1) || 0);
+      const st2 = isMarkAbsent(m.st2) ? 0 : (parseFloat(m.st2) || 0);
+      const hw = isMarkAbsent(m.hw) ? 0 : (parseFloat(m.hw) || 0);
+      const faWritten = isMarkAbsent(m.faWritten) ? 0 : (parseFloat(m.faWritten) || 0);
+      return st1 + st2 + hw + faWritten;
     } else {
-      return m.saWritten || 0;
+      return isMarkAbsent(m.saWritten) ? 0 : (parseFloat(m.saWritten) || 0);
     }
   };
 
@@ -7871,7 +8176,7 @@ const CentralRegister = ({
         if (scores.length > 0) {
           const sum = scores.reduce((acc, val) => acc + val, 0);
           const max = Math.max(...scores);
-          const examMax = subjects.length * getExamMaxMarks(exam.id);
+          const examMax = activeSubjects.length * getExamMaxMarks(exam.id);
           const passCount = processedData.filter((row: any) => {
             const t = row.examTotals[exam.id];
             return t !== undefined && t >= examMax * 0.35;
@@ -7885,7 +8190,7 @@ const CentralRegister = ({
         }
       });
     } else {
-      subjects.forEach((subj: any) => {
+      activeSubjects.forEach((subj: any) => {
         const scores = processedData
           .map((row: any) => row.subjectMarks[subj.id])
           .filter((s: any) => s !== null && s !== undefined);
@@ -7906,7 +8211,7 @@ const CentralRegister = ({
     }
 
     return { subjectStats, examStats };
-  }, [processedData, selectedExamId, subjects, scheduledExams]);
+  }, [processedData, selectedExamId, activeSubjects, scheduledExams]);
 
   if (!selectedBatch) {
     return (
@@ -7915,6 +8220,18 @@ const CentralRegister = ({
           <Filter className="w-8 h-8" />
         </div>
         <p className="text-neutral-500 font-bold uppercase tracking-widest text-sm">Please select Class and Batch to view Consolidated Register</p>
+      </div>
+    );
+  }
+
+  if (selectedExamId !== 'all' && activeSubjects.length === 0) {
+    return (
+      <div className="p-20 text-center flex flex-col items-center gap-4 bg-white rounded-2xl border border-neutral-100 shadow-sm">
+        <div className="w-16 h-16 bg-neutral-100 rounded-full flex items-center justify-center text-neutral-400">
+          <Filter className="w-8 h-8" />
+        </div>
+        <p className="text-neutral-500 font-bold uppercase tracking-widest text-sm">No scheduled configured subjects found for this exam</p>
+        <p className="text-xs text-neutral-400">Only subjects scheduled in the Exam Schedules tab will appear here.</p>
       </div>
     );
   }
@@ -8084,10 +8401,10 @@ const CentralRegister = ({
 
         if (isConsolidated) {
           scheduledExams.forEach((exam: any) => {
-            baseRow[`${exam.title} (Max ${subjects.length * getExamMaxMarks(exam.id)})`] = row.examTotals[exam.id] || 0;
+            baseRow[`${exam.title} (Max ${activeSubjects.length * getExamMaxMarks(exam.id)})`] = row.examTotals[exam.id] || 0;
           });
         } else {
-          subjects.forEach((subj: any) => {
+          activeSubjects.forEach((subj: any) => {
             baseRow[`${subj.name} (Max ${getExamMaxMarks(selectedExamId)})`] = row.subjectMarks[subj.id] ?? '-';
           });
         }
@@ -8317,7 +8634,7 @@ const CentralRegister = ({
           headers.push(exam.title);
         });
       } else {
-        subjects.forEach((subj: any) => {
+        activeSubjects.forEach((subj: any) => {
           headers.push(subj.name);
         });
       }
@@ -8337,7 +8654,7 @@ const CentralRegister = ({
             cells.push(row.examTotals[exam.id] || 0);
           });
         } else {
-          subjects.forEach((subj: any) => {
+          activeSubjects.forEach((subj: any) => {
             cells.push(row.subjectMarks[subj.id] ?? '-');
           });
         }
@@ -8353,7 +8670,7 @@ const CentralRegister = ({
             statsRow.push(stats.examStats[exam.id]?.average || 0);
           });
         } else {
-          subjects.forEach((subj: any) => {
+          activeSubjects.forEach((subj: any) => {
             statsRow.push(stats.subjectStats[subj.id]?.average || 0);
           });
         }
@@ -8904,11 +9221,11 @@ const CentralRegister = ({
                   scheduledExams.map((exam: any) => (
                     <th key={exam.id} className="p-4 text-center border-l border-neutral-200/50">
                       <div>{exam.title}</div>
-                      <div className="text-[8px] font-bold text-neutral-400 mt-0.5 font-mono">Max {subjects.length * getExamMaxMarks(exam.id)}</div>
+                      <div className="text-[8px] font-bold text-neutral-400 mt-0.5 font-mono">Max {activeSubjects.length * getExamMaxMarks(exam.id)}</div>
                     </th>
                   ))
                 ) : (
-                  subjects.map((subj: any) => (
+                  activeSubjects.map((subj: any) => (
                     <th key={subj.id} className="p-4 text-center border-l border-neutral-200/50">
                       <div>{subj.name}</div>
                       <div className="text-[8px] font-bold text-neutral-400 mt-0.5 font-mono">Max {getExamMaxMarks(selectedExamId)}</div>
@@ -8927,7 +9244,7 @@ const CentralRegister = ({
             <tbody className="divide-y divide-neutral-150 bg-white">
               {processedData.length === 0 ? (
                 <tr>
-                  <td colSpan={12 + (isConsolidated ? scheduledExams.length : subjects.length)} className="p-12 text-center text-neutral-400 font-bold italic uppercase tracking-wider text-xs">
+                  <td colSpan={12 + (isConsolidated ? scheduledExams.length : activeSubjects.length)} className="p-12 text-center text-neutral-400 font-bold italic uppercase tracking-wider text-xs">
                     No student records matched your filters
                   </td>
                 </tr>
@@ -8963,7 +9280,7 @@ const CentralRegister = ({
                       {isConsolidated ? (
                         scheduledExams.map((exam: any) => {
                           const total = row.examTotals[exam.id];
-                          const examMax = subjects.length * getExamMaxMarks(exam.id);
+                          const examMax = activeSubjects.length * getExamMaxMarks(exam.id);
                           const failedExam = total !== undefined && total < examMax * 0.35;
                           return (
                             <td key={exam.id} className={`p-4 text-center border-l border-neutral-100 font-mono font-extrabold text-xs ${failedExam ? 'text-red-500 bg-red-50/20' : 'text-neutral-600'}`}>
@@ -8972,7 +9289,7 @@ const CentralRegister = ({
                           );
                         })
                       ) : (
-                        subjects.map((subj: any) => {
+                        activeSubjects.map((subj: any) => {
                           const mark = row.subjectMarks[subj.id];
                           const maxMark = getExamMaxMarks(selectedExamId);
                           const isFailedSubj = mark !== null && mark < maxMark * 0.35;
@@ -9023,7 +9340,7 @@ const CentralRegister = ({
                         </td>
                       ))
                     ) : (
-                      subjects.map((subj: any) => (
+                      activeSubjects.map((subj: any) => (
                         <td key={subj.id} className="p-4 text-center border-l border-neutral-200/50 font-mono font-extrabold text-primary">
                           {stats.subjectStats[subj.id]?.average || 0}
                         </td>
@@ -9042,7 +9359,7 @@ const CentralRegister = ({
                         </td>
                       ))
                     ) : (
-                      subjects.map((subj: any) => (
+                      activeSubjects.map((subj: any) => (
                         <td key={subj.id} className="p-4 text-center border-l border-neutral-200/50 font-mono font-extrabold text-emerald-600">
                           {stats.subjectStats[subj.id]?.highest || 0}
                         </td>
@@ -9061,7 +9378,7 @@ const CentralRegister = ({
                         </td>
                       ))
                     ) : (
-                      subjects.map((subj: any) => (
+                      activeSubjects.map((subj: any) => (
                         <td key={subj.id} className="p-4 text-center border-l border-neutral-200/50 font-mono font-extrabold text-indigo-600">
                           {stats.subjectStats[subj.id]?.passRate || 0}%
                         </td>
@@ -9186,8 +9503,15 @@ const AbstractSummaryTab = ({
     setLoadingData(true);
     
     // Subscribe to all exam marks for real-time aggregation across classes
-    const unsubMarks = dbService.subscribe('examMarks', [], (data) => {
-      setAllMarks(data || []);
+    const unsubMarks = dbService.subscribe('examMarks', [], async (data) => {
+      let markList = data || [];
+      if (!markList || markList.length === 0) {
+        try {
+          const live = await fetchExamMarksFromLiveProxy(undefined, selectedExamId);
+          if (live && live.length > 0) markList = live;
+        } catch (e) {}
+      }
+      setAllMarks(markList);
       setLoadingData(false);
     });
     return () => {
@@ -9222,25 +9546,10 @@ const AbstractSummaryTab = ({
 
   // Helper function to extract student mark for a subject accurately
   const getSubjectMarkValue = (studentId: string, subjId: string, subjName?: string) => {
-    const targetExamIds = new Set<string>();
-    if (selectedExamId) targetExamIds.add(String(selectedExamId));
-    if (activeExam?.id) targetExamIds.add(String(activeExam.id));
-    if (activeExam?.title) targetExamIds.add(String(activeExam.title));
+    const student = resolvedStudents.find((s: any) => s.id === studentId || s.uid === studentId) || { id: studentId };
+    const subj = { id: subjId, name: subjName };
 
-    const m = resolvedMarks.find((mark: any) => {
-      const stuMatch = mark.studentId === studentId || String(mark.studentId) === String(studentId);
-      if (!stuMatch) return false;
-
-      const subMatch = (subjId && mark.subjectId === subjId) ||
-        (subjName && mark.subjectName && mark.subjectName.toLowerCase().trim() === subjName.toLowerCase().trim()) ||
-        (subjName && mark.subjectId && subjName.toLowerCase().trim().includes(mark.subjectId.toLowerCase().trim()));
-      if (!subMatch) return false;
-
-      const examMatch = !mark.examId || targetExamIds.has(String(mark.examId)) ||
-        (activeExam?.title && String(mark.examId).toLowerCase().includes(activeExam.title.toLowerCase()));
-
-      return examMatch;
-    });
+    const m = findMatchingMark(resolvedMarks, student, subj, activeExam);
 
     if (!m) return null;
 
@@ -9298,102 +9607,22 @@ const AbstractSummaryTab = ({
       return true;
     });
 
-    const targetExamId = String(selectedExamId || '').trim();
-    const targetExamTitle = String(selectedExamName || activeExam?.title || '').toLowerCase().trim();
-
     // Source of truth for schedules: activeExamSchedulesList or resolvedSchedules
     const scheduleSource = activeExamSchedulesList || resolvedSchedules;
 
-    // Determine scheduled subjects for this class/batch strictly from examSchedules
-    const matchingSchedules = scheduleSource.filter((sch: any) => {
-      if (!sch) return false;
-
-      // 1. Exam matching
-      const schExamId = String(sch.examId || '').trim();
-      const schExamTitle = String(sch.examTitle || '').toLowerCase().trim();
-
-      const matchesExam = 
-        (targetExamId && schExamId === targetExamId) ||
-        (activeExam?.id && schExamId === String(activeExam.id)) ||
-        (targetExamTitle && schExamTitle === targetExamTitle) ||
-        (targetExamTitle && schExamId.toLowerCase() === targetExamTitle) ||
-        (targetExamTitle && schExamId.toLowerCase().includes(targetExamTitle)) ||
-        (schExamTitle && targetExamId.toLowerCase().includes(schExamTitle));
-
-      if (!matchesExam) return false;
-
-      // 2. Class & Batch matching
-      const targetBatchId = String(batchId || '').trim();
-      const targetBatchName = String(batchName || '').toLowerCase().trim();
-      const targetClassId = String(classId || '').trim();
-      const targetClassName = String(className || '').toLowerCase().trim();
-
-      const schBatchId = String(sch.batchId || '').trim();
-      const schBatchName = String(sch.batchName || '').toLowerCase().trim();
-      const schClassId = String(sch.classId || '').trim();
-      const schClassName = String(sch.className || '').toLowerCase().trim();
-
-      // Direct exact matches
-      if (targetBatchId && schBatchId && targetBatchId === schBatchId) return true;
-      if (targetBatchName && schBatchName && targetBatchName === schBatchName) return true;
-      if (targetBatchName && schBatchId && targetBatchName === schBatchId.toLowerCase()) return true;
-
-      // Normalized comparisons
-      const normTargetBatchId = targetBatchId.toLowerCase().replace(/[-_\s]/g, '');
-      const normTargetBatchName = targetBatchName.toLowerCase().replace(/[-_\s]/g, '');
-      const normSchBatchId = schBatchId.toLowerCase().replace(/[-_\s]/g, '');
-      const normSchBatchName = schBatchName.toLowerCase().replace(/[-_\s]/g, '');
-
-      if (normTargetBatchId && normSchBatchId && normTargetBatchId === normSchBatchId) return true;
-      if (normTargetBatchName && normSchBatchName && normTargetBatchName === normSchBatchName) return true;
-
-      // Class + Batch combination (e.g. "1 Class_IPL" or "2 Class_M-Batch")
-      const normClassBatch = `${targetClassName}${targetBatchName}`.replace(/[-_\s]/g, '');
-      const normClassBatchId = `${targetClassId}${targetBatchId}`.replace(/[-_\s]/g, '');
-      if (normClassBatch && normSchBatchId && (normSchBatchId === normClassBatch || normSchBatchId === `${targetClassName}_${targetBatchName}`.toLowerCase().replace(/[-_\s]/g, ''))) return true;
-      if (normClassBatchId && normSchBatchId && normSchBatchId === normClassBatchId) return true;
-
-      // If standalone/Main class
-      if (batch.id === cls.id || batch.name === 'Main') {
-        if (schClassId && targetClassId && schClassId === targetClassId) return true;
-        if (schClassName && targetClassName && schClassName === targetClassName) return true;
-        if (schBatchId && targetClassId && schBatchId === targetClassId) return true;
-        if (schBatchId && targetClassName && schBatchId.toLowerCase() === targetClassName) return true;
-      }
-
-      return false;
+    // RULE: ONLY include subjects that are scheduled and configured in examSchedules for this exam, class, and batch
+    const displaySubjects = getScheduledConfiguredSubjects({
+      selectedExam: selectedExamId || activeExam?.id,
+      selectedClass: classId,
+      selectedBatch: batchId,
+      examSchedules: scheduleSource,
+      subjects: resolvedSubjects,
+      classes,
+      batches,
+      exams
     });
 
-    // RULE: If this class/batch is NOT scheduled in exam schedules tab for this exam, DO NOT SHOW it
-    if (matchingSchedules.length === 0) {
-      return null;
-    }
-
-    // RULE: ONLY include subjects that are scheduled in matchingSchedules
-    const scheduledSubjectMap = new Map<string, { id: string; name: string; code?: string }>();
-
-    matchingSchedules.forEach((sch: any) => {
-      const sId = String(sch.subjectId || '').trim();
-      const sName = String(sch.subjectName || '').trim();
-
-      const masterSub = resolvedSubjects.find((s: any) => 
-        (sId && String(s.id) === sId) ||
-        (sName && (s.name || '').toLowerCase().trim() === sName.toLowerCase()) ||
-        (sName && s.name && s.name.toLowerCase().replace(/[-_\s]/g, '') === sName.toLowerCase().replace(/[-_\s]/g, ''))
-      );
-
-      const subjectKey = (masterSub?.id || sId || sName).toLowerCase();
-      if (!scheduledSubjectMap.has(subjectKey)) {
-        scheduledSubjectMap.set(subjectKey, {
-          id: masterSub?.id || sId || `sched_${sName.replace(/\s+/g, '_')}`,
-          name: masterSub?.name || sName || sId,
-          code: masterSub?.code || (sName || sId).toUpperCase()
-        });
-      }
-    });
-
-    const displaySubjects = Array.from(scheduledSubjectMap.values()).sort(compareSubjectsStandard);
-
+    // RULE: If this class/batch is NOT scheduled or has no scheduled subjects for this exam, DO NOT SHOW it
     if (displaySubjects.length === 0) {
       return null;
     }

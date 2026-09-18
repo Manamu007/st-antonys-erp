@@ -127,6 +127,7 @@ const Communication: React.FC = () => {
   // Single Chat state
   const [input, setInput] = useState('');
   const [targetNumber, setTargetNumber] = useState('');
+  const [isSendingMessage, setIsSendingMessage] = useState(false);
 
   // Academic Data for Broadcast
   const [classes, setClasses] = useState<any[]>([]);
@@ -361,8 +362,9 @@ This is an automated message.`
     fetchQueueAndLogs();
 
     const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
       fetchQueueAndLogs();
-    }, 5000);
+    }, 15000);
 
     return () => clearInterval(interval);
   }, []);
@@ -549,7 +551,10 @@ This is an automated message.`
     };
 
     pollStatus();
-    const pollInterval = setInterval(pollStatus, 2000);
+    const pollInterval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      pollStatus();
+    }, 15000);
 
     return () => {
       newSocket.disconnect();
@@ -649,17 +654,22 @@ This is an automated message.`
   };
 
   const handleSendMessage = async () => {
+    if (isSendingMessage) return;
     if (!targetNumber || (!input && !selectedFile)) {
       toast.error('Please enter a number and a message or attachment');
       return;
     }
 
+    setIsSendingMessage(true);
     try {
       const options: any = {};
       
       if (selectedFile) {
         const uploadResult = await uploadFile();
-        if (!uploadResult) return;
+        if (!uploadResult) {
+          setIsSendingMessage(false);
+          return;
+        }
 
         if (uploadResult.mimetype.startsWith('image/')) {
           options.imageUrl = uploadResult.filePath;
@@ -678,7 +688,11 @@ This is an automated message.`
       });
       const data = await res.json();
       if (data.success) {
-        toast.success('Message queued for delivery!');
+        if (data.duplicate || data.skipped) {
+          toast.warning(data.message || 'Duplicate blocked: An identical message was already queued or sent recently.');
+        } else {
+          toast.success('Message queued for delivery!');
+        }
         setInput('');
         clearFile();
       } else {
@@ -686,6 +700,8 @@ This is an automated message.`
       }
     } catch (err) {
       toast.error('Connection error');
+    } finally {
+      setIsSendingMessage(false);
     }
   };
 
@@ -1729,8 +1745,8 @@ This is an automated message.`
                       )}
                     </div>
                   </div>
-                  <button onClick={handleSendMessage} disabled={status !== 'open' || uploadingFile} className="w-full py-5 bg-sidebar text-white rounded-[32px] font-black shadow-2xl hover:scale-[1.01] transition-all flex items-center justify-center gap-3 disabled:opacity-50">
-                    <Send className="w-5 h-5" /> Dispatch
+                  <button onClick={handleSendMessage} disabled={status !== 'open' || uploadingFile || isSendingMessage} className="w-full py-5 bg-sidebar text-white rounded-[32px] font-black shadow-2xl hover:scale-[1.01] transition-all flex items-center justify-center gap-3 disabled:opacity-50">
+                    <Send className="w-5 h-5" /> {isSendingMessage ? 'Dispatching...' : 'Dispatch'}
                   </button>
                 </motion.div>
               )}
@@ -2360,8 +2376,14 @@ This is an automated message.`
                 <motion.div key="queue" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-8">
                   <div className="flex items-center justify-between">
                     <div>
-                      <h3 className="text-xl font-bold">Delivery Queue</h3>
-                      <p className="text-sm text-neutral-500 font-medium">Monitoring messages in processing and scheduled for delivery.</p>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-xl font-bold">Delivery Queue</h3>
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                          Meta Anti-Ban Protected (3–4 msgs/min)
+                        </span>
+                      </div>
+                      <p className="text-sm text-neutral-500 font-medium">Messages are automatically paced at 15–20s intervals with human typing simulation and cooling breaks to safeguard your WhatsApp account from Meta restrictions.</p>
                     </div>
                     <div className="flex items-center gap-4">
                       <button 

@@ -176,6 +176,7 @@ async function startServer() {
   app.use("/api/fees", feesRouter);
   app.use("/api/attendance", attendanceRouter);
   app.use("/api/exams", examsRouter);
+  app.use("/api/exam-marks", examsRouter);
   app.use("/api/student-health", studentHealthRouter);
   app.use("/api/ai/antony-agent", antonyAiRouter);
   app.use("/api/maintenance", maintenanceRouter);
@@ -399,6 +400,17 @@ async function startServer() {
         priority: priorityVal,
         options
       });
+
+      if (newMsg.skipped || newMsg.duplicate) {
+        console.log(`[WhatsApp Queue] Duplicate message prevented for ${formattedRecipient}: ${newMsg.reason}`);
+        return res.json({
+          success: true,
+          skipped: true,
+          duplicate: true,
+          message: newMsg.reason || "Identical message was already queued or sent recently (duplicate prevented)",
+          queueId: newMsg._id
+        });
+      }
 
       if (priorityVal === 0) {
         try {

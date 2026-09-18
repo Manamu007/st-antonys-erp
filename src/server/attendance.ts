@@ -1319,9 +1319,14 @@ router.post('/student-permission', async (req, res) => {
 
 router.post('/notify-absent', async (req, res) => {
   try {
-    const { studentIds, date, classId, batchId } = req.body;
+    const { studentIds, students, date, classId, batchId, forceSend } = req.body;
     
-    if (!studentIds || !Array.isArray(studentIds) || studentIds.length === 0) {
+    const rawStudentIds = Array.isArray(studentIds) ? studentIds : [];
+    const uniqueStudentIds: string[] = Array.from(
+      new Set(rawStudentIds.map((id: any) => String(id).trim()).filter(Boolean))
+    );
+    
+    if (uniqueStudentIds.length === 0) {
       return res.status(400).json({ error: 'No students specified' });
     }
 
@@ -1332,17 +1337,27 @@ router.post('/notify-absent', async (req, res) => {
     const resolvedBatchId = batchId || 'all';
     const docId = `${date}_${resolvedClassId}_${resolvedBatchId}`;
 
-    // Server-side block for duplicate sends on the same date for this specific batch/class
-    const existSnap = await db.collection('attendance_alerts_sent').doc(docId).get();
-    if (existSnap.exists) {
-      return res.status(400).json({ error: 'already sent alerts' });
-    }
+    // Server-side block for duplicate sends on the same date for this specific batch/class unless forceSend is true
+    if (!forceSend) {
+      const existSnap = await db.collection('attendance_alerts_sent').doc(docId).get();
+      if (existSnap.exists) {
+        return res.status(400).json({ 
+          error: 'already sent alerts',
+          message: 'Alerts have already been sent for this batch today.',
+          alreadySent: true
+        });
+      }
 
-    // Also block if global alert was sent for all classes of this date as fallback compatibility
-    if (resolvedClassId === 'all' && resolvedBatchId === 'all') {
-      const globalSnap = await db.collection('attendance_alerts_sent').doc(date).get();
-      if (globalSnap.exists) {
-        return res.status(400).json({ error: 'already sent alerts' });
+      // Also block if global alert was sent for all classes of this date as fallback compatibility
+      if (resolvedClassId === 'all' && resolvedBatchId === 'all') {
+        const globalSnap = await db.collection('attendance_alerts_sent').doc(date).get();
+        if (globalSnap.exists) {
+          return res.status(400).json({ 
+            error: 'already sent alerts',
+            message: 'Alerts have already been sent for all classes today.',
+            alreadySent: true
+          });
+        }
       }
     }
 
@@ -1352,16 +1367,59 @@ router.post('/notify-absent', async (req, res) => {
       errors: [] as string[]
     };
 
+    // Build fallback student map from provided payload if available
+    const providedStudentMap = new Map<string, any>();
+    if (Array.isArray(students)) {
+      students.forEach((s: any) => {
+        if (s.id) providedStudentMap.set(s.id, s);
+        if (s.uid) providedStudentMap.set(s.uid, s);
+      });
+    }
+
+    const sentStudentsInBatch = new Set<string>();
+    const sentPhonesInBatch = new Set<string>();
+
     // Process students
-    for (const studentId of studentIds) {
+    for (const studentId of uniqueStudentIds) {
+      if (sentStudentsInBatch.has(studentId)) {
+        continue;
+      }
+      sentStudentsInBatch.add(studentId);
+
       try {
-        let studentDoc = await db.collection('students').doc(studentId).get();
-        if (!studentDoc.exists) {
-          studentDoc = await db.collection('users').doc(studentId).get();
+        const schoolDoc = await db.collection('settings').doc('school').get();
+        const schoolName = schoolDoc.exists ? schoolDoc.data()?.schoolName : 'St. Antony’s School';
+        const resolvedSchoolId = schoolDoc.exists && schoolDoc.data()?.schoolId ? schoolDoc.data()?.schoolId : 'st_antonys_school';
+
+        // Check if absent alert was already sent to this student on this date
+        const studentAlertKey = `${resolvedSchoolId}_${studentId}_${date}`;
+        if (!forceSend) {
+          const studentAlertDoc = await db.collection('attendance_alerts_sent_students').doc(studentAlertKey).get().catch(() => null);
+          if (studentAlertDoc && studentAlertDoc.exists) {
+            console.log(`[Attendance Alert] Absent alert already sent today for student ${studentId}. Skipping duplicate.`);
+            continue;
+          }
         }
-        if (!studentDoc.exists) continue;
+
+        let student: any = null;
+        let studentDoc = await db.collection('students').doc(studentId).get();
+        if (studentDoc.exists) {
+          student = studentDoc.data();
+        } else {
+          studentDoc = await db.collection('users').doc(studentId).get();
+          if (studentDoc.exists) {
+            student = studentDoc.data();
+          } else if (providedStudentMap.has(studentId)) {
+            student = providedStudentMap.get(studentId);
+          }
+        }
         
-        const student = studentDoc.data();
+        if (!student) {
+          results.failed++;
+          results.errors.push(`Student not found for ID: ${studentId}`);
+          continue;
+        }
+        
         // Try to find parent WhatsApp or other contact numbers fallback cascadingly
         const parentPhone = student?.whatsappNumber || 
                             student?.parentPhone || 
@@ -1374,36 +1432,42 @@ router.post('/notify-absent', async (req, res) => {
         
         if (!parentPhone) {
           results.failed++;
-          results.errors.push(`No phone number found for ${student?.name}`);
+          results.errors.push(`No phone number found for ${student?.name || studentId}`);
           continue;
         }
 
-        // Fetch template from Firestore
+        const cleanParentPhone = String(parentPhone).replace(/\D/g, '').slice(-10);
+        const phoneStudentKey = `${cleanParentPhone}_${studentId}_${date}`;
+        if (sentPhonesInBatch.has(phoneStudentKey)) {
+          console.log(`[Attendance Alert] Phone ${cleanParentPhone} already received alert for student ${studentId} today.`);
+          continue;
+        }
+        sentPhonesInBatch.add(phoneStudentKey);
+
+        // Fetch template from Firestore / Mongo / Proxy
         const templateSnapshot = await db.collection('message_templates')
           .where('event', '==', 'absent')
           .where('isActive', '==', true)
           .limit(1)
           .get();
 
-        const schoolDoc = await db.collection('settings').doc('school').get();
-        const schoolName = schoolDoc.exists ? schoolDoc.data()?.schoolName : 'St. Antony’s School';
-        const resolvedSchoolId = schoolDoc.exists && schoolDoc.data()?.schoolId ? schoolDoc.data()?.schoolId : 'st_antonys_school';
+        let message = `*Attendance Alert - St. Antony's School* 🏫\n\nDear ${student?.fatherName || 'Parent'},\n\nThis is to inform you that *${student?.name}* (Roll No: ${student?.rollNumber || student?.rollNo || 'N/A'}) is marked *ABSENT* today (${date}).\n\nIf you have any queries, please contact the school office.\n\n_This is an automated message._`;
 
-        let message = `*Attendance Alert - St. Antony's School* 🏫\n\nDear ${student?.fatherName || 'Parent'},\n\nThis is to inform you that *${student?.name}* (Roll No: ${student?.rollNumber || 'N/A'}) is marked *ABSENT* today (${date}).\n\nIf you have any queries, please contact the school office.\n\n_This is an automated message._`;
-
-        if (!templateSnapshot.empty) {
+        if (!templateSnapshot.empty && templateSnapshot.docs?.[0]) {
           const template = templateSnapshot.docs[0].data();
           const templateContent = template.content;
 
-          message = templateContent.replace(/\{\{(.*?)\}\}/g, (match: string, key: string) => {
-            const k = key.trim();
-            if (k === 'student_name') return student?.name || 'N/A';
-            if (k === 'father_name') return student?.fatherName || 'Parent';
-            if (k === 'date') return date || 'N/A';
-            if (k === 'school_name') return schoolName;
-            if (k === 'roll_number') return student?.rollNumber || 'N/A';
-            return match;
-          });
+          if (templateContent) {
+            message = templateContent.replace(/\{\{(.*?)\}\}/g, (match: string, key: string) => {
+              const k = key.trim();
+              if (k === 'student_name') return student?.name || 'N/A';
+              if (k === 'father_name') return student?.fatherName || 'Parent';
+              if (k === 'date') return date || 'N/A';
+              if (k === 'school_name') return schoolName;
+              if (k === 'roll_number') return student?.rollNumber || student?.rollNo || 'N/A';
+              return match;
+            });
+          }
         }
         
         await sendMessage(parentPhone, message, {
@@ -1415,8 +1479,18 @@ router.post('/notify-absent', async (req, res) => {
           source: "attendance_notify_absent",
           date: date,
           schoolId: resolvedSchoolId,
-          forceSend: false
-        }, 'bot');
+          forceSend: !!forceSend
+        }, 'single');
+
+        // Record individual student absent alert sent to prevent duplicate sends
+        await db.collection('attendance_alerts_sent_students').doc(studentAlertKey).set({
+          schoolId: resolvedSchoolId,
+          studentId,
+          date,
+          parentPhone,
+          sentAt: new Date().toISOString()
+        }).catch(() => {});
+
         results.success++;
       } catch (err: any) {
         results.failed++;
@@ -1435,11 +1509,19 @@ router.post('/notify-absent', async (req, res) => {
       }, { merge: true });
     }
 
-    res.json({ success: true, ...results });
+    res.json({
+      success: results.success > 0,
+      sentCount: results.success,
+      failedCount: results.failed,
+      errors: results.errors,
+      message: results.success > 0 
+        ? `Successfully sent ${results.success} alert(s)` 
+        : (results.failed > 0 ? `Failed: ${results.errors.join('; ')}` : 'No alerts could be sent')
+    });
   } catch (error: any) {
     handleFirestoreError(error, 'AttendanceBackupWrite:notify-absent');
     if (isQuotaOrPermissionError(error)) {
-      return res.json({ success: true, count: 0, warning: 'Firestore quota limit active' });
+      return res.json({ success: true, count: 0, sentCount: 0, warning: 'Firestore quota limit active' });
     }
     res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
   }
@@ -1469,7 +1551,7 @@ router.get('/alerts-sent', async (req, res) => {
 
     const docSnap = await db.collection('attendance_alerts_sent').doc(docId).get();
     if (docSnap.exists) {
-      res.json(docSnap.data());
+      return res.json(docSnap.data());
     } else {
       // Fallback to check by date document for backwards compatibility if classId & batchId are both all
       if (resolvedClassId === 'all' && resolvedBatchId === 'all') {
@@ -1478,8 +1560,22 @@ router.get('/alerts-sent', async (req, res) => {
           return res.json(legacySnap.data());
         }
       }
+
+      // Check live proxy if local is empty
+      try {
+        const liveRes = await fetch(`https://antonyschool.in/api/attendance/alerts-sent?date=${encodeURIComponent(date)}&classId=${encodeURIComponent(String(resolvedClassId))}&batchId=${encodeURIComponent(String(resolvedBatchId))}`, {
+          signal: AbortSignal.timeout(5000)
+        });
+        if (liveRes.ok) {
+          const liveData = await liveRes.json();
+          if (liveData && !liveData.error) {
+            return res.json(liveData);
+          }
+        }
+      } catch (proxyErr) {}
+
       const fallbackData = await getFallbackAlertsSent(docId, String(date));
-      res.json(fallbackData);
+      return res.json(fallbackData);
     }
   } catch (error: any) {
     handleFirestoreError(error, 'AttendanceBackupRead:alerts-sent');

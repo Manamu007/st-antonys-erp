@@ -94,6 +94,8 @@ export interface UserProfile {
   subjects?: string[];
   teachingClasses?: string[];
   classTeacherBatchName?: string;
+  classTeacherBatchId?: string;
+  isClassTeacher?: boolean;
   phone?: string;
   classId?: string;
   batchId?: string;

@@ -1321,4 +1321,95 @@ Instructions:
   }
 });
 
+// Live MongoDB exam marks endpoint supporting GET /api/exams/marks or /api/exam-marks
+router.get(["/marks", "/exam-marks", "/"], async (req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+  try {
+    const { class: selectedClass, classId, exam: selectedExam, examId, batch, batchId, limit: qLimit } = req.query;
+    const targetClass = (selectedClass || classId) as string;
+    const targetExam = (selectedExam || examId) as string;
+    const targetBatch = (batch || batchId) as string;
+    const effectiveLimit = Number(qLimit) || 15000;
+
+    const constraints: any[] = [
+      { type: "limit", value: effectiveLimit }
+    ];
+    if (targetExam) {
+      constraints.push({ type: "where", field: "examId", op: "==", value: targetExam });
+    }
+    if (targetClass) {
+      constraints.push({ type: "where", field: "classId", op: "==", value: targetClass });
+    }
+    if (targetBatch) {
+      constraints.push({ type: "where", field: "batchId", op: "==", value: targetBatch });
+    }
+
+    const vpsRes = await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operation: "list",
+        path: "examMarks",
+        constraints: [
+          { type: "limit", value: effectiveLimit }
+        ]
+      }),
+      signal: AbortSignal.timeout(20000)
+    });
+
+    const vpsJson = await vpsRes.json();
+    let data = vpsJson.data || [];
+
+    // If targetExam or targetClass specified, try gentle filter
+    if (targetExam || targetClass || targetBatch) {
+      const filtered = data.filter((d: any) => {
+        let matchExam = true;
+        let matchClass = true;
+        let matchBatch = true;
+
+        if (targetExam) {
+          const ex = targetExam.toLowerCase().replace(/[^a-z0-9]/g, "");
+          const dEx = String(d.examId || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+          const isFa1Target = ex.includes("fa1") || ex.includes("formative1") || ex.includes("0qdcty1") || ex.includes("ogbtxoj");
+          const isFa1Doc = dEx.includes("fa1") || dEx === "0qdcty1rrnqrrcavpk5v" || dEx === "ogbtxojta6coskpbaf7b" || dEx === "wvy1u6wwttuqdertoh5w" || dEx === "donlrxyccsql4eexhuoi" || dEx === "wkpec0xmov3cddyosw2b";
+          const isFa3Target = ex.includes("fa3") || ex.includes("formative3");
+          const isFa3Doc = dEx.includes("fa3") || dEx === "fa320262027";
+
+          matchExam = (dEx === ex) ||
+            (isFa1Target && isFa1Doc) ||
+            (isFa3Target && isFa3Doc) ||
+            (ex.includes("formative") && (dEx.includes("fa") || isFa1Doc));
+        }
+
+        if (targetClass) {
+          const cls = targetClass.toLowerCase();
+          const dCls = String(d.classId || "").toLowerCase();
+          matchClass = (dCls === cls) || !d.classId;
+        }
+
+        if (targetBatch) {
+          const b = targetBatch.toLowerCase();
+          const dB = String(d.batchId || "").toLowerCase();
+          matchBatch = (dB === b) || !d.batchId;
+        }
+
+        return matchExam && matchClass && matchBatch;
+      });
+
+      // If filtered has records, use filtered; otherwise return full data to let client map robustly
+      if (filtered.length > 0) {
+        data = filtered;
+      }
+    }
+
+    return res.json({ success: true, count: data.length, data });
+  } catch (error: any) {
+    console.error("[GET /api/exams/marks] Error:", error);
+    return res.status(500).json({ success: false, error: error?.message || "Failed to fetch exam marks" });
+  }
+});
+
 export default router;

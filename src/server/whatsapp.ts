@@ -32,6 +32,7 @@ import {
 } from './models/WhatsAppQueue.js';
 import { startWhatsAppQueueWorker, triggerQueueProcessing, processNextQueueItem } from './whatsappQueueWorker.js';
 import mongoose from 'mongoose';
+import crypto from 'crypto';
 import NodeCache from 'node-cache';
 
 const msgRetryCounterCache = new NodeCache({ stdTTL: 0, checkperiod: 0 });
@@ -212,10 +213,10 @@ async function acquireGlobalSendSlot(db: any, isEmergency: boolean = false): Pro
   }
 
   // Meta Anti-Ban Rate Limiter:
-  // Standard broadcasts & notifications: 15s base delay = 4 messages per minute
+  // Strictly enforce 3 to 4 messages per minute: 15s - 20s interval
   const MIN_INTERVAL_MS = 15000; 
-  const JITTER_MS = Math.floor(Math.random() * 2500) + 1000; // 1.0s to 3.5s randomized human jitter
-  const BATCH_SIZE_LIMIT = 15; // Cool down pause every 15 messages for bulk broadcasts
+  const JITTER_MS = Math.floor(Math.random() * 5000); // 0 to 5.0s randomized human jitter -> 15s to 20s
+  const BATCH_SIZE_LIMIT = 12; // Cool down pause every 12 messages for bulk broadcasts
   const BATCH_COOL_OFF_MS = 45000; // 45-second cooling break
 
   if (!db || isDatabaseDenied()) {
@@ -708,563 +709,10 @@ async function processQueue() {
         await cleanupStalledMessages();
       }
 
-      // 2. Process next pending item from local MongoDB collection whatsapp_queue first
-      let handledMongo = false;
-      try {
-        handledMongo = await processNextQueueItem();
-      } catch (err: any) {
-        console.warn(`[WhatsApp Queue] processNextQueueItem error:`, err?.message);
-      }
-
-      if (handledMongo) {
-        await delay(1500);
-        continue;
-      }
-
-      // 3. Fallback: If no MongoDB items and Firestore is available, check Firestore QUEUE_COLLECTION
-      if (isDatabaseDenied()) {
-        await delay(1500);
-        continue;
-      }
-
-      const db = getDbAdminInstance();
-      if (!db) {
-        await delay(1500);
-        continue;
-      }
-      
-      // Query pending and retrying messages in parallel to ensure ESM backward compatibility
-      const pendingRef = db.collection(QUEUE_COLLECTION).where('status', '==', 'pending').limit(20);
-      const retryingRef = db.collection(QUEUE_COLLECTION).where('status', '==', 'retrying').limit(20);
-      
-      const [pendingSnap, retryingSnap] = await Promise.all([pendingRef.get(), retryingRef.get()]);
-      
-      const now = new Date();
-      const nowIso = now.toISOString();
-
-      let mergedDocs = [...pendingSnap.docs, ...retryingSnap.docs];
-
-      // Filter out retrying messages where nextAttemptAt is in the future
-      mergedDocs = mergedDocs.filter(doc => {
-        const data = doc.data();
-        if (data.status === 'retrying' && data.nextAttemptAt && data.nextAttemptAt > nowIso) {
-          return false;
-        }
-        return true;
-      });
-
-      if (mergedDocs.length === 0) {
-        // No messages, check again soon
-        await delay(1000);
-        continue;
-      }
-
-      // In-memory sort by priority, nextAttemptAt, attempts and createdAt
-      mergedDocs.sort((a, b) => {
-        const dataA = a.data();
-        const dataB = b.data();
-        
-        const prioA = typeof dataA.priority === 'number' ? dataA.priority : 3;
-        const prioB = typeof dataB.priority === 'number' ? dataB.priority : 3;
-        if (prioA !== prioB) return prioA - prioB;
-        
-        const nextA = dataA.nextAttemptAt || '';
-        const nextB = dataB.nextAttemptAt || '';
-        if (nextA !== nextB) return nextA.localeCompare(nextB);
-        
-        const attA = typeof dataA.attempts === 'number' ? dataA.attempts : 0;
-        const attB = typeof dataB.attempts === 'number' ? dataB.attempts : 0;
-        if (attA !== attB) return attA - attB;
-        
-        const createdA = dataA.createdAt || '';
-        const createdB = dataB.createdAt || '';
-        return createdA.localeCompare(createdB);
-      });
-
-      const messageDocToClaim = mergedDocs[0];
-      const messageId = messageDocToClaim.id;
-
-      // 3. ATOMIC TRANSACTION: Prevent multiple active workers from claiming the same message
-      const targetMessage = await db.runTransaction(async (transaction) => {
-        const docRef = db.collection(QUEUE_COLLECTION).doc(messageId);
-        const docSnapshot = await transaction.get(docRef);
-        if (!docSnapshot.exists) return null;
-        
-        const d = docSnapshot.data() as any;
-        if (d.status !== 'pending' && d.status !== 'retrying') return null;
-        
-        if (d.status === 'retrying' && d.nextAttemptAt && d.nextAttemptAt > new Date().toISOString()) {
-          return null;
-        }
-
-        const currentAttempts = (d.attempts || 0) + 1;
-        transaction.update(docRef, {
-          status: 'processing',
-          lockOwner: instanceId,
-          lockedAt: new Date().toISOString(),
-          attempts: currentAttempts,
-          startedAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        });
-
-        return { ...d, id: messageId, currentAttempts };
-      });
-
-      if (!targetMessage) {
-        // Already claimed by another worker, try again immediately
-        continue;
-      }
-
-      const messageDoc = db.collection(QUEUE_COLLECTION).doc(messageId);
-      const messageData = targetMessage as any;
-
-      // Check if message was already handled by MongoDB queue
-      try {
-        const isMongoConnected = mongoose.connection.readyState === 1;
-        if (isMongoConnected) {
-          const mongoItem = await WhatsAppQueue.findById(messageId).lean().catch(() => null);
-          if (mongoItem && (mongoItem.status === 'sent' || mongoItem.status === 'processing')) {
-            console.log(`[WhatsApp Queue] Message ${messageId} already handled in MongoDB (${mongoItem.status}), skipping Firestore duplicate.`);
-            await messageDoc.update({
-              status: mongoItem.status,
-              updatedAt: new Date().toISOString()
-            }).catch(() => {});
-            continue;
-          }
-        }
-      } catch (_) {}
-
-      try {
-        const toVal = messageData.to || messageData.phone;
-        const textVal = messageData.text || messageData.message || "";
-
-        if (!toVal || typeof toVal !== 'string') {
-          throw new Error("Missing or invalid recipient (to/phone)");
-        }
-
-        // Clean/Normalize target number to modern E.164 standard
-        const normalizedPhone = normalizeIndianPhone(toVal);
-        console.log(`[WhatsApp Queue] Processing message ${messageId} (P${messageData.priority || 3}) to ${normalizedPhone}...`);
-
-        // Check for Consent / Opt-Out status
-        const optOutDoc = await db.collection('whatsapp_opt_out').doc(normalizedPhone).get();
-        if (optOutDoc.exists) {
-          const prio = typeof messageData.priority === 'number' ? messageData.priority : 3;
-          if (prio > 0) { // standard priority messages are cancelled if opted-out
-            await messageDoc.update({
-              status: 'cancelled',
-              cancelledAt: new Date().toISOString(),
-              reason: 'Recipient has opted out'
-            });
-            console.log(`[WhatsApp Queue] Message ${messageId} cancelled: recipient ${normalizedPhone} has opted out.`);
-            safeLogWhatsappEvent('message_cancelled_opt_out', { recipient: normalizedPhone, messageId });
-            continue; 
-          }
-          console.log(`[WhatsApp Queue] Recipient ${normalizedPhone} opted out but emergency priority P0 message is bypassing.`);
-        }
-
-        // Standardize JID format for maximum delivery reliability
-        let jid = normalizedPhone ? normalizedPhone.trim() : '';
-        const isLidTarget = toVal.includes('@lid') || jid.endsWith('@lid') || (jid.replace(/\D/g, '').length >= 14 && jid.replace(/\D/g, '').startsWith('107'));
-
-        if (jid.endsWith('@g.us') || jid.endsWith('@newsletter')) {
-          // Keep group or newsletter JID intact
-        } else if (isLidTarget) {
-          // Keep @lid JID intact for WhatsApp Linked Identity recipients
-          const cleanLidDigits = (toVal || jid).split('@')[0].split(':')[0].replace(/\D/g, '');
-          jid = `${cleanLidDigits}@lid`;
-        } else {
-          // Standard WhatsApp user JID must be digits-only before @s.whatsapp.net (e.g., 919440989858@s.whatsapp.net)
-          const cleanDigits = jid.split('@')[0].split(':')[0].replace(/\D/g, '');
-          if (!cleanDigits) {
-            throw new Error(`Failed to construct a valid JID from recipient: ${toVal}`);
-          }
-          jid = `${cleanDigits}@s.whatsapp.net`;
-        }
-        
-        const cleanTo = jid.split('@')[0].split(':')[0].replace(/\D/g, '');
-
-        // ACQUIRE GLOBAL SEND SLOT (Strictly prevents WhatsApp bans by limiting sending speed across all instances to 4 messages per minute)
-        const isEmergencyP0 = messageData.priority === 0;
-        let slotWait = await acquireGlobalSendSlot(db, isEmergencyP0);
-        while (slotWait > 0) {
-          console.log(`[WhatsApp Rate Limiter] Meta Anti-Ban Pacing (${isEmergencyP0 ? 'Emergency 2s' : '4 msgs/min'}). Waiting ${Math.round(slotWait/1000)}s for a vacant send slot...`);
-          await delay(slotWait);
-          slotWait = await acquireGlobalSendSlot(db, isEmergencyP0);
-        }
-
-        // Re-read document to verify if it has been cancelled by the user in the meantime
-        const freshSnap = await db.collection(QUEUE_COLLECTION).doc(messageId).get();
-        if (freshSnap.exists && freshSnap.data()?.status === 'cancelled') {
-          console.log(`[WhatsApp Queue] Message ${messageId} was cancelled by user while waiting/processing. Aborting send.`);
-          continue;
-        }
-
-        let result: any;
-        const options = messageData.options || {};
-
-        let sendSuccess = false;
-        let lastSendErr: any = null;
-        let msgPayload: any = null;
-
-        for (let sendAttempt = 1; sendAttempt <= 3; sendAttempt++) {
-          try {
-            const isReady = await ensureWhatsAppConnected(25000);
-            if (!isReady || !sock) {
-              throw new Error("WhatsApp socket is not connected or still handshaking");
-            }
-
-            // Verify if target recipient is registered on WhatsApp on first send attempt
-            if (sendAttempt === 1 && !jid.endsWith('@g.us') && !jid.endsWith('@newsletter') && !jid.endsWith('@lid')) {
-              try {
-                const waCheck = await Promise.race([
-                  sock.onWhatsApp(cleanTo),
-                  new Promise<any>((_, reject) => setTimeout(() => reject(new Error('onWhatsApp timeout')), 3500))
-                ]);
-                if (Array.isArray(waCheck) && waCheck.length > 0) {
-                  // Strictly match phone number JID ending with @s.whatsapp.net to prevent LID digit corruption
-                  const pnMatch = waCheck.find((m: any) => m?.exists && m?.jid?.endsWith('@s.whatsapp.net'));
-                  if (pnMatch?.exists && pnMatch.jid) {
-                    const cleanPn = pnMatch.jid.split('@')[0].split(':')[0].replace(/\D/g, '');
-                    if (cleanPn && cleanPn.length >= 10 && cleanPn.length <= 15) {
-                      jid = `${cleanPn}@s.whatsapp.net`;
-                    } else {
-                      jid = `${cleanTo}@s.whatsapp.net`;
-                    }
-                    console.log(`[WhatsApp JID Verified @s.whatsapp.net] ${cleanTo} -> ${jid}`);
-                  } else {
-                    const lidMatch = waCheck.find((m: any) => m?.exists);
-                    if (lidMatch) {
-                      // Recipient exists on WhatsApp (LID format returned), retain valid phone number JID
-                      jid = `${cleanTo}@s.whatsapp.net`;
-                      console.log(`[WhatsApp JID Verified via Phone] ${cleanTo} -> ${jid}`);
-                    } else {
-                      const notFound = waCheck.find((m: any) => m?.exists === false);
-                      if (notFound) {
-                        console.warn(`[WhatsApp JID Check] onWhatsApp flagged ${cleanTo} as not found. Proceeding with direct send to verify via Meta servers...`);
-                        jid = `${cleanTo}@s.whatsapp.net`;
-                      }
-                    }
-                  }
-                }
-              } catch (waCheckErr: any) {
-                if (waCheckErr.message?.includes('NOT registered')) {
-                  throw waCheckErr;
-                }
-                console.warn(`[WhatsApp JID Check] Unable to verify via onWhatsApp (${waCheckErr.message}). Proceeding with JID: ${jid}`);
-              }
-            }
-
-            // Send presence update to stimulate real-time routing on Meta's servers
-            try {
-              await sock.sendPresenceUpdate('composing', jid);
-            } catch (pErr) {}
-
-            msgPayload = null;
-            const resolvedMedia = sendAttempt === 1 ? resolveMediaPayload(options, textVal) : null;
-
-            if (sendAttempt > 1 && (options.buttons || options.templateButtons || options.sections || options.videoUrl || options.imageUrl || options.documentUrl)) {
-              console.log(`[WhatsApp Queue] Retry attempt ${sendAttempt}: using plain text fallback for ${jid}`);
-              msgPayload = { text: textVal };
-            } else if (resolvedMedia) {
-              msgPayload = resolvedMedia;
-            } else if (options.videoUrl) {
-              msgPayload = { 
-                video: { url: options.videoUrl }, 
-                caption: textVal,
-                gifPlayback: options.asGif || false
-              };
-            } else if (options.imageUrl) {
-              msgPayload = { 
-                image: { url: options.imageUrl }, 
-                caption: textVal 
-              };
-            } else if (options.documentUrl) {
-              msgPayload = { 
-                document: { url: options.documentUrl }, 
-                fileName: options.fileName || 'document.pdf',
-                caption: textVal,
-                mimetype: options.mimetype || 'application/pdf'
-              };
-            } else if (options.buttons || options.templateButtons || options.sections) {
-              const buttons = options.buttons || options.templateButtons || [];
-              let formattedText = textVal;
-              if (buttons.length > 0) {
-                const optionsList = buttons.map((b: any, i: number) => {
-                  const label = b.buttonText?.displayText || b.text || b.title || "Option";
-                  return `${i + 1}. ${label}`;
-                }).join('\n');
-                if (!formattedText.includes('1.') && !formattedText.toLowerCase().includes('option')) {
-                  formattedText += `\n\n📌 *Options:*\n${optionsList}\n\n_Reply with option number or keyword_`;
-                }
-              }
-              msgPayload = { text: formattedText };
-            } else {
-              msgPayload = { text: textVal };
-            }
-
-            if (!jid.endsWith('@g.us') && !jid.endsWith('@newsletter') && !jid.endsWith('@lid')) {
-              const cleanPn = jid.split('@')[0].split(':')[0].replace(/\D/g, '');
-              if (cleanPn) {
-                jid = `${cleanPn}@s.whatsapp.net`;
-              }
-            }
-
-            if (sendAttempt > 1 && lastSendErr && !jid.endsWith('@g.us') && !jid.endsWith('@newsletter')) {
-              const prevErr = (lastSendErr.message || '').toLowerCase();
-              if (prevErr.includes('session') || prevErr.includes('bad mac') || prevErr.includes('pre-key') || prevErr.includes('signal')) {
-                console.log(`[WhatsApp Queue] Send attempt ${sendAttempt}: Clearing stale session keys for ${jid} following session error...`);
-                try {
-                  const { state } = await useFirestoreAuthState(getSessionId());
-                  if (state && state.keys && state.keys.set) {
-                    await state.keys.set({
-                      'session': { [jid]: null },
-                      'sender-key': { [jid]: null },
-                      'pre-key': { [jid]: null }
-                    });
-                  }
-                } catch (_) {}
-              }
-            }
-
-            console.log(`[WhatsApp Queue] Sending message to target JID: ${jid} (Attempt ${sendAttempt})...`);
-
-            const SEND_TIMEOUT_MS = 35000;
-            const sendPromise = sock.sendMessage(jid, msgPayload);
-            const timeoutPromise = new Promise((_, reject) => 
-              setTimeout(() => reject(new Error(`sock.sendMessage timed out after ${SEND_TIMEOUT_MS / 1000} seconds`)), SEND_TIMEOUT_MS)
-            );
-
-            result = await Promise.race([sendPromise, timeoutPromise]);
-            console.log(`[WhatsApp Queue] Send response for ${jid}: waMsgId=${result?.key?.id}, status=${result?.status}`);
-
-            if (result && result.key) {
-              storeMessageForRetry(result.key, result.message || msgPayload);
-            }
-
-            sendSuccess = true;
-            break;
-          } catch (sErr: any) {
-            const rawErrStr = sErr ? (sErr.message || (typeof sErr === 'string' ? sErr : (sErr.toString && sErr.toString() !== '[object Object]' ? sErr.toString() : JSON.stringify(sErr)))) : '';
-            const errMsg = (rawErrStr && rawErrStr !== '{}') ? rawErrStr : 'Unknown sending error';
-            lastSendErr = new Error(errMsg);
-            const errMsgLower = errMsg.toLowerCase();
-
-            // Handle ENOENT / missing attachment gracefully on current attempt
-            if (errMsgLower.includes('enoent') || errMsgLower.includes('no such file')) {
-              console.warn(`[WhatsApp Queue] Attachment file missing on disk for ${jid}. Retrying with plain text fallback immediately...`);
-              msgPayload = { text: textVal };
-              try {
-                const fallbackPromise = sock.sendMessage(jid, msgPayload);
-                const fallbackTimeout = new Promise((_, reject) => 
-                  setTimeout(() => reject(new Error('sock.sendMessage text fallback timed out after 60 seconds')), 60000)
-                );
-                result = await Promise.race([fallbackPromise, fallbackTimeout]);
-                if (result && result.key) {
-                  storeMessageForRetry(result.key, result.message || msgPayload);
-                }
-                sendSuccess = true;
-                console.log(`[WhatsApp Queue] Plain text fallback succeeded for ${jid}: waMsgId=${result?.key?.id}`);
-                break;
-              } catch (fbErr: any) {
-                console.error(`[WhatsApp Queue] Text fallback failed for ${jid}:`, fbErr?.message || fbErr);
-              }
-            }
-
-            const isConnErr = errMsgLower.includes('connection closed') || 
-                              errMsgLower.includes('not connected') ||
-                              errMsgLower.includes('timed out') ||
-                              errMsgLower.includes('socket') ||
-                              errMsgLower.includes('stream') ||
-                              errMsgLower.includes('closed') ||
-                              errMsgLower.includes('disconnect') ||
-                              errMsgLower.includes('1006') ||
-                              errMsgLower.includes('econn');
-
-            const isSessionErr = errMsgLower.includes('no sessions') ||
-                                 errMsgLower.includes('session') ||
-                                 errMsgLower.includes('pre-key') ||
-                                 errMsgLower.includes('bad mac') ||
-                                 errMsgLower.includes('signal') ||
-                                 errMsgLower.includes('key');
-
-            if (isSessionErr) {
-              console.warn(`[WhatsApp Queue] Session error detected for JID ${jid} (${errMsg}). Healing stale session keys...`);
-              try {
-                const { state } = await useFirestoreAuthState(getSessionId());
-                if (state && state.keys && state.keys.set) {
-                  const cleanJid = jid.replace(/:\d+@/, '@');
-                  const jidVariations = Array.from(new Set([jid, cleanJid]));
-                  const keysToClear: any = {
-                    'session': {},
-                    'sender-key': {},
-                    'pre-key': {}
-                  };
-                  for (const jidVar of jidVariations) {
-                    keysToClear['session'][jidVar] = null;
-                    keysToClear['sender-key'][jidVar] = null;
-                    keysToClear['pre-key'][jidVar] = null;
-                  }
-                  await state.keys.set(keysToClear);
-                }
-              } catch (healErr: any) {
-                console.warn(`[WhatsApp Queue] Session key clear error:`, healErr?.message || healErr);
-              }
-            }
-
-            if ((isConnErr || isSessionErr) && sendAttempt < 3) {
-              console.log(`[WhatsApp Queue] Send attempt ${sendAttempt} notice (${errMsg}). Waiting for connection recovery...`);
-              if (isConnErr && !isConnecting) {
-                updateStatus('connecting');
-                connectToWhatsApp(io, true, false).catch(() => {});
-              }
-              await ensureWhatsAppConnected(25000);
-            } else {
-              throw lastSendErr;
-            }
-          }
-        }
-
-        if (!sendSuccess && lastSendErr) {
-          throw lastSendErr;
-        }
-
-        // 4. Mark as completed
-        await messageDoc.update({ 
-          status: 'sent', 
-          completedAt: new Date().toISOString(),
-          waMessageId: result?.key?.id || null 
-        });
-
-        if (messageData.idempotencyKey) {
-          await db.collection('whatsapp_idempotency').doc(messageData.idempotencyKey).set({
-            status: 'sent',
-            waMessageId: result?.key?.id || null,
-            completedAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          }, { merge: true }).catch(() => {});
-        }
-
-        // Save outgoing message for secure retry/decryption handling
-        if (result && result.key) {
-          storeMessageForRetry(result.key, result.message || { conversation: textVal });
-        }
-        
-        await logWhatsAppMessage(cleanTo, textVal, messageData.type, 'sent', result?.key?.id, undefined, messageData.options);
-        console.log(`[WhatsApp Queue] Message ${messageId} sent successfully.`);
-
-        // 5. Apply Randomized Delays based on priority (P0: 5-10s, P1: 8-15s, P2: 12-25s, P3: 20-40s)
-        const prio = typeof messageData.priority === 'number' ? messageData.priority : 3;
-        const waitTime = getDelayForPriority(prio);
-        
-        console.log(`[WhatsApp Queue] Cooldown: Waiting ${Math.round(waitTime/1000)}s for Priority ${prio}...`);
-        await delay(waitTime);
-
-      } catch (err: any) {
-        const rawErrMsg = err ? (err.message || (typeof err === 'string' ? err : (err.toString && err.toString() !== '[object Object]' ? err.toString() : JSON.stringify(err)))) : '';
-        const errorReason = (rawErrMsg && rawErrMsg !== '{}') ? rawErrMsg : "Unknown sending error";
-        const currentAttempts = messageData.currentAttempts || 1;
-        const errMsgLower = errorReason.toLowerCase();
-        
-        const isConnError = errMsgLower.includes('connection closed') || 
-                            errMsgLower.includes('not connected') ||
-                            errMsgLower.includes('timed out') ||
-                            errMsgLower.includes('socket') ||
-                            errMsgLower.includes('stream') ||
-                            errMsgLower.includes('closed') ||
-                            errMsgLower.includes('disconnect') ||
-                            errMsgLower.includes('econn');
-
-        const isSessionError = errMsgLower.includes('no sessions') ||
-                              errMsgLower.includes('session') ||
-                              errMsgLower.includes('pre-key') ||
-                              errMsgLower.includes('bad mac') ||
-                              errMsgLower.includes('signal');
-
-        const isTransient = isConnError || isSessionError;
-
-        if (isTransient) {
-          console.warn(`[WhatsApp Queue] Transient send notice for ${messageId} to ${messageData.to}: ${errorReason}`);
-        } else {
-          console.error(`[WhatsApp Queue] Error sending message ${messageId} to ${messageData.to}: ${errorReason}`);
-        }
-
-        const isNotRegistered = errMsgLower.includes('not on whatsapp') || 
-                                errMsgLower.includes('not registered') ||
-                                errMsgLower.includes('item-not-found');
-
-        if (currentAttempts < 5 && !isNotRegistered) {
-          // Calculate retry schedule
-          // For transient connection or session negotiation errors, retry quickly (2 seconds) without wasting attempt quota
-          const effectiveAttempts = isTransient ? Math.max(0, currentAttempts - 1) : currentAttempts;
-          const retryDelayMs = isTransient ? 2000 : (currentAttempts === 1 ? 15000 : 60000);
-          const nextAttemptAt = new Date(Date.now() + retryDelayMs).toISOString();
-
-          await messageDoc.update({ 
-            status: 'retrying', 
-            attempts: effectiveAttempts,
-            lastError: errorReason,
-            nextAttemptAt,
-            updatedAt: new Date().toISOString() 
-          });
-
-          if (messageData.idempotencyKey) {
-            await db.collection('whatsapp_idempotency').doc(messageData.idempotencyKey).set({
-              status: 'retrying',
-              attempts: effectiveAttempts,
-              lastError: errorReason,
-              updatedAt: new Date().toISOString()
-            }, { merge: true }).catch(() => {});
-          }
-
-          console.log(`[WhatsApp Queue] Attempt ${currentAttempts} failed (${errorReason}). Rescheduling message ${messageId} to retry at ${nextAttemptAt}`);
-          safeLogWhatsappEvent('message_scheduled_retry', { messageId, attempt: currentAttempts, nextAttemptAt });
-
-          if (isConnError && !isConnecting) {
-            console.log(`[WhatsApp Queue] Triggering connection auto-recovery due to transient socket issue...`);
-            updateStatus('connecting');
-            connectToWhatsApp(io, true, false).catch(() => {});
-          }
-
-          await delay(1500);
-        } else {
-          // Dead Letter Queue movement: move/record document to failed queue
-          const failedPayload = {
-            queueId: messageId,
-            to: messageData.to,
-            text: messageData.text || "",
-            type: messageData.type,
-            priority: messageData.priority || 3,
-            attempts: currentAttempts,
-            lastError: errorReason,
-            errorStack: err.stack || null,
-            payload: messageData,
-            failedAt: new Date().toISOString()
-          };
-
-          await db.collection('whatsapp_failed_queue').doc(messageId).set(failedPayload);
-          
-          await messageDoc.update({ 
-            status: 'failed', 
-            lastError: errorReason,
-            completedAt: new Date().toISOString() 
-          });
-
-          if (messageData.idempotencyKey) {
-            await db.collection('whatsapp_idempotency').doc(messageData.idempotencyKey).set({
-              status: 'failed',
-              lastError: errorReason,
-              failedAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString()
-            }, { merge: true }).catch(() => {});
-          }
-
-          await logWhatsAppMessage(messageData.to, messageData.text, messageData.type, 'failed', undefined, errorReason, messageData.options);
-          console.error(`[WhatsApp Queue] Message ${messageId} hard failed after ${currentAttempts} attempts. Moved to whatsapp_failed_queue.`);
-          safeLogWhatsappEvent('message_hard_failed', failedPayload);
-        }
-      }
-
+      // Message dispatching is exclusively managed by WhatsAppQueueWorker
+      // to strictly eliminate dual-worker race conditions and duplicate dispatches
+      await delay(4000);
+      continue;
     } catch (outerErr: any) {
       if (isQuotaOrPermissionError(outerErr)) {
         handleFirestoreError(outerErr, 'WhatsApp Queue Processor');
@@ -4302,6 +3750,19 @@ export const getRemoteWAStatus = async (): Promise<{ status: string; qr: string 
   return cachedRemoteStatus;
 };
 
+// Cache to prevent duplicate messages sent to the same recipient within a short window
+const recentSentMessageDeduplicationMap = new Map<string, number>();
+
+// Clean up stale deduplication entries every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, timestamp] of recentSentMessageDeduplicationMap.entries()) {
+    if (now - timestamp > 120000) { // older than 2 minutes
+      recentSentMessageDeduplicationMap.delete(key);
+    }
+  }
+}, 300000);
+
 export const sendMessage = async (to: string, text: string, options: any = {}, type: 'single' | 'broadcast' | 'birthday' | 'bot' = 'single') => {
   let db: any = null;
   try {
@@ -4313,6 +3774,26 @@ export const sendMessage = async (to: string, text: string, options: any = {}, t
   }
 
   try {
+    const rawDigits = String(to || '').replace(/\D/g, '');
+    const cleanMsgText = String(text || '').trim();
+
+    // User requirement: Prevent duplicate WhatsApp messages (do not send same message two times)
+    if (rawDigits && cleanMsgText) {
+      const msgFingerprint = `${rawDigits.slice(-10)}_${cleanMsgText}`;
+      const lastSentTime = recentSentMessageDeduplicationMap.get(msgFingerprint);
+      const now = Date.now();
+
+      if (lastSentTime && (now - lastSentTime) < 60000) {
+        console.log(`[WhatsApp Deduplication] Suppressed duplicate message to +91 ${rawDigits.slice(-10)} (sent ${(now - lastSentTime) / 1000}s ago).`);
+        return {
+          success: true,
+          skipped: true,
+          duplicate: true,
+          reason: 'Duplicate message prevented within 60-second window'
+        };
+      }
+      recentSentMessageDeduplicationMap.set(msgFingerprint, now);
+    }
 
     const isStudentPermission = options.templateType === 'student_permission' || options.messageType === 'permission_notice' || options.eventType === 'student_permission';
     const isHostelOuting = options.templateType === 'hostel_outing_permission' || options.messageType === 'outing_notice' || options.eventType === 'hostel_outing_permission' || options.templateType === 'hostel_outing';
@@ -4525,20 +4006,64 @@ export const sendMessage = async (to: string, text: string, options: any = {}, t
       });
     } else if (type === 'broadcast') {
       const classIdKey = options.classId ? `_${options.classId}` : '';
-      const uniqueBroadcastId = options.broadcastId || `${Date.now()}_${Math.random().toString(36).substring(7)}`;
-      idempotencyKey = `${schoolId}_${normalizedPhone.replace(/\+/g, '')}_none_broadcast${classIdKey}_${uniqueBroadcastId}`;
+      const textHash = crypto.createHash('sha256').update((text || '').trim().toLowerCase().replace(/\s+/g, ' ')).digest('hex').substring(0, 12);
+      idempotencyKey = `${schoolId}_${normalizedPhone.replace(/\+/g, '')}_broadcast${classIdKey}_${textHash}_${dateToday}`;
     } else if (templateType === 'none' || !templateType || type === 'single' || options.custom || options.messageType === 'custom') {
-      // Manual single chat messages: ALWAYS generate a unique idempotency key so every message is queued, sent, and logged!
-      const uniqueMsgId = `${Date.now()}_${Math.random().toString(36).substring(7)}`;
-      idempotencyKey = `${schoolId}_${normalizedPhone.replace(/\+/g, '')}_${studentId}_custom_${uniqueMsgId}`;
+      // Deterministic key for single/custom messages based on text hash to block rapid double-send of identical text to same recipient
+      const textHash = crypto.createHash('sha256').update((text || '').trim().toLowerCase().replace(/\s+/g, ' ')).digest('hex').substring(0, 12);
+      idempotencyKey = `${schoolId}_${normalizedPhone.replace(/\+/g, '')}_${studentId}_custom_${textHash}_${dateToday}`;
     } else {
       // Key format for automated notices: schoolId + normalizedPhone + studentId + templateType + messageType + date
       idempotencyKey = `${schoolId}_${normalizedPhone.replace(/\+/g, '')}_${studentId}_${templateType}_${messageType}_${dateToday}`;
     }
 
-    // Verify unless forced send is true or it's a conversational bot reply
-    const isBotReply = type === 'bot' || options.messageType === 'bot' || options.eventType === 'bot';
-    if (!options.forceSend && !isBotReply) {
+    // Verify unless forced send is true or it's a true conversational interactive bot reply
+    const isInteractiveBotReply = (type === 'bot' || options.messageType === 'bot') &&
+      Boolean(options.isChatbotReply || options.replyToWaId) &&
+      !options.templateType &&
+      options.messageType !== 'attendance_absent' &&
+      options.eventType !== 'absent';
+
+    if (!options.forceSend && !isInteractiveBotReply) {
+      // 1. Primary Deduplication Check: Check MongoDB whatsapp_idempotency and whatsapp_queue (for Hostinger VPS MongoDB)
+      try {
+        const { checkWhatsAppDuplicate } = await import('./models/WhatsAppIdempotency.js');
+        const dupResult = await checkWhatsAppDuplicate({
+          idempotencyKey,
+          recipient: normalizedPhone,
+          text: text,
+          templateType: options.templateType || templateType,
+          messageType: options.messageType || messageType || type,
+          studentId: options.studentId || studentId,
+          forceSend: options.forceSend === true
+        });
+
+        if (dupResult.isDuplicate) {
+          console.warn(`[WhatsApp Queue Deduplication] Blocked duplicate message to ${normalizedPhone}: ${dupResult.reason}`);
+          safeLogWhatsappEvent('duplicate_message_blocked', { key: idempotencyKey, recipient: normalizedPhone, reason: dupResult.reason });
+
+          await logWhatsAppMessage(
+            normalizedPhone,
+            text,
+            type,
+            'duplicate',
+            undefined,
+            `Skipped: ${dupResult.reason}`,
+            options
+          ).catch(() => {});
+
+          return {
+            success: true,
+            skipped: true,
+            duplicate: true,
+            reason: dupResult.reason
+          };
+        }
+      } catch (mongoCheckErr: any) {
+        console.warn('[WhatsApp Queue] MongoDB duplicate check note:', mongoCheckErr?.message);
+      }
+
+      // 2. Secondary Deduplication Check: Check Firestore if active
       if (db && !isDatabaseDenied() && idempotencyKey) {
         try {
           const idSnapshot = await db.collection('whatsapp_idempotency').doc(idempotencyKey).get();
@@ -4667,7 +4192,7 @@ export const sendMessage = async (to: string, text: string, options: any = {}, t
     }
 
     // Set idempotency record to pending if not a conversational bot reply
-    if (!isBotReply && db && !isDatabaseDenied() && idempotencyKey) {
+    if (!isInteractiveBotReply && db && !isDatabaseDenied() && idempotencyKey) {
       try {
         await db.collection('whatsapp_idempotency').doc(idempotencyKey).set({
           status: 'pending',
@@ -4699,7 +4224,18 @@ export const sendMessage = async (to: string, text: string, options: any = {}, t
 
     const queueId = queueItem._id;
 
-    // Mirror to Firestore queue if available and not denied
+    if (queueItem && queueItem.skipped) {
+      console.warn(`[WhatsApp Queue] Queue item skipped as duplicate for ${normalizedPhone}: ${queueItem.reason}`);
+      return {
+        success: true,
+        skipped: true,
+        duplicate: true,
+        reason: queueItem.reason,
+        queueId: queueItem._id
+      };
+    }
+
+    // Mirror to Firestore queue if available and not denied (marked as 'queued' to prevent duplicate execution)
     if (db && !isDatabaseDenied()) {
       try {
         await db.collection(QUEUE_COLLECTION).doc(queueId).set({
@@ -4710,7 +4246,7 @@ export const sendMessage = async (to: string, text: string, options: any = {}, t
           priority: priorityVal,
           attempts: 0,
           idempotencyKey,
-          status: 'pending',
+          status: 'queued',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         });

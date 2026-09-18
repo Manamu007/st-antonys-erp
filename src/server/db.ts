@@ -117,6 +117,32 @@ export class MongoDocRef {
   async get() {
     const mongo = await getMongoDb().catch(() => null);
     if (!mongo) {
+      try {
+        const res = await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            operation: "get",
+            path: this.colName,
+            id: this.id
+          }),
+          signal: AbortSignal.timeout(8000)
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.success && json.data) {
+            const data = json.data;
+            const outId = data.id || data.uid || this.id;
+            return {
+              exists: true,
+              id: outId,
+              ref: this,
+              data: () => ({ ...data, id: outId })
+            };
+          }
+        }
+      } catch (proxyErr) {}
+
       return {
         exists: false,
         id: this.id,
@@ -173,6 +199,20 @@ export class MongoDocRef {
       } catch (err) {
         console.warn(`[MongoDB] doc.set error on ${this.colName}/${cleanId}:`, err);
       }
+    } else {
+      try {
+        await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            operation: "set",
+            path: this.colName,
+            id: cleanId,
+            data: docData
+          }),
+          signal: AbortSignal.timeout(8000)
+        });
+      } catch (proxyErr) {}
     }
     return { id: cleanId };
   }
@@ -191,6 +231,19 @@ export class MongoDocRef {
       } catch (err) {
         console.warn(`[MongoDB] doc.delete error on ${this.colName}/${cleanId}:`, err);
       }
+    } else {
+      try {
+        await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            operation: "delete",
+            path: this.colName,
+            id: cleanId
+          }),
+          signal: AbortSignal.timeout(8000)
+        });
+      } catch (proxyErr) {}
     }
     return { success: true };
   }
@@ -244,6 +297,40 @@ export class MongoQueryRef {
   async get() {
     const mongo = await getMongoDb().catch(() => null);
     if (!mongo) {
+      try {
+        const res = await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            operation: "list",
+            path: this.colName,
+            constraints: this.constraints
+          }),
+          signal: AbortSignal.timeout(10000)
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.success && Array.isArray(json.data)) {
+            const docs = json.data.map((rest: any) => {
+              const docId = rest.id || rest.uid || String(rest._id || '');
+              return {
+                exists: true,
+                id: docId,
+                ref: new MongoDocRef(this.colName, docId),
+                data: () => ({ ...rest, id: docId })
+              };
+            });
+            return {
+              empty: docs.length === 0,
+              size: docs.length,
+              docs,
+              forEach: (cb: (doc: any) => void) => docs.forEach(cb),
+              docChanges: () => []
+            };
+          }
+        }
+      } catch (proxyErr) {}
+
       // Return genuine empty state when MongoDB is not connected
       return {
         empty: true,

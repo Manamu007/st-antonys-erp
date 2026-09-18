@@ -99,6 +99,11 @@ export async function getTeacherAssignments(
   const nameClean = (user?.displayName || profile?.name || '').toLowerCase().trim();
   const uid = user?.uid || profile?.uid || profile?.id || '';
 
+  let classTeacherBatchId: string | undefined;
+  let classTeacherBatchName: string | undefined;
+  let classTeacherClassId: string | undefined;
+  let classTeacherClassName: string | undefined;
+
   const isTeacher = isTeacherRole(role || profile?.role, emailClean, nameClean);
 
   if (!isTeacher) {
@@ -314,6 +319,28 @@ export async function getTeacherAssignments(
     });
 
     // Populate class & batch metadata cross-references
+    (batchesList as any[]).forEach(b => {
+      if (!b) return;
+      const bCTId = b.classTeacherId ? String(b.classTeacherId).toLowerCase().trim() : '';
+      const bCT = b.classTeacher ? String(b.classTeacher).toLowerCase().trim() : '';
+      const bCTN = b.classTeacherName ? String(b.classTeacherName).toLowerCase().trim() : '';
+      const bCTEmail = b.classTeacherEmail ? String(b.classTeacherEmail).toLowerCase().trim() : '';
+
+      const isClassTeacher = (
+        (bCTId && matchIds.has(bCTId)) ||
+        (bCTEmail && matchEmails.has(bCTEmail)) ||
+        (bCT && !genericWords.includes(norm(bCT)) && matchNormNames.has(norm(bCT))) ||
+        (bCTN && !genericWords.includes(norm(bCTN)) && matchNormNames.has(norm(bCTN)))
+      );
+
+      if (isClassTeacher) {
+        classTeacherBatchId = String(b.id || '');
+        classTeacherBatchName = String(b.name || '');
+        classTeacherClassId = String(b.classId || '');
+        classTeacherClassName = String(b.className || b.class || '');
+      }
+    });
+
     (classesList as any[]).forEach(c => {
       const cId = String(c.id || '');
       const cName = (c.name || '').toLowerCase().trim();
@@ -349,7 +376,11 @@ export async function getTeacherAssignments(
     assignedBatchIds,
     assignedBatchNames,
     assignedSubjects,
-    isTeacher: true
+    isTeacher: true,
+    classTeacherBatchId,
+    classTeacherBatchName,
+    classTeacherClassId,
+    classTeacherClassName
   };
 }
 

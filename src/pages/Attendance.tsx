@@ -40,6 +40,17 @@ import { sortAlphabetically, getPersonDisplayName, getStaffDisplayName, isSynthe
 import { normalizeYear } from '../lib/feeUtils';
 import { motion } from 'motion/react';
 
+export const isNonAttendingPerson = (p?: any): boolean => {
+  if (!p) return false;
+  if (p.nonAttending === true || p.isNonAttending === true || p.attendanceStatus === 'non_attending') {
+    return true;
+  }
+  const cleanStatus = String(p.status || '').toLowerCase().trim().replace(/[- ]/g, '_');
+  const cleanType = String(p.studentType || p.type || '').toLowerCase().trim().replace(/[- ]/g, '_');
+  return cleanStatus === 'non_attending' || cleanStatus === 'nonattending' || cleanStatus === 'non_attending_student' ||
+         cleanType === 'non_attending' || cleanType === 'nonattending' || cleanType === 'non_attending_student';
+};
+
 interface StudentAttendancePortalProps {
   profile: any;
   availableProfiles: any[];
@@ -722,7 +733,7 @@ const Attendance: React.FC = () => {
           }
         }
 
-        const canSendAlerts = !isTeacherRole && hasPermission('attendance_manage') && !isVicePrincipalRole;
+        const canSendAlerts = !isTeacherRole && (hasPermission('whatsapp_send') || hasPermission('attendance_manage'));
 
         // Formulate compound key for tracking sent alerts: date_classId_batchId
         const alertDocId = `${dateStr}_${filterClass}_${filterBatch}`;
@@ -833,6 +844,7 @@ const Attendance: React.FC = () => {
         // If viewing students with a specific batch or class, automatically assign missing roll numbers
         if (currentProfileCollection === 'students' && (filterBatch !== 'all' || filterClass !== 'all')) {
           const batchStudents = deduplicatedUsers.filter((u: any) => {
+            if (isNonAttendingPerson(u)) return false;
             const resolved = resolveStudentClassAndBatch(u, classes, batches);
             return (filterBatch === 'all' || resolved.batchId === filterBatch) &&
                    (filterClass === 'all' || resolved.classId === filterClass);
@@ -1101,13 +1113,10 @@ const Attendance: React.FC = () => {
   };
 
   const sendAbsenteeAlerts = async () => {
+    if (sendingAlerts) return;
+
     if (!hasPermission('whatsapp_send')) {
       toast.error("You don't have permission to send alerts");
-      return;
-    }
-    
-    if (alertsSent) {
-      toast.error("already sent alerts");
       return;
     }
 
@@ -1148,43 +1157,76 @@ const Attendance: React.FC = () => {
       }
     }
 
-    const absentees = filteredPeople.filter(p => {
+    // Deduplicate absentees by student ID to prevent any duplicate notifications
+    const uniqueAbsenteesMap = new Map<string, any>();
+    filteredPeople.forEach(p => {
       const pid = p.uid || p.id;
+      if (!pid) return;
       const status = getStatus(pid);
       const onLeave = isActuallyOnLeave(pid);
-      return status === 'absent' && (p.role === 'student' || !p.role || p.role === '') && !onLeave;
+      if (status === 'absent' && (p.role === 'student' || !p.role || p.role === '') && !onLeave) {
+        if (!uniqueAbsenteesMap.has(pid)) {
+          uniqueAbsenteesMap.set(pid, p);
+        }
+      }
     });
+    const absentees = Array.from(uniqueAbsenteesMap.values());
     
     if (absentees.length === 0) {
       toast.info("No regular absentees (excluding those on approved leave) to notify.");
       return;
     }
 
-    const executeSending = async () => {
+    const executeSending = async (forceResend = false) => {
+      if (sendingAlerts) return;
       setSendingAlerts(true);
       toast.loading(`Sending ${absentees.length} alerts...`, { id: 'sending-alerts' });
 
       try {
+        const studentIds = Array.from(new Set(absentees.map(a => a.uid || a.id).filter(Boolean)));
         const response = await fetch('/api/attendance/notify-absent', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            studentIds: absentees.map(a => a.uid),
+            studentIds,
+            students: absentees.map(a => ({
+              id: a.uid || a.id,
+              uid: a.uid || a.id,
+              name: a.name,
+              rollNumber: a.rollNumber || a.rollNo,
+              rollNo: a.rollNo || a.rollNumber,
+              fatherName: a.fatherName || a.parentName,
+              whatsappNumber: a.whatsappNumber,
+              parentPhone: a.parentPhone,
+              phone: a.phone,
+              fatherPhone: a.fatherPhone,
+              contact: a.contact,
+              mobile: a.mobile
+            })),
             date: dateStr,
             classId: filterClass,
-            batchId: filterBatch
+            batchId: filterBatch,
+            forceSend: forceResend
           })
         });
 
         const result = await response.json();
-        if (response.ok && result.success) {
-          toast.success(`Sent ${result.success} alerts successfully!`, { id: 'sending-alerts' });
+        const isSuccess = response.ok && (
+          result.success === true || 
+          (typeof result.success === 'number' && result.success > 0) || 
+          (typeof result.sentCount === 'number' && result.sentCount > 0)
+        );
+
+        if (isSuccess) {
+          const sentNumber = result.sentCount ?? (typeof result.success === 'number' ? result.success : absentees.length);
+          toast.success(`Sent ${sentNumber} alert${sentNumber === 1 ? '' : 's'} successfully!`, { id: 'sending-alerts' });
           setAlertsSent(true);
+        } else if (result.error === 'already sent alerts' || (response.status === 400 && result.error?.includes('already sent'))) {
+          setAlertsSent(true);
+          toast.info("Alerts have already been sent for this batch today. Click the button to resend if needed.", { id: 'sending-alerts' });
         } else {
-          if (result.error === 'already sent alerts') {
-            setAlertsSent(true);
-          }
-          throw new Error(result.error || 'Failed to send alerts');
+          const errMsg = result.error || (result.errors && result.errors.length > 0 ? result.errors.join(', ') : 'Failed to send alerts');
+          throw new Error(errMsg);
         }
       } catch (error) {
         toast.error(`Error: ${error instanceof Error ? error.message : 'Failed to send alerts'}`, { id: 'sending-alerts' });
@@ -1193,10 +1235,19 @@ const Attendance: React.FC = () => {
       }
     };
 
+    if (alertsSent) {
+      setConfirmConfig({
+        title: "Resend Attendance Alerts?",
+        message: `Alerts were already marked as sent for ${dateStr} (${filterClass === 'all' ? 'All Classes' : filterClass} - ${filterBatch === 'all' ? 'All Batches' : filterBatch}). Are you sure you want to force-resend absence alerts to parents of ${absentees.length} students?`,
+        onConfirm: () => executeSending(true)
+      });
+      return;
+    }
+
     setConfirmConfig({
       title: "Send Attendance Alerts",
       message: `Are you sure you want to send automatic WhatsApp absence alerts to parents of ${absentees.length} students?`,
-      onConfirm: executeSending
+      onConfirm: () => executeSending(false)
     });
   };
 
@@ -2772,6 +2823,7 @@ const Attendance: React.FC = () => {
     const bNameLower = String(b.name || '').trim().toLowerCase();
     if (bNameLower === 'ipl' || bNameLower.includes('ipl')) {
       const hasStudents = people.some(p => {
+        if (activeTab === 'student' && isNonAttendingPerson(p)) return false;
         const res = resolveStudentClassAndBatch(p, classes, batches);
         return res.batchId === b.id || (b.name && String(res.batchName || '').toLowerCase() === bNameLower);
       });
@@ -2813,6 +2865,11 @@ const Attendance: React.FC = () => {
     const pStatusClean = String(p.status || '').toLowerCase().trim().replace(/[- ]/g, '_');
     const isInactive = pStatusClean === 'inactive' || pStatusClean === 'dropped' || pStatusClean === 'tc_issued' || pStatusClean === 'withdrawn' || pStatusClean === 'left' || pStatusClean === 'archived' || pStatusClean === 'deleted';
     const matchesStatusActive = !isInactive && !isStub;
+
+    // RULE: Non-attending students should not show in attendance module in 'Mark Students Attendance' tab
+    if (activeTab === 'student' && isNonAttendingPerson(p)) {
+      return false;
+    }
 
     return matchesClass && matchesBatch && matchesTab && matchesStatusActive && matchesTeacherAccess;
   });
@@ -2886,6 +2943,7 @@ const Attendance: React.FC = () => {
     if (!people || people.length === 0) return;
 
     const batchStudents = people.filter(p => {
+      if (isNonAttendingPerson(p)) return false;
       const resolved = resolveStudentClassAndBatch(p, classes, batches);
       return resolved.batchId === filterBatch;
     });
@@ -3033,16 +3091,16 @@ const Attendance: React.FC = () => {
             <div className="flex flex-col items-end gap-1">
               <button 
                 onClick={sendAbsenteeAlerts}
-                disabled={sendingAlerts || alertsSent}
+                disabled={sendingAlerts}
                 className={`flex items-center gap-3 text-white px-10 py-5 rounded-2xl font-black transition-all active:scale-95 ${
                   alertsSent 
-                    ? 'bg-neutral-400 hover:bg-neutral-500 shadow-xl shadow-neutral-400/20' 
+                    ? 'bg-emerald-600 hover:bg-emerald-700 shadow-xl shadow-emerald-600/20' 
                     : 'bg-amber-500 hover:bg-amber-600 shadow-xl shadow-amber-500/20'
                 } disabled:opacity-50`}
               >
                 <AlertTriangle className="w-8 h-8 font-black" />
                 <span className="text-xl font-black">
-                  {sendingAlerts ? 'Sending...' : alertsSent ? 'Already Sent Alerts' : 'Send Alerts'}
+                  {sendingAlerts ? 'Sending...' : alertsSent ? 'Alerts Sent (Resend)' : 'Send Alerts'}
                 </span>
               </button>
               <div className="text-right space-y-1">

@@ -62,30 +62,17 @@ export const syncDefaultRoles = async () => {
         };
         return dbService.set('roles', roleId, roleData);
       } else {
-        // Normal role structural sync
+        // Role already exists. Respect admin customizations and do not overwrite modified permissions!
         if (existing.isDeleted) {
-          // Skip syncing/repairing soft-deleted roles to keep them removed from ERP
           return;
         }
-        // CRITICAL FIX: Also ensure system roles have their mandatory minimum permissions
-        const currentPerms = existing.permissions || [];
-        const missingPerms = defaults.permissions.filter(p => !currentPerms.includes(p));
         
-        const needsRepair = 
-          !existing.isSystem ||
-          existing.isAdmin !== defaults.isAdmin || 
-          existing.name !== defaults.name ||
-          (existing.isSystem && missingPerms.length > 0);
-
-        if (needsRepair) {
-          console.log(`Syncing/Repairing system role: ${defaults.name}`);
-          const updatedPerms = Array.from(new Set([...currentPerms, ...defaults.permissions]));
-          
-          return dbService.update('roles', existing.id!, { 
-            name: defaults.name,
+        // Only update if role metadata (e.g. system flag) needs alignment, but preserve existing permissions exactly
+        const needsMetadataSync = !existing.isSystem || existing.isAdmin !== defaults.isAdmin;
+        if (needsMetadataSync) {
+          return dbService.update('roles', existing.id!, {
             isAdmin: defaults.isAdmin,
             isSystem: true,
-            permissions: existing.isSystem ? updatedPerms : currentPerms, // Only force merge if it's a system role
             updatedAt: new Date().toISOString()
           });
         }

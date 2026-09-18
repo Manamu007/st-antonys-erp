@@ -334,7 +334,7 @@ async function forwardToLiveProxy(operation: string, colPath: string, id: any, d
         constraints,
         ...body
       }),
-      signal: AbortSignal.timeout(12000)
+      signal: AbortSignal.timeout(20000)
     });
     if (vpsRes.ok) {
       const vpsData = await vpsRes.json();
@@ -343,7 +343,19 @@ async function forwardToLiveProxy(operation: string, colPath: string, id: any, d
   } catch (vpsErr: any) {
     console.warn("[Maintenance] Live antonyschool.in proxy forwarding notice:", vpsErr?.message || vpsErr);
   }
-  return { status: 500, json: { error: "Failed to communicate with live database proxy" } };
+
+  // Graceful fallback for read operations so the client never encounters a 500 error or abort loop
+  if (operation === "list") {
+    return { status: 200, json: { success: true, data: [] } };
+  }
+  if (operation === "count") {
+    return { status: 200, json: { success: true, count: 0 } };
+  }
+  if (operation === "get") {
+    return { status: 200, json: { success: true, data: null } };
+  }
+
+  return { status: 503, json: { success: false, error: "Failed to communicate with live database proxy" } };
 }
 
 async function handleWithMongoOrLocal(operation: string, colPath: string, id: any, data: any, constraints: any, body: any): Promise<{ status?: number; json: any }> {
@@ -546,7 +558,7 @@ async function handleWithMongoOrLocal(operation: string, colPath: string, id: an
   return { status: 400, json: { error: "Unsupported operation: " + operation } };
 }
 
-// Generic collection secure proxy endpoint
+// Generic collection secure proxy endpoint (POST)
 router.post("/db-proxy", async (req, res) => {
   const colPath = req.body.path || req.body.colPath;
   const { operation, id, data, constraints } = req.body;
@@ -575,6 +587,75 @@ router.post("/db-proxy", async (req, res) => {
     dbProxyCache.set(cacheKey, { data: mongoResult.json, timestamp: Date.now() });
   }
   return res.status(mongoResult.status || 200).json(mongoResult.json);
+});
+
+// Generic collection query endpoint (GET) for live MongoDB synchronization
+router.get("/db-proxy", async (req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+  try {
+    const colPath = (req.query.collection || req.query.path || req.query.colPath || "") as string;
+    if (!colPath) {
+      return res.status(400).json({ error: "Missing collection query parameter (e.g. ?collection=examMarks)" });
+    }
+
+    const { class: selectedClass, classId, exam: selectedExam, examId, batch, batchId, limit: qLimit } = req.query;
+    const effectiveLimit = Number(qLimit) || 15000;
+
+    const constraints: any[] = [
+      { type: "limit", value: effectiveLimit }
+    ];
+
+    const targetClass = (selectedClass || classId) as string;
+    const targetExam = (selectedExam || examId) as string;
+    const targetBatch = (batch || batchId) as string;
+
+    if (targetExam) {
+      constraints.push({ type: "where", field: "examId", op: "==", value: targetExam });
+    }
+    if (targetClass) {
+      constraints.push({ type: "where", field: "classId", op: "==", value: targetClass });
+    }
+    if (targetBatch) {
+      constraints.push({ type: "where", field: "batchId", op: "==", value: targetBatch });
+    }
+
+    const cacheKey = `get:${colPath}:${JSON.stringify(constraints)}`;
+    const cached = dbProxyCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < PROXY_CACHE_TTL)) {
+      return res.json(cached.data);
+    }
+
+    // Forward to live VPS MongoDB db-proxy with constraints
+    const vpsRes = await forwardToLiveProxy("list", colPath, undefined, undefined, constraints, {
+      operation: "list",
+      path: colPath,
+      constraints
+    });
+
+    if (vpsRes.json && Array.isArray(vpsRes.json.data)) {
+      let data = vpsRes.json.data;
+      if (targetExam) {
+        data = data.filter((d: any) => d.examId === targetExam);
+      }
+      if (targetClass) {
+        data = data.filter((d: any) => d.classId === targetClass);
+      }
+      if (targetBatch) {
+        data = data.filter((d: any) => d.batchId === targetBatch);
+      }
+      const responsePayload = { success: true, count: data.length, data };
+      dbProxyCache.set(cacheKey, { data: responsePayload, timestamp: Date.now() });
+      return res.json(responsePayload);
+    }
+
+    return res.status(vpsRes.status || 200).json(vpsRes.json || { success: true, data: [] });
+  } catch (error: any) {
+    console.error("[GET /api/maintenance/db-proxy] Error:", error);
+    return res.status(500).json({ error: error?.message || "Failed to fetch collection data" });
+  }
 });
 
 // Storage Management Endpoints

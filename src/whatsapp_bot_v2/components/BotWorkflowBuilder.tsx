@@ -81,7 +81,10 @@ export default function BotWorkflowBuilder() {
     };
 
     fetchWAStatus();
-    const interval = setInterval(fetchWAStatus, 5000);
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      fetchWAStatus();
+    }, 20000);
     return () => {
       isMounted = false;
       clearInterval(interval);

@@ -115,34 +115,49 @@ export function safeLogWhatsappEvent(eventName: string, payload: any = {}) {
 }
 
 /**
- * Priority message rates helper. Ensures fast real-time queue processing while maintaining smooth delivery.
+ * Meta WhatsApp Anti-Ban Rate Limiter & Priority delay helper.
+ * Strictly adheres to 3 to 4 messages per minute guidelines (15s to 20s interval)
+ * with randomized human-like jitter to prevent Meta spam detection and account blocks.
  */
 export function getDelayForPriority(priority: number): number {
-  let min = 1500;
-  let max = 2500;
+  let min = 15000;
+  let max = 20000;
 
   switch (priority) {
-    case 0: // P0 Emergency / Leave approvals
-      min = 500;
-      max = 1000;
-      break;
-    case 1: // P1 Attendance alerts
-      min = 1000;
-      max = 1800;
-      break;
-    case 2: // P2 Fee reminders, exam status
-      min = 1200;
-      max = 2200;
-      break;
-    case 3: // P3 Broadcasts, birthday wishes
-    default:
+    case 0: // P0 Emergency (OTP, Password reset, Gate pass, instant interactive replies)
       min = 1500;
       max = 2500;
+      break;
+    case 1: // P1 Attendance alerts (Enforces 3-4 messages per minute)
+      min = 15000;
+      max = 20000;
+      break;
+    case 2: // P2 Fee reminders, exam status, homework
+      min = 16000;
+      max = 21000;
+      break;
+    case 3: // P3 Broadcasts, birthday greetings, general notices
+    default:
+      min = 17000;
+      max = 22000;
       break;
   }
 
   const delayMs = Math.floor(min + Math.random() * (max - min));
   return delayMs;
+}
+
+/**
+ * Meta Anti-Ban message variation engine.
+ * Adds invisible zero-width non-joiners or micro-markers to alter the cryptographic
+ * SHA256 hash of the payload without affecting visible rendering to the recipient.
+ * This directly prevents Meta automated duplicate text blast detection.
+ */
+export function applyAntiBanVariation(text: string): string {
+  if (!text || typeof text !== 'string') return text;
+  const zeroWidthTokens = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
+  const token = zeroWidthTokens[Math.floor(Math.random() * zeroWidthTokens.length)];
+  return `${text}${token}`;
 }
 
 /**
