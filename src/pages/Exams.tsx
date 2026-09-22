@@ -86,18 +86,8 @@ export const sortByRollNumber = (a: any, b: any) => {
  * Live MongoDB fetching for Exams list directly via browser fetch() with { mode: 'cors' }
  */
 export async function fetchExamsFromLiveProxy(): Promise<any[]> {
-  const directUrl = 'https://antonyschool.in/api/maintenance/db-proxy?collection=exams';
   const localUrl = '/api/maintenance/db-proxy?collection=exams';
-
-  try {
-    const res = await fetch(directUrl, { mode: 'cors' });
-    const ct = res.headers.get('content-type') || '';
-    if (res.ok && ct.includes('application/json')) {
-      const data = await res.json();
-      const list = Array.isArray(data) ? data : (data?.data || []);
-      if (Array.isArray(list) && list.length > 0) return list;
-    }
-  } catch (e) {}
+  const directUrl = 'https://antonyschool.in/api/maintenance/db-proxy?collection=exams';
 
   try {
     const res2 = await fetch(localUrl, { mode: 'cors' });
@@ -109,6 +99,20 @@ export async function fetchExamsFromLiveProxy(): Promise<any[]> {
   } catch (e) {
     console.warn('Failed to fetch exams from local db-proxy:', e);
   }
+
+  try {
+    const res = await fetch(directUrl, { 
+      mode: 'cors',
+      signal: AbortSignal.timeout(2000)
+    });
+    const ct = res.headers.get('content-type') || '';
+    if (res.ok && ct.includes('application/json')) {
+      const data = await res.json();
+      const list = Array.isArray(data) ? data : (data?.data || []);
+      if (Array.isArray(list) && list.length > 0) return list;
+    }
+  } catch (e) {}
+
   return [];
 }
 
@@ -118,7 +122,7 @@ export async function fetchExamsFromLiveProxy(): Promise<any[]> {
 export async function fetchExamMarksFromLiveProxy(selectedClass?: string, selectedExam?: string, selectedBatch?: string): Promise<any[]> {
   const params = new URLSearchParams();
   params.append('collection', 'examMarks');
-  params.append('limit', '15000');
+  params.append('limit', '10000');
   if (selectedClass) params.append('class', selectedClass);
   if (selectedExam) params.append('exam', selectedExam);
   if (selectedBatch) params.append('batch', selectedBatch);
@@ -126,17 +130,21 @@ export async function fetchExamMarksFromLiveProxy(selectedClass?: string, select
   const queryStr = params.toString();
 
   const endpoints = [
-    `https://antonyschool.in/api/maintenance/db-proxy?${queryStr}`,
-    `https://antonyschool.in/api/exam-marks?class=${encodeURIComponent(selectedClass || '')}&exam=${encodeURIComponent(selectedExam || '')}`,
-    `/api/exam-marks?class=${encodeURIComponent(selectedClass || '')}&exam=${encodeURIComponent(selectedExam || '')}&batch=${encodeURIComponent(selectedBatch || '')}`,
-    `/api/maintenance/db-proxy?${queryStr}`
+    { url: `/api/exam-marks?class=${encodeURIComponent(selectedClass || '')}&exam=${encodeURIComponent(selectedExam || '')}&batch=${encodeURIComponent(selectedBatch || '')}`, local: true },
+    { url: `/api/maintenance/db-proxy?${queryStr}`, local: true },
+    { url: `https://antonyschool.in/api/maintenance/db-proxy?${queryStr}`, local: false },
+    { url: `https://antonyschool.in/api/exam-marks?class=${encodeURIComponent(selectedClass || '')}&exam=${encodeURIComponent(selectedExam || '')}`, local: false }
   ];
 
-  for (const url of endpoints) {
+  for (const item of endpoints) {
     try {
-      const res = await fetch(url, { mode: 'cors' });
+      const fetchOpts: RequestInit = { mode: 'cors' };
+      if (!item.local) {
+        fetchOpts.signal = AbortSignal.timeout(2000);
+      }
+      const res = await fetch(item.url, fetchOpts);
       const ct = res.headers.get('content-type') || '';
-      if (res.ok && (ct.includes('application/json') || !url.startsWith('https://antonyschool.in'))) {
+      if (res.ok && (ct.includes('application/json') || item.local)) {
         const data = await res.json();
         const list = Array.isArray(data) ? data : (data?.data || []);
         if (Array.isArray(list) && list.length > 0) {
@@ -1312,14 +1320,48 @@ const Exams: React.FC = () => {
             filteredClasses = (classesData as any[]).filter(c => directClassIds.has(c.id));
           }
 
-          setClasses(sortAlphabetically(filteredClasses, 'name', globalSortDirection));
-          setBatches(sortAlphabetically(filteredBatches, 'name', globalSortDirection));
+          const dedup = (arr: any[]) => {
+            if (!Array.isArray(arr)) return [];
+            const seen = new Set();
+            return arr.filter(x => {
+              if (!x) return false;
+              const id = x.id || x.uid;
+              if (!id || seen.has(id)) return false;
+              seen.add(id);
+              return true;
+            });
+          };
+
+          setClasses(sortAlphabetically(dedup(filteredClasses), 'name', globalSortDirection));
+          setBatches(sortAlphabetically(dedup(filteredBatches), 'name', globalSortDirection));
         } else {
-          setClasses(sortAlphabetically(classesData as any[], 'name', globalSortDirection));
-          setBatches(sortAlphabetically(batchesData as any[], 'name', globalSortDirection));
+          const dedup = (arr: any[]) => {
+            if (!Array.isArray(arr)) return [];
+            const seen = new Set();
+            return arr.filter(x => {
+              if (!x) return false;
+              const id = x.id || x.uid;
+              if (!id || seen.has(id)) return false;
+              seen.add(id);
+              return true;
+            });
+          };
+          setClasses(sortAlphabetically(dedup(classesData as any[]), 'name', globalSortDirection));
+          setBatches(sortAlphabetically(dedup(batchesData as any[]), 'name', globalSortDirection));
         }
         
-        setSubjects(sortAlphabetically(subjectsData as any[], 'name', globalSortDirection));
+        const dedup = (arr: any[]) => {
+          if (!Array.isArray(arr)) return [];
+          const seen = new Set();
+          return arr.filter(x => {
+            if (!x) return false;
+            const id = x.id || x.uid;
+            if (!id || seen.has(id)) return false;
+            seen.add(id);
+            return true;
+          });
+        };
+        setSubjects(sortAlphabetically(dedup(subjectsData as any[]), 'name', globalSortDirection));
 
         unsubscribeExams = dbService.subscribe('exams', [], async (data) => {
           let list = data || [];
@@ -1327,10 +1369,11 @@ const Exams: React.FC = () => {
             const live = await fetchExamsFromLiveProxy();
             if (live && live.length > 0) list = live;
           }
+          const dedupedList = dedup(list);
           if ((profile?.role === 'student' || profile?.role === 'parent' || isTeacherRole || hasPermission('exams_view_my_strict')) && !hasPermission('exams_manage')) {
-            setExams(list.filter(e => e.status === 'scheduled'));
+            setExams(dedupedList.filter(e => e.status === 'scheduled'));
           } else {
-            setExams(list);
+            setExams(dedupedList);
           }
         });
       } catch (error) {
@@ -9466,7 +9509,16 @@ const AbstractSummaryTab = ({
   // 1. Subscribe to ALL students in real-time
   useEffect(() => {
     const unsubStudents = dbService.subscribe('students', [], (data) => {
-      setAllStudents(data || []);
+      const list = data || [];
+      const seen = new Set();
+      const deduped = list.filter(s => {
+        if (!s) return false;
+        const id = s.id || s.uid;
+        if (!id || seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+      setAllStudents(deduped);
       setLoadingData(false);
     });
     return () => {
@@ -9477,7 +9529,16 @@ const AbstractSummaryTab = ({
   // 2. Subscribe to ALL exam schedules in real-time
   useEffect(() => {
     const unsubSchedules = dbService.subscribe('examSchedules', [], (data) => {
-      setAllSchedules(data || []);
+      const list = data || [];
+      const seen = new Set();
+      const deduped = list.filter(s => {
+        if (!s) return false;
+        const id = s.id || s.uid;
+        if (!id || seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+      setAllSchedules(deduped);
     });
     return () => {
       if (unsubSchedules) unsubSchedules();
@@ -9487,7 +9548,16 @@ const AbstractSummaryTab = ({
   // 3. Subscribe to master subjects in real-time
   useEffect(() => {
     const unsubSubjects = dbService.subscribe('subjects', [], (data) => {
-      setMasterSubjects(data || []);
+      const list = data || [];
+      const seen = new Set();
+      const deduped = list.filter(s => {
+        if (!s) return false;
+        const id = s.id || s.uid;
+        if (!id || seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+      setMasterSubjects(deduped);
     });
     return () => {
       if (unsubSubjects) unsubSubjects();
@@ -9511,7 +9581,15 @@ const AbstractSummaryTab = ({
           if (live && live.length > 0) markList = live;
         } catch (e) {}
       }
-      setAllMarks(markList);
+      const seen = new Set();
+      const deduped = markList.filter((m: any) => {
+        if (!m) return false;
+        const id = m.id || m.uid;
+        if (!id || seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+      setAllMarks(deduped);
       setLoadingData(false);
     });
     return () => {

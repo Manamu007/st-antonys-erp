@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getMongoDb } from './mongoSession.js';
-import { getDbAdmin } from './db.js';
+import { listDocuments, countDocuments } from './firestoreService.js';
 
 const router = Router();
 
@@ -10,30 +10,8 @@ const router = Router();
  */
 router.get('/', async (req, res) => {
   try {
-    const { status, classId, batchId, search, limit = '100' } = req.query;
-    const limitNum = Math.min(500, parseInt(limit as string, 10) || 100);
-
-    // 1. In preview mode or when connecting to live school data, route directly to https://antonyschool.in/api/students
-    try {
-      const url = new URL('https://antonyschool.in/api/students');
-      if (req.query) {
-        Object.entries(req.query).forEach(([k, v]) => {
-          if (v) url.searchParams.append(k, String(v));
-        });
-      }
-      const vpsRes = await fetch(url.toString(), {
-        headers: { 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(10000)
-      });
-      if (vpsRes.ok) {
-        const liveStudents = await vpsRes.json();
-        if (Array.isArray(liveStudents) && liveStudents.length > 0) {
-          return res.json(liveStudents);
-        }
-      }
-    } catch (vpsErr: any) {
-      console.warn('[StudentRoutes] Live antonyschool.in student fetch notice:', vpsErr?.message || vpsErr);
-    }
+    const { status, classId, batchId, search, limit = '10000' } = req.query;
+    const limitNum = Math.min(50000, parseInt(limit as string, 10) || 10000);
 
     const mongo = await getMongoDb().catch(() => null);
     if (mongo) {
@@ -67,7 +45,36 @@ router.get('/', async (req, res) => {
       }
     }
 
-    // In preview mode or when local MongoDB is not connected, route directly to https://antonyschool.in/api/students
+    // Retrieve students from Cloud Firestore (primary fallback)
+    const constraints: any[] = [];
+    if (status) {
+      constraints.push({ type: 'where', field: 'status', op: '==', value: status });
+    }
+    if (classId) {
+      constraints.push({ type: 'where', field: 'classId', op: '==', value: classId });
+    }
+    if (batchId) {
+      constraints.push({ type: 'where', field: 'batchId', op: '==', value: batchId });
+    }
+    constraints.push({ type: 'limit', value: limitNum });
+
+    let students = await listDocuments('students', constraints);
+
+    if (search && typeof search === 'string' && search.trim()) {
+      const q = search.trim().toLowerCase();
+      students = students.filter((s: any) => {
+        const name = (s.name || s.studentName || '').toLowerCase();
+        const adm = (s.admissionNumber || s.roll || '').toLowerCase();
+        const ph = (s.phone || s.fatherPhone || '').toLowerCase();
+        return name.includes(q) || adm.includes(q) || ph.includes(q);
+      });
+    }
+
+    if (Array.isArray(students) && students.length > 0) {
+      return res.json(students);
+    }
+
+    // In preview mode or when local database is empty, route directly to https://antonyschool.in/api/students
     try {
       const url = new URL('https://antonyschool.in/api/students');
       if (req.query) {
@@ -81,21 +88,12 @@ router.get('/', async (req, res) => {
       });
       if (vpsRes.ok) {
         const liveStudents = await vpsRes.json();
-        return res.json(liveStudents);
+        if (Array.isArray(liveStudents) && liveStudents.length > 0) {
+          return res.json(liveStudents);
+        }
       }
     } catch (vpsErr: any) {
-      console.warn('[StudentRoutes] Live antonyschool.in student fetch failed:', vpsErr?.message || vpsErr);
-    }
-
-    const dbAdmin = getDbAdmin();
-    const snap = await dbAdmin.collection('students').limit(limitNum).get().catch(() => null);
-    if (snap && !snap.empty) {
-      let students = snap.docs.map((d: any) => ({ id: d.id, uid: d.id, ...d.data() }));
-      if (status) students = students.filter((s: any) => s.status === status);
-      else students = students.filter((s: any) => s.status !== 'deleted' && s.status !== 'inactive');
-      if (classId) students = students.filter((s: any) => s.classId === classId);
-      if (batchId) students = students.filter((s: any) => s.batchId === batchId);
-      return res.json(students);
+      console.warn('[StudentRoutes] Live antonyschool.in student fetch notice:', vpsErr?.message || vpsErr);
     }
 
     return res.json([]);
@@ -113,12 +111,37 @@ router.get('/count', async (req, res) => {
     const mongo = await getMongoDb().catch(() => null);
     if (mongo) {
       const count = await mongo.collection('students').countDocuments({ status: { $ne: 'deleted' } }).catch(() => 0);
+      if (count > 0) {
+        return res.json({ success: true, count });
+      }
+    }
+
+    const { status, classId, batchId } = req.query;
+    const constraints: any[] = [];
+    if (status) {
+      constraints.push({ type: 'where', field: 'status', op: '==', value: status });
+    }
+    if (classId) {
+      constraints.push({ type: 'where', field: 'classId', op: '==', value: classId });
+    }
+    if (batchId) {
+      constraints.push({ type: 'where', field: 'batchId', op: '==', value: batchId });
+    }
+
+    const count = await countDocuments('students', constraints);
+    if (typeof count === 'number' && count > 0) {
       return res.json({ success: true, count });
     }
 
-    // Live antonyschool.in count
+    // Live antonyschool.in student count
     try {
-      const vpsRes = await fetch('https://antonyschool.in/api/students/count', {
+      const url = new URL('https://antonyschool.in/api/students/count');
+      if (req.query) {
+        Object.entries(req.query).forEach(([k, v]) => {
+          if (v) url.searchParams.append(k, String(v));
+        });
+      }
+      const vpsRes = await fetch(url.toString(), {
         headers: { 'Accept': 'application/json' },
         signal: AbortSignal.timeout(6000)
       });
@@ -128,9 +151,7 @@ router.get('/count', async (req, res) => {
       }
     } catch (_) {}
 
-    const dbAdmin = getDbAdmin();
-    const snap = await dbAdmin.collection('students').limit(1000).get().catch(() => null);
-    return res.json({ success: true, count: snap ? snap.size : 0 });
+    return res.json({ success: true, count: 0 });
   } catch {
     res.json({ success: true, count: 0 });
   }

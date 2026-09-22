@@ -11,28 +11,6 @@ const router = Router();
  */
 router.get('/stats', async (req, res) => {
   try {
-    // 1. Fetch live production metrics from antonyschool.in first
-    try {
-      const vpsUrl = new URL('https://antonyschool.in/api/dashboard/stats');
-      if (req.query) {
-        Object.entries(req.query).forEach(([k, v]) => {
-          if (v) vpsUrl.searchParams.append(k, String(v));
-        });
-      }
-      const vpsRes = await fetch(vpsUrl.toString(), {
-        headers: { 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(8000)
-      });
-      if (vpsRes.ok) {
-        const liveData = await vpsRes.json();
-        if (liveData && (liveData.students > 0 || (liveData.stats && liveData.stats.students > 0))) {
-          return res.json(liveData);
-        }
-      }
-    } catch (vpsErr: any) {
-      console.warn('[DashboardStats] Live antonyschool.in stats fetch notice:', vpsErr?.message || vpsErr);
-    }
-
     const mongo = await getMongoDb().catch(() => null);
     const dbAdmin = getDbAdmin();
 
@@ -96,9 +74,9 @@ router.get('/stats', async (req, res) => {
     } else if (dbAdmin) {
       try {
         const [stSnap, sfSnap, lvSnap] = await Promise.all([
-          dbAdmin.collection('students').limit(1000).get().catch(() => null),
-          dbAdmin.collection('staff').limit(500).get().catch(() => null),
-          dbAdmin.collection('leaves').where('status', '==', 'pending').limit(50).get().catch(() => null)
+          dbAdmin.collection('students').limit(10000).get().catch(() => null),
+          dbAdmin.collection('staff').limit(5000).get().catch(() => null),
+          dbAdmin.collection('leaves').where('status', '==', 'pending').limit(100).get().catch(() => null)
         ]);
 
         if (stSnap && !stSnap.empty) {
@@ -122,6 +100,30 @@ router.get('/stats', async (req, res) => {
         }
       } catch {
         // Continue with genuine counts
+      }
+    }
+
+    // 1. Fallback to live production metrics from antonyschool.in ONLY if local database is completely empty
+    if (studentsCount === 0 && staffCount === 0) {
+      try {
+        const vpsUrl = new URL('https://antonyschool.in/api/dashboard/stats');
+        if (req.query) {
+          Object.entries(req.query).forEach(([k, v]) => {
+            if (v) vpsUrl.searchParams.append(k, String(v));
+          });
+        }
+        const vpsRes = await fetch(vpsUrl.toString(), {
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(8000)
+        });
+        if (vpsRes.ok) {
+          const liveData = await vpsRes.json();
+          if (liveData && (liveData.students > 0 || (liveData.stats && liveData.stats.students > 0))) {
+            return res.json(liveData);
+          }
+        }
+      } catch (vpsErr: any) {
+        console.warn('[DashboardStats] Live antonyschool.in stats fetch notice:', vpsErr?.message || vpsErr);
       }
     }
 

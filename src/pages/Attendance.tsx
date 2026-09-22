@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -19,6 +19,7 @@ import {
   ChevronDown,
   Filter,
   Download,
+  Users,
   Users as UsersIcon,
   Plus,
   Save,
@@ -43,9 +44,11 @@ import { motion } from 'motion/react';
 export const isNonAttendingPerson = (p?: any, resolvedClassBatch?: any): boolean => {
   if (!p) return false;
   if (
+    p.isAttending === false || p.isAttending === 'false' || p.isAttending === 0 ||
     p.nonAttending === true || p.nonAttending === 'true' ||
     p.isNonAttending === true || p.isNonAttending === 'true' ||
-    p.attendanceStatus === 'non_attending' || p.attendanceStatus === 'non-attending'
+    p.attendanceStatus === 'non_attending' || p.attendanceStatus === 'non-attending' ||
+    p.attendingStatus === 'non_attending' || p.attendingStatus === 'non-attending'
   ) {
     return true;
   }
@@ -55,6 +58,7 @@ export const isNonAttendingPerson = (p?: any, resolvedClassBatch?: any): boolean
     p.studentStatus,
     p.enrollmentStatus,
     p.attendanceStatus,
+    p.attendingStatus,
     p.attendanceType,
     p.attendance_type,
     p.studentType,
@@ -911,8 +915,41 @@ const Attendance: React.FC = () => {
           ? sortStudentsNumerically(deduplicatedUsers)
           : deduplicatedUsers;
 
+        // Build set of all non-attending student identifiers
+        const nonAttendingStudentIdSet = new Set<string>();
+        if (currentProfileCollection === 'students') {
+          deduplicatedUsers.forEach((u: any) => {
+            if (
+              u.status === 'Non-Attending' ||
+              u.status === 'non_attending' ||
+              u.status === 'non-attending' ||
+              u.isAttending === false ||
+              u.isAttending === 'false' ||
+              u.isAttending === 0 ||
+              u.nonAttending === true ||
+              u.nonAttending === 'true' ||
+              isNonAttendingPerson(u)
+            ) {
+              [u.id, u.uid, u.uniqueStudentId, u.admissionNumber, u.rollNumber, u.rollNo].filter(Boolean).forEach(id => {
+                nonAttendingStudentIdSet.add(String(id).trim());
+              });
+            }
+          });
+        }
+
+        // Sanitize live attendance records: ignore and strip any legacy absentee records belonging to non-attending student IDs
+        const sanitizedAttendance = (attendanceList || []).filter((a: any) => {
+          if (currentProfileCollection === 'students') {
+            const sid = String(a.studentId || a.userId || a.studentUid || a.uid || '').trim();
+            if (sid && nonAttendingStudentIdSet.has(sid)) {
+              return false;
+            }
+          }
+          return true;
+        });
+
         setPeople(sortedUsers);
-        setAttendance((attendanceList || []) as any[]);
+        setAttendance(sanitizedAttendance as any[]);
         setLeaves(activeLeaves);
         setAlertsSent(!!alertDocPrimary || !!alertDocFallback);
 
@@ -976,6 +1013,22 @@ const Attendance: React.FC = () => {
     const student = people.find(s => s.uid === studentId || s.id === studentId);
     const sid = String(student?.uid || student?.id || studentId).trim();
     const altSid = String(student?.id || student?.uid || studentId).trim();
+
+    // Prevent marking non-attending students: ensure non-attending student IDs are completely excluded from the payload sent to MongoDB
+    if (student && (
+      student.status === 'Non-Attending' ||
+      student.status === 'non_attending' ||
+      student.status === 'non-attending' ||
+      student.isAttending === false ||
+      student.isAttending === 'false' ||
+      student.isAttending === 0 ||
+      student.nonAttending === true ||
+      student.nonAttending === 'true' ||
+      isNonAttendingPerson(student)
+    )) {
+      toast.info("Non-attending students are excluded from attendance tracking.");
+      return;
+    }
 
     const existing = attendance.find(a => matchesAttendanceRecord(a, sid, student, dateStr));
     
@@ -1062,6 +1115,18 @@ const Attendance: React.FC = () => {
     const collectionName = (activeTab === 'staff' || activeTab === 'staff_auto') ? 'staff_attendance' : 'attendance';
     
     const peopleToMark = sortedPeople.filter(p => {
+      // Exclude non-attending students from mass attendance operations
+      if (
+        p.status === 'Non-Attending' ||
+        p.status === 'non_attending' ||
+        p.status === 'non-attending' ||
+        p.isAttending === false ||
+        p.isAttending === 'false' ||
+        p.isAttending === 0 ||
+        p.nonAttending === true ||
+        p.nonAttending === 'true' ||
+        isNonAttendingPerson(p)
+      ) return false;
       const pid = p.uid || p.id;
       const currentStatus = getStatus(pid);
       return currentStatus !== 'not_started' && currentStatus !== 'holiday';
@@ -1075,7 +1140,17 @@ const Attendance: React.FC = () => {
     toast.loading(`Marking ${peopleToMark.length} students as ${status}...`, { id: 'mark-all-loading' });
 
     try {
-      const batchItems = peopleToMark.map(p => {
+      const batchItems = peopleToMark
+        .filter(p => 
+          p.status !== 'Non-Attending' &&
+          p.status !== 'non_attending' &&
+          p.isAttending !== false &&
+          p.isAttending !== 'false' &&
+          !p.nonAttending &&
+          p.nonAttending !== 'true' &&
+          !isNonAttendingPerson(p)
+        )
+        .map(p => {
         const sid = String(p.uid || p.id).trim();
         const existing = attendance.find(a => matchesAttendanceRecord(a, sid, p, dateStr));
         
@@ -1179,9 +1254,11 @@ const Attendance: React.FC = () => {
       if (!confirmMark) return;
     }
 
+    const eligibleCount = sortedPeople.filter(p => !isNonAttendingPerson(p)).length;
+
     setConfirmConfig({
       title: `Mark All ${status === 'present' ? 'Present' : 'Absent'}`,
-      message: `Are you sure you want to mark all ${sortedPeople.length} matched students as ${status.toUpperCase()}? This will update their attendance records for ${format(selectedDate, 'MMM dd, yyyy')}.`,
+      message: `Are you sure you want to mark all ${eligibleCount} matched active students as ${status.toUpperCase()}? This will update their attendance records for ${format(selectedDate, 'MMM dd, yyyy')}.`,
       onConfirm: () => executeMarkAll(status)
     });
   };
@@ -1258,7 +1335,7 @@ const Attendance: React.FC = () => {
     const uniqueAbsenteesMap = new Map<string, any>();
     filteredPeople.forEach(p => {
       const pid = p.uid || p.id;
-      if (!pid) return;
+      if (!pid || isNonAttendingPerson(p)) return;
       const status = getStatus(pid);
       const onLeave = isActuallyOnLeave(pid);
       if (status === 'absent' && (p.role === 'student' || !p.role || p.role === '') && !onLeave) {
@@ -1517,18 +1594,22 @@ const Attendance: React.FC = () => {
     const student = people.find(p => p.uid === personId || p.id === personId);
     const sid = String(student?.uid || student?.id || personId).trim();
 
+    // Check if person is a non-attending student (must NEVER be counted as absent)
+    if (student && isNonAttendingPerson(student)) {
+      return 'present';
+    }
+
     const record = attendance.find(a => matchesAttendanceRecord(a, sid, student, dateStr));
     
-    if (record) return record.status;
+    if (record) {
+      if (student && isNonAttendingPerson(student) && record.status === 'absent') {
+        return 'present';
+      }
+      return record.status;
+    }
 
-    // Check if person is a non-attending student (defaults to present only when no explicit record exists)
-    if (student && (
-      student.status === 'non_attending' || 
-      student.status === 'non-attending' || 
-      student.nonAttending === true || 
-      student.isNonAttending === true ||
-      String(student.status || '').toLowerCase().replace(/[- ]/g, '_') === 'non_attending'
-    )) {
+    // Check if person is a non-attending student (defaults to present)
+    if (student && isNonAttendingPerson(student)) {
       return 'present';
     }
     
@@ -2997,6 +3078,21 @@ const Attendance: React.FC = () => {
     // Student / Register Tab:
     const resolved = resolveStudentClassAndBatch(p, classes, batches);
 
+    // Strictly apply: exclude Non-Attending students from active daily roster & register
+    if (
+      p.status === 'Non-Attending' || 
+      p.status === 'non_attending' || 
+      p.status === 'non-attending' || 
+      p.isAttending === false || 
+      p.isAttending === 'false' || 
+      p.isAttending === 0 || 
+      p.nonAttending === true || 
+      p.nonAttending === 'true' || 
+      isNonAttendingPerson(p, resolved)
+    ) {
+      return false;
+    }
+
     // Teacher Access Restriction - Only see students in assigned classes/batches
     const isPlaySchoolIncharge = profile?.role === 'play_school_incharge';
     const matchesTeacherAccess = (isTeacherRole && !isPlaySchoolIncharge) ? (
@@ -3008,8 +3104,20 @@ const Attendance: React.FC = () => {
       ))
     ) : true);
 
-    const matchesClass = filterClass === 'all' || resolved.classId === filterClass;
-    const matchesBatch = filterBatch === 'all' || resolved.batchId === filterBatch;
+    const selectedClassObj = classes.find(c => c.id === filterClass);
+    const selectedBatchObj = batches.find(b => b.id === filterBatch);
+
+    const matchesClass = filterClass === 'all' || 
+      resolved.classId === filterClass || 
+      p.class === filterClass || 
+      p.classId === filterClass || 
+      (selectedClassObj && (resolved.className === selectedClassObj.name || p.class === selectedClassObj.name));
+
+    const matchesBatch = filterBatch === 'all' || 
+      resolved.batchId === filterBatch || 
+      p.batch === filterBatch || 
+      p.batchId === filterBatch || 
+      (selectedBatchObj && (resolved.batchName === selectedBatchObj.name || p.batch === selectedBatchObj.name));
 
     const matchesTab = p.role === 'student' || !p.role || p.role === '';
     const isStub = (!resolved.classId || resolved.classId === 'N/A' || resolved.classId === '');
@@ -3178,12 +3286,64 @@ const Attendance: React.FC = () => {
     );
   }
 
+  const selectedClassObj = classes.find(c => c.id === filterClass);
+  const selectedBatchObj = batches.find(b => b.id === filterBatch);
+
+  const activeStudents = useMemo(() => {
+    return people.filter(s => {
+      const resolved = resolveStudentClassAndBatch(s, classes, batches);
+      const sClass = resolved.classId || s.class || s.classId;
+      const sBatch = resolved.batchId || s.batch || s.batchId;
+      const sClassName = resolved.className || s.className || s.class;
+      const sBatchName = resolved.batchName || s.batchName || s.batch;
+
+      const matchesClass = filterClass === 'all' || 
+        sClass === filterClass || 
+        sClassName === filterClass || 
+        (selectedClassObj && (sClassName === selectedClassObj.name || sClass === selectedClassObj.name));
+
+      const matchesBatch = filterBatch === 'all' || 
+        sBatch === filterBatch || 
+        sBatchName === filterBatch || 
+        (selectedBatchObj && (sBatchName === selectedBatchObj.name || sBatch === selectedBatchObj.name));
+
+      return (
+        matchesClass && 
+        matchesBatch && 
+        s.status !== 'Non-Attending' && 
+        s.status !== 'non_attending' && 
+        s.status !== 'non-attending' && 
+        s.isAttending !== false && 
+        s.isAttending !== 'false' && 
+        s.isAttending !== 0 && 
+        !s.nonAttending && 
+        s.nonAttending !== 'true' && 
+        !isNonAttendingPerson(s, resolved)
+      );
+    });
+  }, [people, filterClass, filterBatch, classes, batches, selectedClassObj, selectedBatchObj]);
+
   return (
     <div className="space-y-6">
       <header className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-sidebar">Attendance System</h1>
-          <p className="text-sm text-neutral-500">Daily tracking and student/staff attendance management.</p>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold text-sidebar">Attendance System</h1>
+            {(activeTab === 'student' || activeTab === 'register') && (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black bg-blue-100 text-blue-800 border border-blue-200 shadow-sm">
+                <Users className="w-3.5 h-3.5" />
+                <span>Total Active Students: {activeStudents.length}</span>
+              </span>
+            )}
+          </div>
+          <p className="text-sm text-neutral-500">
+            Daily tracking and student/staff attendance management.
+            {(activeTab === 'student' || activeTab === 'register') && (
+              <span className="font-bold text-neutral-700 ml-1">
+                (Total: {activeStudents.length} Active Students)
+              </span>
+            )}
+          </p>
         </div>
         <div className="flex items-center gap-4">
           {!isTeacherRole && activeTab === 'student' && hasPermission('whatsapp_send') && (
@@ -3375,11 +3535,25 @@ const Attendance: React.FC = () => {
 
         {(activeTab !== 'register' && activeTab !== 'staff_auto' && !isStudent && !isParent) && (
           <div className="flex flex-wrap items-center gap-3">
+            {activeTab === 'student' && (
+              <div className="bg-blue-50 px-4 py-2.5 rounded-xl border border-blue-200 flex items-center gap-3">
+                <Users className="w-5 h-5 text-blue-600" />
+                <div>
+                  <p className="text-[10px] font-bold tracking-wider uppercase text-blue-700 leading-none mb-1">Total Active</p>
+                  <p className="text-xl font-black text-blue-700 leading-none">{activeStudents.length}</p>
+                </div>
+              </div>
+            )}
+
             <div className="bg-green-50 px-4 py-2.5 rounded-xl border border-green-200 flex items-center gap-3">
               <CheckCircle2 className="w-5 h-5 text-green-600" />
               <div>
                 <p className="text-[10px] font-bold tracking-wider uppercase text-green-700 leading-none mb-1">Present</p>
-                <p className="text-xl font-black text-green-700 leading-none">{baseFilteredPeople.filter(p => getStatus(p.uid || p.id) === 'present').length}</p>
+                <p className="text-xl font-black text-green-700 leading-none">
+                  {activeTab === 'staff'
+                    ? baseFilteredPeople.filter(p => !isNonAttendingPerson(p) && getStatus(p.uid || p.id) === 'present').length
+                    : activeStudents.filter(p => getStatus(p.uid || p.id) === 'present').length}
+                </p>
               </div>
             </div>
             
@@ -3387,7 +3561,11 @@ const Attendance: React.FC = () => {
               <XCircle className="w-5 h-5 text-red-600" />
               <div>
                 <p className="text-[10px] font-bold tracking-wider uppercase text-red-700 leading-none mb-1">Absent</p>
-                <p className="text-xl font-black text-red-700 leading-none">{baseFilteredPeople.filter(p => getStatus(p.uid || p.id) === 'absent').length}</p>
+                <p className="text-xl font-black text-red-700 leading-none">
+                  {activeTab === 'staff'
+                    ? baseFilteredPeople.filter(p => !isNonAttendingPerson(p) && getStatus(p.uid || p.id) === 'absent').length
+                    : activeStudents.filter(p => getStatus(p.uid || p.id) === 'absent').length}
+                </p>
               </div>
             </div>
           </div>
@@ -3845,12 +4023,12 @@ const Attendance: React.FC = () => {
                 {activeTab === 'staff' ? "Today's Staff Absentees" : "Today's Absentees"}
               </h3>
               <div className="space-y-3 max-h-[300px] overflow-y-auto">
-                {filteredPeople.filter(p => getStatus(p.uid || p.id) === 'absent').length === 0 ? (
+                {filteredPeople.filter(p => !isNonAttendingPerson(p) && getStatus(p.uid || p.id) === 'absent').length === 0 ? (
                   <div className="text-sm text-neutral-500 text-center py-4 bg-neutral-50 rounded-xl">
                     {activeTab === 'staff' ? "No staff marked absent today" : "No students marked absent today"}
                   </div>
                 ) : (
-                  filteredPeople.filter(p => getStatus(p.uid || p.id) === 'absent').map(absentee => {
+                  filteredPeople.filter(p => !isNonAttendingPerson(p) && getStatus(p.uid || p.id) === 'absent').map(absentee => {
                     const absenteeId = absentee.uid || absentee.id;
                     const absenteeDisplayName = getPersonDisplayName(absentee);
                     return (

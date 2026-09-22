@@ -4,6 +4,18 @@ import path from "path";
 import { execSync } from "child_process";
 import { getDbAdmin, isDatabaseDenied, setDatabaseDenied } from "./db.js";
 import { getMongoDb } from "./mongoSession.js";
+import {
+  listDocuments,
+  getDocument,
+  countDocuments,
+  setDocument,
+  addDocument,
+  updateDocument,
+  deleteDocument,
+  deleteBatchDocuments,
+  setBatchDocuments,
+  updateBatchDocuments
+} from "./firestoreService.js";
 import crypto from "crypto";
 
 const router = Router();
@@ -334,7 +346,7 @@ async function forwardToLiveProxy(operation: string, colPath: string, id: any, d
         constraints,
         ...body
       }),
-      signal: AbortSignal.timeout(20000)
+      signal: AbortSignal.timeout(2000)
     });
     if (vpsRes.ok) {
       const vpsData = await vpsRes.json();
@@ -367,7 +379,7 @@ async function handleWithMongoOrLocal(operation: string, colPath: string, id: an
     if (operation === "list") {
       let filter: any = {};
       let sort: any = null;
-      let limitNum = 500;
+      let limitNum = 100000;
 
       if (constraints && Array.isArray(constraints)) {
         for (const c of constraints) {
@@ -394,7 +406,7 @@ async function handleWithMongoOrLocal(operation: string, colPath: string, id: an
               filter[c.field] = c.value;
             }
           } else if (c.type === "limit") {
-            limitNum = Number(c.value) || 500;
+            limitNum = Number(c.value) || 100000;
           } else if (c.type === "orderBy") {
             if (!sort) sort = {};
             sort[c.field] = c.direction === "desc" ? -1 : 1;
@@ -406,20 +418,70 @@ async function handleWithMongoOrLocal(operation: string, colPath: string, id: an
       if (sort) cursor = cursor.sort(sort);
       if (limitNum) cursor = cursor.limit(limitNum);
       const docs = await cursor.toArray();
-      const result = docs.map(d => {
+      let result = docs.map(d => {
         const { _id, ...rest } = d;
         return { id: rest.id || String(_id), uid: rest.uid || rest.id || String(_id), ...rest };
       });
+
+      // Sanitize Live Attendance: ignore and strip any legacy absentee records belonging to non-attending student IDs
+      if (colPath === "attendance" && result.length > 0) {
+        try {
+          const nonAttendingStudents = await mongo.collection('students').find({
+            $or: [
+              { status: 'Non-Attending' },
+              { status: 'non_attending' },
+              { status: 'non-attending' },
+              { isAttending: false },
+              { isAttending: 'false' },
+              { nonAttending: true },
+              { nonAttending: 'true' },
+              { isNonAttending: true }
+            ]
+          }).toArray().catch(() => []);
+
+          const nonAttendingIds = new Set(
+            nonAttendingStudents.flatMap((s: any) => [
+              s.id,
+              s.uid,
+              s._id?.toString(),
+              s.uniqueStudentId,
+              s.admissionNumber
+            ].filter(Boolean))
+          );
+
+          if (nonAttendingIds.size > 0) {
+            result = result.filter((a: any) => {
+              const sid = a.studentId || a.userId || a.studentUid || a.uid;
+              if (sid && nonAttendingIds.has(sid)) {
+                return false;
+              }
+              return true;
+            });
+          }
+        } catch (filterErr) {
+          console.warn("[Maintenance db-proxy] Error sanitizing non-attending records:", filterErr);
+        }
+      }
 
       if (result.length > 0) {
         return { json: { success: true, data: result } };
       }
 
-      // If local collection is empty, fetch live data from antonyschool.in
-      const vpsRes = await forwardToLiveProxy(operation, colPath, id, data, constraints, body);
-      if (vpsRes.json && Array.isArray(vpsRes.json.data) && vpsRes.json.data.length > 0) {
-        return vpsRes;
-      }
+      // If local collection is empty, fetch live data from live antonyschool.in VPS db-proxy
+      try {
+        const vpsRes = await forwardToLiveProxy(operation, colPath, id, data, constraints, body);
+        if (vpsRes.json && Array.isArray(vpsRes.json.data) && vpsRes.json.data.length > 0) {
+          return vpsRes;
+        }
+      } catch (_) {}
+
+      // Secondary fallback to Cloud Firestore
+      try {
+        const firestoreDocs = await listDocuments(colPath, constraints);
+        if (firestoreDocs && firestoreDocs.length > 0) {
+          return { json: { success: true, data: firestoreDocs } };
+        }
+      } catch (_) {}
 
       return { json: { success: true, data: result } };
     }
@@ -440,11 +502,21 @@ async function handleWithMongoOrLocal(operation: string, colPath: string, id: an
         return { json: { success: true, count } };
       }
 
-      // If local count is 0, query live antonyschool.in
-      const vpsRes = await forwardToLiveProxy(operation, colPath, id, data, constraints, body);
-      if (vpsRes.json && typeof vpsRes.json.count === "number" && vpsRes.json.count > 0) {
-        return vpsRes;
-      }
+      // If local count is 0, query live antonyschool.in VPS db-proxy
+      try {
+        const vpsRes = await forwardToLiveProxy(operation, colPath, id, data, constraints, body);
+        if (vpsRes.json && typeof vpsRes.json.count === "number" && vpsRes.json.count > 0) {
+          return vpsRes;
+        }
+      } catch (_) {}
+
+      // Secondary fallback to Cloud Firestore
+      try {
+        const fsCount = await countDocuments(colPath, constraints);
+        if (fsCount > 0) {
+          return { json: { success: true, count: fsCount } };
+        }
+      } catch (_) {}
 
       return { json: { success: true, count } };
     }
@@ -459,13 +531,97 @@ async function handleWithMongoOrLocal(operation: string, colPath: string, id: an
         return { json: { success: true, data: { id: rest.id || id, uid: rest.uid || id, ...rest } } };
       }
 
-      // If not found in local db, check live antonyschool.in
-      const vpsRes = await forwardToLiveProxy(operation, colPath, id, data, constraints, body);
-      if (vpsRes.json && vpsRes.json.data) {
-        return vpsRes;
-      }
+      // If not found in local db, check live antonyschool.in VPS db-proxy
+      try {
+        const vpsRes = await forwardToLiveProxy(operation, colPath, id, data, constraints, body);
+        if (vpsRes.json && vpsRes.json.data) {
+          return vpsRes;
+        }
+      } catch (_) {}
+
+      // Secondary fallback to Cloud Firestore
+      try {
+        const fsDoc = await getDocument(colPath, id);
+        if (fsDoc) {
+          return { json: { success: true, data: fsDoc } };
+        }
+      } catch (_) {}
 
       return { json: { success: true, data: null } };
+    }
+
+    // When saving/marking attendance, ensure non-attending student IDs are completely excluded from the payload sent to MongoDB
+    if (colPath === "attendance") {
+      try {
+        const checkIsNonAttending = async (sid: string) => {
+          if (!sid) return false;
+          const found = await mongo.collection('students').findOne({
+            $and: [
+              { $or: [{ id: sid }, { uid: sid }, { uniqueStudentId: sid }, { admissionNumber: sid }] },
+              {
+                $or: [
+                  { status: 'Non-Attending' },
+                  { status: 'non_attending' },
+                  { status: 'non-attending' },
+                  { isAttending: false },
+                  { isAttending: 'false' },
+                  { nonAttending: true },
+                  { nonAttending: 'true' },
+                  { isNonAttending: true }
+                ]
+              }
+            ]
+          }).catch(() => null);
+          return !!found;
+        };
+
+        if (operation === "add" || operation === "set" || operation === "update") {
+          const sid = data?.studentId || data?.userId || data?.studentUid || data?.uid || id;
+          if (sid && (await checkIsNonAttending(sid))) {
+            console.log(`[Maintenance db-proxy] Excluded non-attending student ID '${sid}' from attendance write payload.`);
+            return { json: { success: true, excluded: true, message: "Non-attending student excluded from attendance" } };
+          }
+        }
+
+        if (operation === "setBatch" || operation === "updateBatch") {
+          const rawItems = body.items || [];
+          const nonAttendingStudents = await mongo.collection('students').find({
+            $or: [
+              { status: 'Non-Attending' },
+              { status: 'non_attending' },
+              { status: 'non-attending' },
+              { isAttending: false },
+              { isAttending: 'false' },
+              { nonAttending: true },
+              { nonAttending: 'true' },
+              { isNonAttending: true }
+            ]
+          }).toArray().catch(() => []);
+
+          const nonAttendingIdSet = new Set(
+            nonAttendingStudents.flatMap((s: any) => [
+              s.id,
+              s.uid,
+              s._id?.toString(),
+              s.uniqueStudentId,
+              s.admissionNumber
+            ].filter(Boolean))
+          );
+
+          if (nonAttendingIdSet.size > 0) {
+            body.items = rawItems.filter((item: any) => {
+              const sid = item?.data?.studentId || item?.data?.userId || item?.data?.studentUid || item?.data?.uid || item?.id;
+              if (sid && nonAttendingIdSet.has(sid)) {
+                return false;
+              }
+              return true;
+            });
+            console.log(`[Maintenance db-proxy] Filtered batch attendance items from ${rawItems.length} to ${body.items.length} (excluded non-attending).`);
+          }
+        }
+      } catch (err) {
+        console.warn("[Maintenance db-proxy] Error checking non-attending on write:", err);
+      }
     }
 
     if (operation === "add") {
@@ -535,24 +691,136 @@ async function handleWithMongoOrLocal(operation: string, colPath: string, id: an
     }
   }
 
-  // When MongoDB is not running locally (e.g. preview container), route directly to live https://antonyschool.in/api/maintenance/db-proxy
-  return forwardToLiveProxy(operation, colPath, id, data, constraints, body);
-
-  // Strict MongoDB Mode: When MongoDB is not connected and live fallback fails
+  // When MongoDB is not running locally (e.g. preview container), prioritize Cloud Firestore first
   if (operation === "list") {
-    return { json: { success: true, data: [] } };
+    try {
+      let result = await listDocuments(colPath, constraints);
+      // Sanitize Live Attendance: ignore and strip any legacy absentee records belonging to non-attending student IDs
+      if (colPath === "attendance" && result.length > 0) {
+        try {
+          const students = await listDocuments('students', []);
+          const nonAttendingIds = new Set(
+            students
+              .filter((s: any) =>
+                s.status === 'Non-Attending' ||
+                s.status === 'non_attending' ||
+                s.status === 'non-attending' ||
+                s.isAttending === false ||
+                s.isAttending === 'false' ||
+                s.nonAttending === true ||
+                s.nonAttending === 'true' ||
+                s.isNonAttending === true
+              )
+              .flatMap((s: any) => [s.id, s.uid, s.uniqueStudentId, s.admissionNumber].filter(Boolean))
+          );
+          if (nonAttendingIds.size > 0) {
+            result = result.filter((a: any) => {
+              const sid = a.studentId || a.userId || a.studentUid || a.uid;
+              if (sid && nonAttendingIds.has(sid)) return false;
+              return true;
+            });
+          }
+        } catch (_) {}
+      }
+      if (Array.isArray(result) && result.length > 0) {
+        return { status: 200, json: { success: true, count: result.length, data: result } };
+      }
+    } catch (_) {}
   }
 
   if (operation === "count") {
-    return { json: { success: true, count: 0 } };
+    try {
+      const count = await countDocuments(colPath, constraints);
+      if (typeof count === "number" && count > 0) {
+        return { status: 200, json: { success: true, count } };
+      }
+    } catch (_) {}
   }
 
   if (operation === "get") {
-    return { json: { success: true, data: null } };
+    if (!id || typeof id !== "string" || !id.trim() || id === "undefined" || id === "null") {
+      return { status: 200, json: { success: true, data: null } };
+    }
+    try {
+      const doc = await getDocument(colPath, id);
+      if (doc) {
+        return { status: 200, json: { success: true, data: doc } };
+      }
+    } catch (_) {}
   }
 
-  if (operation === "add" || operation === "set" || operation === "update" || operation === "delete" || operation === "deleteBatch" || operation === "setBatch" || operation === "updateBatch") {
-    return { status: 503, json: { success: false, error: "MongoDB is not connected. Data cannot be saved without an active MongoDB connection." } };
+  // If local Cloud Firestore returned empty or null, try live antonyschool.in VPS db-proxy as secondary fallback
+  try {
+    const vpsRes = await forwardToLiveProxy(operation, colPath, id, data, constraints, body);
+    if (vpsRes.json && vpsRes.json.success) {
+      if (operation === "list" && Array.isArray(vpsRes.json.data) && vpsRes.json.data.length > 0) {
+        return { status: vpsRes.status || 200, json: vpsRes.json };
+      }
+      if (operation === "count" && typeof vpsRes.json.count === "number" && vpsRes.json.count > 0) {
+        return { status: vpsRes.status || 200, json: vpsRes.json };
+      }
+      if (operation === "get" && vpsRes.json.data) {
+        return { status: vpsRes.status || 200, json: vpsRes.json };
+      }
+      if (operation === "add" || operation === "set" || operation === "update" || operation === "delete" || operation === "deleteBatch" || operation === "setBatch" || operation === "updateBatch") {
+        return { status: vpsRes.status || 200, json: vpsRes.json };
+      }
+    }
+  } catch (_) {}
+
+  // If both local Firestore and live proxy returned empty/failed, return fallback empty responses
+  if (operation === "list") {
+    return { status: 200, json: { success: true, count: 0, data: [] } };
+  }
+  if (operation === "count") {
+    return { status: 200, json: { success: true, count: 0 } };
+  }
+  if (operation === "get") {
+    return { status: 200, json: { success: true, data: null } };
+  }
+
+  // Write operations write to Firestore
+  if (operation === "add") {
+    const res = await addDocument(colPath, data);
+    forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
+    return { status: 200, json: { success: true, id: res.id } };
+  }
+
+  if (operation === "set") {
+    const docId = id || data?.id || data?.uid;
+    if (!docId) return { status: 400, json: { error: "Missing document id" } };
+    const res = await setDocument(colPath, docId, data, { merge: true });
+    forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
+    return { status: 200, json: { success: true, id: res.id } };
+  }
+
+  if (operation === "update") {
+    const docId = id || data?.id || data?.uid;
+    if (!docId) return { status: 400, json: { error: "Missing document id" } };
+    const res = await updateDocument(colPath, docId, data);
+    forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
+    return { status: 200, json: { success: true, id: res.id } };
+  }
+
+  if (operation === "delete") {
+    if (!id) return { status: 400, json: { error: "Missing document id" } };
+    await deleteDocument(colPath, id);
+    forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
+    return { status: 200, json: { success: true } };
+  }
+
+  if (operation === "deleteBatch") {
+    const ids = body.ids || [];
+    await deleteBatchDocuments(colPath, ids);
+    forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
+    return { status: 200, json: { success: true } };
+  }
+
+  if (operation === "setBatch" || operation === "updateBatch") {
+    const items = body.items || [];
+    await setBatchDocuments(colPath, items);
+    forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
+    return { status: 200, json: { success: true } };
   }
 
   return { status: 400, json: { error: "Unsupported operation: " + operation } };
@@ -602,7 +870,7 @@ router.get("/db-proxy", async (req, res) => {
     }
 
     const { class: selectedClass, classId, exam: selectedExam, examId, batch, batchId, date, limit: qLimit } = req.query;
-    const effectiveLimit = Number(qLimit) || 15000;
+    const effectiveLimit = Math.min(Math.max(1, Number(qLimit) || 10000), 10000);
 
     const constraints: any[] = [
       { type: "limit", value: effectiveLimit }
@@ -632,15 +900,15 @@ router.get("/db-proxy", async (req, res) => {
       return res.json(cached.data);
     }
 
-    // Forward to live VPS MongoDB db-proxy with constraints
-    const vpsRes = await forwardToLiveProxy("list", colPath, undefined, undefined, constraints, {
+    // Retrieve collection data via MongoDB or Firestore
+    const handlerRes = await handleWithMongoOrLocal("list", colPath, undefined, undefined, constraints, {
       operation: "list",
       path: colPath,
       constraints
     });
 
-    if (vpsRes.json && Array.isArray(vpsRes.json.data)) {
-      let data = vpsRes.json.data;
+    if (handlerRes.json && Array.isArray(handlerRes.json.data)) {
+      let data = handlerRes.json.data;
       if (targetExam) {
         data = data.filter((d: any) => d.examId === targetExam);
       }
@@ -658,7 +926,7 @@ router.get("/db-proxy", async (req, res) => {
       return res.json(responsePayload);
     }
 
-    return res.status(vpsRes.status || 200).json(vpsRes.json || { success: true, data: [] });
+    return res.status(handlerRes.status || 200).json(handlerRes.json || { success: true, data: [] });
   } catch (error: any) {
     console.error("[GET /api/maintenance/db-proxy] Error:", error);
     return res.status(500).json({ error: error?.message || "Failed to fetch collection data" });

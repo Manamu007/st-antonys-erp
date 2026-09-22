@@ -1698,29 +1698,32 @@ export const dbService = {
 
         let studentsList: any[] = [];
         try {
-          const directRes = await fetch('https://antonyschool.in/api/maintenance/db-proxy?collection=students', { mode: 'cors' });
-          const contentType = directRes.headers.get('content-type') || '';
-          if (directRes.ok && contentType.includes('application/json')) {
-            const parsed = await directRes.json();
+          const proxyRes = await fetch('/api/maintenance/db-proxy?collection=students', { mode: 'cors' });
+          if (proxyRes.ok) {
+            const parsed = await proxyRes.json();
             studentsList = Array.isArray(parsed) ? parsed : (parsed.data || []);
           }
         } catch (err) {}
 
         if (!studentsList || studentsList.length === 0) {
           try {
-            const proxyRes = await fetch('/api/maintenance/db-proxy?collection=students', { mode: 'cors' });
-            if (proxyRes.ok) {
-              const parsed = await proxyRes.json();
-              studentsList = Array.isArray(parsed) ? parsed : (parsed.data || []);
+            const postRes = await proxyRequest('list', 'students', { constraints });
+            if (postRes && Array.isArray(postRes.data)) {
+              studentsList = postRes.data;
             }
           } catch (err) {}
         }
 
         if (!studentsList || studentsList.length === 0) {
           try {
-            const postRes = await proxyRequest('list', 'students', { constraints });
-            if (postRes && Array.isArray(postRes.data)) {
-              studentsList = postRes.data;
+            const directRes = await fetch('https://antonyschool.in/api/maintenance/db-proxy?collection=students', { 
+              mode: 'cors',
+              signal: AbortSignal.timeout(2000)
+            });
+            const contentType = directRes.headers.get('content-type') || '';
+            if (directRes.ok && contentType.includes('application/json')) {
+              const parsed = await directRes.json();
+              studentsList = Array.isArray(parsed) ? parsed : (parsed.data || []);
             }
           } catch (err) {}
         }
@@ -1765,29 +1768,32 @@ export const dbService = {
         const querySuffix = dateParam ? `&date=${encodeURIComponent(dateParam)}` : '';
 
         try {
-          const directRes = await fetch(`https://antonyschool.in/api/maintenance/db-proxy?collection=attendance${querySuffix}`, { mode: 'cors' });
-          const contentType = directRes.headers.get('content-type') || '';
-          if (directRes.ok && contentType.includes('application/json')) {
-            const parsed = await directRes.json();
+          const proxyRes = await fetch(`/api/maintenance/db-proxy?collection=attendance${querySuffix}`, { mode: 'cors' });
+          if (proxyRes.ok) {
+            const parsed = await proxyRes.json();
             attendanceList = Array.isArray(parsed) ? parsed : (parsed.data || []);
           }
         } catch (err) {}
 
         if (!attendanceList || attendanceList.length === 0) {
           try {
-            const proxyRes = await fetch(`/api/maintenance/db-proxy?collection=attendance${querySuffix}`, { mode: 'cors' });
-            if (proxyRes.ok) {
-              const parsed = await proxyRes.json();
-              attendanceList = Array.isArray(parsed) ? parsed : (parsed.data || []);
+            const postRes = await proxyRequest('list', 'attendance', { constraints });
+            if (postRes && Array.isArray(postRes.data)) {
+              attendanceList = postRes.data;
             }
           } catch (err) {}
         }
 
         if (!attendanceList || attendanceList.length === 0) {
           try {
-            const postRes = await proxyRequest('list', 'attendance', { constraints });
-            if (postRes && Array.isArray(postRes.data)) {
-              attendanceList = postRes.data;
+            const directRes = await fetch(`https://antonyschool.in/api/maintenance/db-proxy?collection=attendance${querySuffix}`, { 
+              mode: 'cors',
+              signal: AbortSignal.timeout(2000)
+            });
+            const contentType = directRes.headers.get('content-type') || '';
+            if (directRes.ok && contentType.includes('application/json')) {
+              const parsed = await directRes.json();
+              attendanceList = Array.isArray(parsed) ? parsed : (parsed.data || []);
             }
           } catch (err) {}
         }
@@ -1819,20 +1825,25 @@ export const dbService = {
 
         let examsList: any[] = [];
         try {
-          const directRes = await fetch('https://antonyschool.in/api/maintenance/db-proxy?collection=exams', { mode: 'cors' });
-          const contentType = directRes.headers.get('content-type') || '';
-          if (directRes.ok && contentType.includes('application/json')) {
-            const parsed = await directRes.json();
-            examsList = Array.isArray(parsed) ? parsed : (parsed.data || []);
-          }
-        } catch (err) {}
-
-        if (!examsList || examsList.length === 0) {
           const proxyRes = await fetch('/api/maintenance/db-proxy?collection=exams', { mode: 'cors' });
           if (proxyRes.ok) {
             const parsed = await proxyRes.json();
             examsList = Array.isArray(parsed) ? parsed : (parsed.data || []);
           }
+        } catch (err) {}
+
+        if (!examsList || examsList.length === 0) {
+          try {
+            const directRes = await fetch('https://antonyschool.in/api/maintenance/db-proxy?collection=exams', { 
+              mode: 'cors',
+              signal: AbortSignal.timeout(2000)
+            });
+            const contentType = directRes.headers.get('content-type') || '';
+            if (directRes.ok && contentType.includes('application/json')) {
+              const parsed = await directRes.json();
+              examsList = Array.isArray(parsed) ? parsed : (parsed.data || []);
+            }
+          } catch (err) {}
         }
 
         if (Array.isArray(examsList) && examsList.length > 0) {
@@ -1857,7 +1868,7 @@ export const dbService = {
 
         const params = new URLSearchParams();
         params.append('collection', 'examMarks');
-        params.append('limit', '15000');
+        params.append('limit', '10000');
         for (const c of constraints) {
           if (c && (c as any).type === 'where') {
             const field = (c as any)._field?.segments?.[0] || (c as any).field;
@@ -1875,21 +1886,12 @@ export const dbService = {
         const qStr = params.toString();
 
         try {
-          const directRes = await fetch(`https://antonyschool.in/api/maintenance/db-proxy?${qStr}`, { mode: 'cors' });
-          const contentType = directRes.headers.get('content-type') || '';
-          if (directRes.ok && contentType.includes('application/json')) {
-            const parsed = await directRes.json();
-            marksList = Array.isArray(parsed) ? parsed : (parsed.data || []);
-          }
-        } catch (err) {}
-
-        if (!marksList || marksList.length === 0) {
           const proxyRes = await fetch(`/api/maintenance/db-proxy?${qStr}`, { mode: 'cors' });
           if (proxyRes.ok) {
             const parsed = await proxyRes.json();
             marksList = Array.isArray(parsed) ? parsed : (parsed.data || []);
           }
-        }
+        } catch (err) {}
 
         if (!marksList || marksList.length === 0) {
           const examMarksRes = await fetch(`/api/exam-marks?${qStr}`, { mode: 'cors' });
@@ -1897,6 +1899,20 @@ export const dbService = {
             const parsed = await examMarksRes.json();
             marksList = Array.isArray(parsed) ? parsed : (parsed.data || []);
           }
+        }
+
+        if (!marksList || marksList.length === 0) {
+          try {
+            const directRes = await fetch(`https://antonyschool.in/api/maintenance/db-proxy?${qStr}`, { 
+              mode: 'cors',
+              signal: AbortSignal.timeout(2000)
+            });
+            const contentType = directRes.headers.get('content-type') || '';
+            if (directRes.ok && contentType.includes('application/json')) {
+              const parsed = await directRes.json();
+              marksList = Array.isArray(parsed) ? parsed : (parsed.data || []);
+            }
+          } catch (err) {}
         }
 
         if (Array.isArray(marksList) && marksList.length > 0) {
@@ -1921,20 +1937,25 @@ export const dbService = {
 
         let dailyList: any[] = [];
         try {
-          const directRes = await fetch('https://antonyschool.in/api/maintenance/db-proxy?collection=class10_daily_marks', { mode: 'cors' });
-          const contentType = directRes.headers.get('content-type') || '';
-          if (directRes.ok && contentType.includes('application/json')) {
-            const parsed = await directRes.json();
-            dailyList = Array.isArray(parsed) ? parsed : (parsed.data || []);
-          }
-        } catch (err) {}
-
-        if (!dailyList || dailyList.length === 0) {
           const proxyRes = await fetch('/api/maintenance/db-proxy?collection=class10_daily_marks', { mode: 'cors' });
           if (proxyRes.ok) {
             const parsed = await proxyRes.json();
             dailyList = Array.isArray(parsed) ? parsed : (parsed.data || []);
           }
+        } catch (err) {}
+
+        if (!dailyList || dailyList.length === 0) {
+          try {
+            const directRes = await fetch('https://antonyschool.in/api/maintenance/db-proxy?collection=class10_daily_marks', { 
+              mode: 'cors',
+              signal: AbortSignal.timeout(2000)
+            });
+            const contentType = directRes.headers.get('content-type') || '';
+            if (directRes.ok && contentType.includes('application/json')) {
+              const parsed = await directRes.json();
+              dailyList = Array.isArray(parsed) ? parsed : (parsed.data || []);
+            }
+          } catch (err) {}
         }
 
         if (Array.isArray(dailyList) && dailyList.length > 0) {
@@ -2076,7 +2097,8 @@ export const dbService = {
     if (!bypassCache) {
       const cached = listCache.get(cacheKey);
       if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-        return cached.data.map(i => enforceSecuredAccess(path, i)).filter(Boolean);
+        const secured = cached.data.map(i => enforceSecuredAccess(path, i)).filter(Boolean);
+        return deduplicateArrayByID(secured);
       }
 
       // Check local persistent cache for lists first as a very fast fallback
@@ -2092,8 +2114,9 @@ export const dbService = {
             const { data, timestamp } = JSON.parse(cachedStored);
             if (Date.now() - timestamp < CACHE_TTL) {
               const secured = data.map((i: any) => enforceSecuredAccess(path, i)).filter(Boolean);
-              listCache.set(cacheKey, { data: secured, timestamp: Date.now() });
-              return secured;
+              const deduped = deduplicateArrayByID(secured);
+              listCache.set(cacheKey, { data: deduped, timestamp: Date.now() });
+              return deduped;
             }
           }
         } catch (e) { /* ignore */ }
@@ -2102,7 +2125,10 @@ export const dbService = {
 
     if (checkQuotaStatus()) {
       const cached = listCache.get(cacheKey);
-      if (cached) return cached.data.map(i => enforceSecuredAccess(path, i)).filter(Boolean);
+      if (cached) {
+        const secured = cached.data.map(i => enforceSecuredAccess(path, i)).filter(Boolean);
+        return deduplicateArrayByID(secured);
+      }
 
       // Fallback to persistent cache specifically for lists
       if (PERSISTENT_COLLECTIONS.includes(path)) {
@@ -2110,7 +2136,8 @@ export const dbService = {
           const cachedItem = localStorage.getItem(`fs_list_cache_${path}_${cacheKey}`) || localStorage.getItem(`fs_list_cache_${path}`);
           if (cachedItem) {
             const { data } = JSON.parse(cachedItem);
-            return data.map((i: any) => enforceSecuredAccess(path, i)).filter(Boolean);
+            const secured = data.map((i: any) => enforceSecuredAccess(path, i)).filter(Boolean);
+            return deduplicateArrayByID(secured);
           }
         } catch (e) {}
       }

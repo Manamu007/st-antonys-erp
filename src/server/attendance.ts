@@ -1419,6 +1419,25 @@ router.post('/notify-absent', async (req, res) => {
           results.errors.push(`Student not found for ID: ${studentId}`);
           continue;
         }
+
+        // Check if student is marked as non-attending - never send absent notifications for non-attending students
+        const isNA = student.isAttending === false || 
+                     student.isAttending === 'false' || 
+                     student.isAttending === 0 ||
+                     student.nonAttending === true || 
+                     student.nonAttending === 'true' ||
+                     student.isNonAttending === true || 
+                     student.isNonAttending === 'true' ||
+                     student.status === 'Non-Attending' ||
+                     student.status === 'non_attending' ||
+                     student.status === 'non-attending' ||
+                     String(student.status || '').toLowerCase().trim().replace(/[-_ ]/g, '') === 'nonattending' ||
+                     String(student.attendingStatus || '').toLowerCase().trim().replace(/[-_ ]/g, '') === 'nonattending' ||
+                     String(student.attendanceStatus || '').toLowerCase().trim().replace(/[-_ ]/g, '') === 'nonattending';
+        if (isNA) {
+          console.log(`[Attendance Alert] Skipping student ${student?.name || studentId} because they are marked as Non-Attending.`);
+          continue;
+        }
         
         // Try to find parent WhatsApp or other contact numbers fallback cascadingly
         const parentPhone = student?.whatsappNumber || 
@@ -2123,6 +2142,226 @@ router.post('/aws-rekognition-migration', async (req, res) => {
   } catch (error: any) {
     console.error('[AWS Migration] Migration handler initialization crash:', error);
     res.status(500).json({ success: false, error: error.message || 'Internal server error' });
+  }
+});
+
+/**
+ * GET /api/attendance/active-roster
+ * Strictly returns active students, filtering out Non-Attending:
+ * const activeStudents = students.filter(s => 
+ *   s.class === selectedClass && 
+ *   s.batch === selectedBatch && 
+ *   s.status !== 'Non-Attending' && 
+ *   s.isAttending !== false &&
+ *   !s.nonAttending
+ * );
+ */
+router.get('/active-roster', async (req, res) => {
+  try {
+    const { class: selectedClass, batch: selectedBatch, classId, batchId } = req.query;
+    const targetClass = (selectedClass || classId) as string | undefined;
+    const targetBatch = (selectedBatch || batchId) as string | undefined;
+
+    const mongo = await getMongoDb().catch(() => null);
+    let allStudents: any[] = [];
+
+    if (mongo) {
+      allStudents = await mongo.collection('students').find({
+        status: { $nin: ['deleted', 'inactive'] }
+      }).toArray().catch(() => []);
+    }
+
+    if (allStudents.length === 0) {
+      try {
+        const liveRes = await fetch('https://antonyschool.in/api/students', {
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(6000)
+        });
+        if (liveRes.ok) {
+          allStudents = await liveRes.json();
+        }
+      } catch (_) {}
+    }
+
+    const activeStudents = allStudents.filter((s: any) => {
+      const matchClass = !targetClass || targetClass === 'all' || s.class === targetClass || s.classId === targetClass || s.className === targetClass;
+      const matchBatch = !targetBatch || targetBatch === 'all' || s.batch === targetBatch || s.batchId === targetBatch || s.batchName === targetBatch;
+      const isAttending = s.status !== 'Non-Attending' &&
+                          s.status !== 'non_attending' &&
+                          s.status !== 'non-attending' &&
+                          s.isAttending !== false &&
+                          s.isAttending !== 'false' &&
+                          s.isAttending !== 0 &&
+                          !s.nonAttending &&
+                          s.nonAttending !== 'true' &&
+                          String(s.status || '').toLowerCase().trim().replace(/[-_ ]/g, '') !== 'nonattending';
+
+      return matchClass && matchBatch && isAttending;
+    });
+
+    res.json({
+      success: true,
+      count: activeStudents.length,
+      activeStudents
+    });
+  } catch (err: any) {
+    console.error('[API Attendance active-roster error]', err);
+    res.status(500).json({ success: false, error: err.message || 'Internal error' });
+  }
+});
+
+/**
+ * GET /api/attendance/records
+ * Fetches attendance records for the selected date, ignoring and stripping any legacy absentee records belonging to non-attending student IDs.
+ */
+router.get('/records', async (req, res) => {
+  try {
+    const { date, classId, batchId } = req.query;
+    if (!date) {
+      return res.status(400).json({ success: false, error: "Date is required" });
+    }
+
+    const mongo = await getMongoDb().catch(() => null);
+    let records: any[] = [];
+    let nonAttendingIds = new Set<string>();
+
+    if (mongo) {
+      const nonAttendingDocs = await mongo.collection('students').find({
+        $or: [
+          { status: 'Non-Attending' },
+          { status: 'non_attending' },
+          { status: 'non-attending' },
+          { isAttending: false },
+          { isAttending: 'false' },
+          { nonAttending: true },
+          { nonAttending: 'true' }
+        ]
+      }).toArray().catch(() => []);
+
+      nonAttendingDocs.forEach((s: any) => {
+        [s.id, s.uid, s._id?.toString(), s.uniqueStudentId, s.admissionNumber].filter(Boolean).forEach(id => {
+          nonAttendingIds.add(String(id).trim());
+        });
+      });
+
+      const query: any = { date: String(date) };
+      if (classId && classId !== 'all') query.classId = classId;
+      if (batchId && batchId !== 'all') query.batchId = batchId;
+
+      records = await mongo.collection('attendance').find(query).toArray().catch(() => []);
+    }
+
+    if (records.length === 0) {
+      try {
+        const liveUrl = new URL(`https://antonyschool.in/api/maintenance/db-proxy`);
+        const liveRes = await fetch(liveUrl.toString(), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            operation: 'list',
+            colPath: 'attendance',
+            constraints: [{ type: 'where', field: 'date', op: '==', value: String(date) }]
+          }),
+          signal: AbortSignal.timeout(6000)
+        });
+        if (liveRes.ok) {
+          const liveJson = await liveRes.json();
+          if (Array.isArray(liveJson?.data)) {
+            records = liveJson.data;
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Sanitize: Ignore and strip any legacy absentee records belonging to non-attending student IDs
+    const sanitizedRecords = records.filter((r: any) => {
+      const sid = String(r.studentId || r.userId || r.studentUid || r.uid || '').trim();
+      if (sid && nonAttendingIds.has(sid)) {
+        return false;
+      }
+      return true;
+    });
+
+    res.json({
+      success: true,
+      date,
+      count: sanitizedRecords.length,
+      records: sanitizedRecords
+    });
+  } catch (err: any) {
+    console.error('[API Attendance records error]', err);
+    res.status(500).json({ success: false, error: err.message || 'Internal error' });
+  }
+});
+
+/**
+ * POST /api/attendance/mark
+ * Marks attendance, strictly excluding non-attending student IDs from the payload sent to MongoDB.
+ */
+router.post('/mark', async (req, res) => {
+  try {
+    const { studentId, date, status, classId, batchId, className, batchName } = req.body;
+    if (!studentId || !date || !status) {
+      return res.status(400).json({ success: false, error: "studentId, date, and status are required" });
+    }
+
+    const sid = String(studentId).trim();
+    const mongo = await getMongoDb().catch(() => null);
+
+    if (mongo) {
+      // Check if student is Non-Attending
+      const student = await mongo.collection('students').findOne({
+        $and: [
+          { $or: [{ id: sid }, { uid: sid }, { uniqueStudentId: sid }, { admissionNumber: sid }] },
+          {
+            $or: [
+              { status: 'Non-Attending' },
+              { status: 'non_attending' },
+              { status: 'non-attending' },
+              { isAttending: false },
+              { isAttending: 'false' },
+              { nonAttending: true },
+              { nonAttending: 'true' }
+            ]
+          }
+        ]
+      }).catch(() => null);
+
+      if (student) {
+        return res.json({
+          success: true,
+          excluded: true,
+          message: "Non-attending student excluded from attendance"
+        });
+      }
+
+      const docId = `att_${sid}_${date}`;
+      const payload = {
+        id: docId,
+        studentId: sid,
+        studentUid: sid,
+        date,
+        status,
+        classId: classId || '',
+        batchId: batchId || '',
+        className: className || '',
+        batchName: batchName || '',
+        updatedAt: new Date().toISOString()
+      };
+
+      await mongo.collection('attendance').updateOne(
+        { id: docId },
+        { $set: payload },
+        { upsert: true }
+      );
+
+      return res.json({ success: true, id: docId, payload });
+    }
+
+    res.json({ success: true, message: "Attendance marked" });
+  } catch (err: any) {
+    console.error('[API Attendance mark error]', err);
+    res.status(500).json({ success: false, error: err.message || 'Internal error' });
   }
 });
 

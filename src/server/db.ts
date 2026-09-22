@@ -1,6 +1,12 @@
 import mongoose, { Schema } from 'mongoose';
 import crypto from 'crypto';
 import { getMongoDb } from './mongoSession.js';
+import {
+  listDocuments,
+  getDocument,
+  setDocument,
+  deleteDocument
+} from './firestoreService.js';
 
 // MongoDB URI targeting antonyschool_erp database
 const MONGO_URI = process.env.MONGODB_URI || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/antonyschool_erp';
@@ -143,6 +149,19 @@ export class MongoDocRef {
         }
       } catch (proxyErr) {}
 
+      try {
+        const doc = await getDocument(this.colName, this.id);
+        if (doc) {
+          const outId = doc.id || doc.uid || this.id;
+          return {
+            exists: true,
+            id: outId,
+            ref: this,
+            data: () => ({ ...doc, id: outId })
+          };
+        }
+      } catch (err) {}
+
       return {
         exists: false,
         id: this.id,
@@ -213,6 +232,10 @@ export class MongoDocRef {
           signal: AbortSignal.timeout(8000)
         });
       } catch (proxyErr) {}
+
+      try {
+        await setDocument(this.colName, cleanId, docData, { merge: !!options?.merge });
+      } catch (err) {}
     }
     return { id: cleanId };
   }
@@ -244,6 +267,10 @@ export class MongoDocRef {
           signal: AbortSignal.timeout(8000)
         });
       } catch (proxyErr) {}
+
+      try {
+        await deleteDocument(this.colName, cleanId);
+      } catch (err) {}
     }
     return { success: true };
   }
@@ -325,13 +352,33 @@ export class MongoQueryRef {
               size: docs.length,
               docs,
               forEach: (cb: (doc: any) => void) => docs.forEach(cb),
-              docChanges: () => []
+              docChanges: () => docs.map((d: any) => ({ type: 'added', doc: d }))
             };
           }
         }
       } catch (proxyErr) {}
 
-      // Return genuine empty state when MongoDB is not connected
+      try {
+        const results = await listDocuments(this.colName, this.constraints);
+        const docs = results.map((rest: any) => {
+          const docId = rest.id || rest.uid || String(rest._id || '');
+          return {
+            exists: true,
+            id: docId,
+            ref: new MongoDocRef(this.colName, docId),
+            data: () => ({ ...rest, id: docId })
+          };
+        });
+        return {
+          empty: docs.length === 0,
+          size: docs.length,
+          docs,
+          forEach: (cb: (doc: any) => void) => docs.forEach(cb),
+          docChanges: () => docs.map((d: any) => ({ type: 'added', doc: d }))
+        };
+      } catch (err) {}
+
+      // Return genuine empty state when error occurs
       return {
         empty: true,
         size: 0,

@@ -1,5 +1,7 @@
 import express from 'express';
 import { getDbAdmin } from './db.js';
+import { getMongoDb } from './mongoSession.js';
+import { listDocuments } from './firestoreService.js';
 import { sendMessage } from './whatsapp.js';
 import { normalizeIndianPhone, extractParentPhone } from './whatsappUtils.js';
 import { GoogleGenAI, Type } from "@google/genai";
@@ -1332,7 +1334,7 @@ router.get(["/marks", "/exam-marks", "/"], async (req, res) => {
     const targetClass = (selectedClass || classId) as string;
     const targetExam = (selectedExam || examId) as string;
     const targetBatch = (batch || batchId) as string;
-    const effectiveLimit = Number(qLimit) || 15000;
+    const effectiveLimit = Math.min(Math.max(1, Number(qLimit) || 10000), 10000);
 
     const constraints: any[] = [
       { type: "limit", value: effectiveLimit }
@@ -1347,21 +1349,48 @@ router.get(["/marks", "/exam-marks", "/"], async (req, res) => {
       constraints.push({ type: "where", field: "batchId", op: "==", value: targetBatch });
     }
 
-    const vpsRes = await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        operation: "list",
-        path: "examMarks",
-        constraints: [
-          { type: "limit", value: effectiveLimit }
-        ]
-      }),
-      signal: AbortSignal.timeout(20000)
-    });
+    let data: any[] = [];
 
-    const vpsJson = await vpsRes.json();
-    let data = vpsJson.data || [];
+    // 1. Try local MongoDB first if connected
+    try {
+      const mongo = await getMongoDb().catch(() => null);
+      if (mongo) {
+        const queryFilter: any = {};
+        if (targetExam) queryFilter.examId = targetExam;
+        if (targetClass) queryFilter.classId = targetClass;
+        if (targetBatch) queryFilter.batchId = targetBatch;
+        data = await mongo.collection('examMarks').find(queryFilter).limit(effectiveLimit).toArray();
+      }
+    } catch (_) {}
+
+    // 2. Fallback to live VPS if needed (using full constraints)
+    if (!data || data.length === 0) {
+      try {
+        const vpsRes = await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            operation: "list",
+            path: "examMarks",
+            constraints
+          }),
+          signal: AbortSignal.timeout(10000)
+        });
+        if (vpsRes.ok) {
+          const vpsJson = await vpsRes.json();
+          if (Array.isArray(vpsJson.data) && vpsJson.data.length > 0) {
+            data = vpsJson.data;
+          }
+        }
+      } catch (_) {}
+    }
+
+    // 3. Query Cloud Firestore as tertiary fallback
+    if (!data || data.length === 0) {
+      try {
+        data = await listDocuments('examMarks', constraints);
+      } catch (_) {}
+    }
 
     // If targetExam or targetClass specified, try gentle filter
     if (targetExam || targetClass || targetBatch) {

@@ -341,7 +341,14 @@ export function resolveStudentClassAndBatch(
   const sClassId = String(student.classId || '').trim();
   const sClass = String(student.class || student.className || '').trim();
 
-  if (sClassId && sClassId !== 'N/A') {
+  // If student has explicit human-readable class name (e.g. "4 Class", "5 Class"), prioritize direct name match
+  if (sClass && sClass !== 'N/A') {
+    resolvedClass = classes.find(c => 
+      c && c.name && c.name.toLowerCase() === sClass.toLowerCase()
+    );
+  }
+
+  if (!resolvedClass && sClassId && sClassId !== 'N/A') {
     resolvedClass = classes.find(c => c && (c.id === sClassId || c.uid === sClassId));
     if (!resolvedClass) {
       resolvedClass = classes.find(c => 
@@ -352,7 +359,6 @@ export function resolveStudentClassAndBatch(
   }
   if (!resolvedClass && sClass && sClass !== 'N/A') {
     resolvedClass = classes.find(c => 
-      (c.name && c.name.toLowerCase() === sClass.toLowerCase()) || 
       (c.id && c.id.toLowerCase() === sClass.toLowerCase()) ||
       (c.name && sClass.toLowerCase().includes(c.name.toLowerCase()))
     );
@@ -366,8 +372,13 @@ export function resolveStudentClassAndBatch(
   const sBatchId = String(student.batchId || '').trim();
   const sBatch = String(student.batch || student.batchName || '').trim();
 
+  // If student has explicit batchId, match directly in batches
+  if (sBatchId && sBatchId !== 'N/A') {
+    resolvedBatch = batches.find(b => b.id === sBatchId || b.uid === sBatchId);
+  }
+
   // If resolvedClass is known, prioritize batches belonging to this class!
-  if (resolvedClass) {
+  if (!resolvedBatch && resolvedClass) {
     const classBatches = findBatchesForClass(resolvedClass, batches);
     
     // First, check if sBatchId directly matches a batch belonging to this class
