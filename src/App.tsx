@@ -159,6 +159,7 @@ const Gallery = lazyWithRetry(() => import('./pages/Gallery'));
 const Certificates = lazyWithRetry(() => import('./pages/Certificates'));
 const IdCards = lazyWithRetry(() => import('./pages/IdCards'));
 const Roles = lazyWithRetry(() => import('./pages/Roles'));
+const Users = lazyWithRetry(() => import('./pages/Users'));
 const Reports = lazyWithRetry(() => import('./pages/Reports'));
 const RiskPrediction = lazyWithRetry(() => import('./pages/RiskPrediction'));
 const TeacherInsights = lazyWithRetry(() => import('./pages/TeacherInsights'));
@@ -463,6 +464,7 @@ export default function App() {
                   <Route path="outing-permission" element={<OutingPermission />} />
                   <Route path="settings" element={<ManagementRoute><SchoolSettings /></ManagementRoute>} />
                   <Route path="roles" element={<ManagementRoute><Roles /></ManagementRoute>} />
+                  <Route path="users" element={<ManagementRoute><Users /></ManagementRoute>} />
                   <Route path="academics" element={<Academics />} />
                   <Route path="reports" element={<Reports />} />
                   <Route path="admission-register" element={<AdmissionRegister />} />

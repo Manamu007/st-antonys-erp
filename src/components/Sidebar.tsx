@@ -152,6 +152,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onItemClick }) => {
     { to: '/dashboard/admission-register', icon: BookOpen, label: 'Admission Register', permission: PERMISSIONS.VIEW_STUDENTS, color: 'text-rose-400', hideForTeacher: true },
     { to: '/dashboard/storage', icon: Database, label: 'Storage', permission: PERMISSIONS.EDIT_FEE_STRUCTURE, color: 'text-amber-500', hideForTeacher: true },
     { to: '/dashboard/roles', icon: Shield, label: 'Roles', permission: PERMISSIONS.MANAGE_ROLES, color: 'text-neutral-400', hideForTeacher: true },
+    { to: '/dashboard/users', icon: Users, label: 'Users', permission: PERMISSIONS.MANAGE_ROLES, color: 'text-indigo-400', hideForTeacher: true },
     { to: '/dashboard/settings', icon: SettingsIcon, label: 'School Settings', permission: PERMISSIONS.EDIT_FEE_STRUCTURE, color: 'text-neutral-300', hideForTeacher: true },
   ];
 

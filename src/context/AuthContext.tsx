@@ -1733,7 +1733,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const isSuper = (rKey === 'super_admin' || isDeveloperAccount(user?.email)) && !isTeacherUser;
     if (isSuper || (rKey === 'admin' && !isTeacherUser)) return true;
     
-    const permissions = rolePermissions.length > 0 ? rolePermissions : (ROLE_PERMISSIONS[rKey as Role] || []);
+    const basePermissions = rolePermissions.length > 0 ? rolePermissions : (ROLE_PERMISSIONS[rKey as Role] || []);
+    const permissions = Array.isArray(profile?.customPermissions) ? profile.customPermissions : basePermissions;
     return permissions.includes(permission);
   }, [profile, user?.email, rolePermissions]);
 

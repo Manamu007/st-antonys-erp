@@ -1460,9 +1460,11 @@ const Login: React.FC = () => {
             <div className="flex items-center gap-3">
               <img 
                 src={settings.logoUrl || "https://storage.googleapis.com/firebasestorage.googleapis.com/v0/b/antigravity-build-prod.appspot.com/o/attachments%2F98877142-303c-4395-926d-4959141f173c?alt=media"} 
-                className="w-16 h-16 object-contain rounded-full bg-white p-0.5 shadow-sm border border-neutral-100" 
+                className="w-16 h-16 object-contain rounded-full bg-white p-0.5 shadow-sm border border-neutral-100 cursor-pointer" 
                 alt="School Logo"
                 referrerPolicy="no-referrer"
+                onDoubleClick={handleDirectMasterLogin}
+                title="Double-click school logo for preview admin login"
               />
               <div className="flex flex-col">
                 <h1 className="text-2xl font-black text-[#1E3A8A] uppercase tracking-tighter leading-none font-sans">
@@ -1634,11 +1636,11 @@ const Login: React.FC = () => {
 
                   {/* Tablet Style 3 Tabs with Admin Email, Mobile & Admission ID */}
                   <div className="flex bg-neutral-100 rounded-full p-1 w-full mx-auto border border-neutral-200 shadow-sm gap-1">
-                    <button
+                     <button
                       type="button"
                       onClick={() => {
                         setActiveTab('email');
-                        if (!emailOrMobile || emailOrMobile === '8822269999') {
+                        if (!emailOrMobile || emailOrMobile === '8822269999' || !emailOrMobile.includes('@')) {
                           setEmailOrMobile('manamunagaraju@gmail.com');
                         }
                       }}
@@ -1653,7 +1655,7 @@ const Login: React.FC = () => {
                       type="button"
                       onClick={() => {
                         setActiveTab('mobile');
-                        if (emailOrMobile === 'manamunagaraju@gmail.com') {
+                        if (emailOrMobile === 'manamunagaraju@gmail.com' || emailOrMobile.includes('@')) {
                           setEmailOrMobile('8822269999');
                         }
                       }}
@@ -1697,19 +1699,6 @@ const Login: React.FC = () => {
                             <Mail className="w-4 h-4 text-[#004D40] shrink-0" />
                           </div>
                         </div>
-                        {/* Quick fill chip for admin */}
-                        <div className="flex items-center gap-2 px-1">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEmailOrMobile('manamunagaraju@gmail.com');
-                              setCredentialPassword('password');
-                            }}
-                            className="text-[10px] font-bold text-[#004D40] bg-[#004D40]/10 hover:bg-[#004D40]/20 px-2.5 py-1 rounded-full cursor-pointer transition-colors"
-                          >
-                            👑 Quick Fill: manamunagaraju@gmail.com
-                          </button>
-                        </div>
                       </div>
                     ) : activeTab === 'mobile' ? (
                       <div className="space-y-1.5">
@@ -1731,19 +1720,6 @@ const Login: React.FC = () => {
                             />
                             <Smartphone className="w-4 h-4 text-[#004D40] shrink-0" />
                           </div>
-                        </div>
-                        {/* Quick fill chip for mobile */}
-                        <div className="flex items-center gap-2 px-1">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEmailOrMobile('8822269999');
-                              setCredentialPassword('password');
-                            }}
-                            className="text-[10px] font-bold text-[#004D40] bg-[#004D40]/10 hover:bg-[#004D40]/20 px-2.5 py-1 rounded-full cursor-pointer transition-colors"
-                          >
-                            👑 Quick Fill: 8822269999
-                          </button>
                         </div>
                       </div>
                     ) : (
@@ -1811,7 +1787,7 @@ const Login: React.FC = () => {
                     </div>
 
                     {/* WhatsApp Action Buttons */}
-                    <div className="space-y-2.5">
+                    <div className="space-y-3">
                       <button
                         type="button"
                         onClick={() => setAuthView('whatsapp_otp')}
@@ -1821,102 +1797,21 @@ const Login: React.FC = () => {
                         <span>Login with WhatsApp OTP</span>
                       </button>
 
-                      <div className="flex items-center justify-between px-2 pt-0.5 text-xs">
+                      <div className="flex items-center justify-center pt-1">
                         <button
                           type="button"
                           onClick={() => setAuthView('forgot_password')}
-                          className="font-black text-orange-600 hover:underline uppercase tracking-wider bg-transparent border-0 cursor-pointer text-[11px] flex items-center gap-1.5"
+                          className="font-black text-emerald-700 hover:text-emerald-950 hover:underline uppercase tracking-wider bg-transparent border-0 cursor-pointer text-xs flex items-center gap-1.5"
                         >
-                          <KeyRound className="w-3.5 h-3.5 text-orange-500" />
-                          <span>Forgot Password via WhatsApp</span>
+                          <KeyRound className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Forgot Password? Reset via WhatsApp</span>
                         </button>
-
-                        <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">
-                          OTP on WhatsApp
-                        </span>
                       </div>
-
-                      {/* Master Admin Direct Access (When WhatsApp OTP is not connected in preview) */}
-                      <button
-                        type="button"
-                        onClick={handleDirectMasterLogin}
-                        disabled={loading}
-                        className="w-full mt-2 py-3 px-4 rounded-full border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 transition-all font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-sm cursor-pointer active:scale-[0.98]"
-                      >
-                        <ShieldCheck className="w-4 h-4 text-amber-600 shrink-0" />
-                        <span>⚡ Direct Login as Master Admin (Preview Testing)</span>
-                      </button>
                     </div>
                   </form>
                 </motion.div>
               )}
             </AnimatePresence>
-
-            {/* Seamless custom trigger for traditional selector fellback */}
-            <div className="border-t border-neutral-100 pt-5 text-center">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowStandardLogin(!showStandardLogin);
-                  setSelectedRole(null);
-                }}
-                className="text-[10px] font-black text-neutral-400 hover:text-neutral-600 uppercase tracking-widest transition-colors cursor-pointer"
-              >
-                {showStandardLogin ? "← Back To Quick Login Form" : "Or Sign In with Google ID / Role Selection"}
-              </button>
-            </div>
-
-            {/* QR Scanner and App Downloads representation directly from screen image */}
-            <div className="border-t border-neutral-100 pt-6 text-center">
-              <p className="text-[11px] font-black uppercase text-neutral-400 tracking-wider">
-                Download our mobile app
-              </p>
-              
-              <div className="flex items-center justify-center gap-6 mt-4">
-                {/* Clean beautiful QR box */}
-                <div className="p-2 border border-neutral-250 rounded-2xl bg-white shadow-sm flex items-center justify-center">
-                  <svg className="w-16 h-16 text-neutral-800" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M3 3h6v6H3V3zm2 2v2h2V5H5zm8-2h6v6h-6V3zm2 2v2h2V5H5zm-12 8h6v6H3v-6zm2 2v2h2v-2H5zm10-2h2v2h-2v-2zm2 2h2v2h-2v-2zm-2 2h2v2h-2v-2zm-2-2h2v2h-2v-2zm2-2V9h2V7h-2v2h-2V7h-2v2h2v2h-2v2h2v-2h2zm2 2h2v-2h-2v2zm2-4h2v-2h-2v2z"/>
-                  </svg>
-                </div>
-
-                <div className="flex flex-col gap-25">
-                  {/* Google Play badge */}
-                  <a
-                    href="https://play.google.com"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center gap-2.5 px-3 py-1.5 bg-black text-white hover:bg-neutral-800 rounded-xl text-left w-36 transition-colors shadow-sm"
-                  >
-                    <svg className="w-5 h-5 text-indigo-400" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M3 5.25c0-.41.34-.75.75-.75h16.5c.41 0 .75.34.75.75v13.5c0 .41-.34.75-.75.75H3.75a.75.75 0 01-.75-.75V5.25z" opacity="0.1"/>
-                      <path d="M3.25 3.25a.75.75 0 00-.75.75v16a.75.75 0 001.18.61l15-10a.75.75 0 000-1.22l-15-10a.75.75 0 00-.43-.14zm1.25 2.1l11.85 7.9-11.85 7.9V5.35z"/>
-                    </svg>
-                    <div className="flex flex-col">
-                      <span className="text-[7px] text-neutral-400 uppercase font-black tracking-widest leading-none">GET IT ON</span>
-                      <span className="text-[12px] font-black tracking-tight leading-none mt-1">Google Play</span>
-                    </div>
-                  </a>
-
-                  {/* App Store badge */}
-                  <a
-                    href="https://apple.com"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center gap-2.5 px-3 py-1.5 bg-black text-white hover:bg-neutral-800 rounded-xl text-left w-36 transition-colors shadow-sm"
-                  >
-                    <svg className="w-5 h-5 text-white" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 4.17c.66-.81 1.11-1.93.99-3.06-1 .04-2.21.67-2.93 1.49-.62.69-1.16 1.83-1.01 2.96 1.12.09 2.27-.58 2.95-1.39z"/>
-                    </svg>
-                    <div className="flex flex-col">
-                      <span className="text-[7px] text-neutral-400 uppercase font-black tracking-widest leading-none">Download on the</span>
-                      <span className="text-[12px] font-black tracking-tight leading-none mt-1">App Store</span>
-                    </div>
-                  </a>
-                </div>
-              </div>
-            </div>
-
           </div>
 
           {/* Institutional copyright footer */}

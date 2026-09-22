@@ -49,6 +49,7 @@ export interface UserProfile {
   email: string;
   role: UserRole;
   name: string;
+  customPermissions?: string[];
   firstName?: string;
   lastName?: string;
   fatherName?: string;
