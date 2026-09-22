@@ -1284,7 +1284,8 @@ const Exams: React.FC = () => {
         
         setTeachers(teachersData || []);
 
-        if (isTeacherRole || profile?.isTeacherPortal || profile?.role === 'teacher') {
+        const isActuallyTeacher = (isTeacherRole || profile?.isTeacherPortal || profile?.role === 'teacher') && !isAdmin && profile?.role !== 'admin' && profile?.role !== 'super_admin' && profile?.role !== 'principal' && profile?.role !== 'vice_principal';
+        if (isActuallyTeacher) {
           const assignments = await getTeacherAssignments(user, profile, profile?.role || '');
           let filteredBatches = filterBatchesForTeacher(batchesData as any[], assignments);
           let filteredClasses = filterClassesForTeacher(classesData as any[], assignments, batchesData as any[]);

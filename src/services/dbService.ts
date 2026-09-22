@@ -1718,7 +1718,7 @@ export const dbService = {
           try {
             const directRes = await fetch('https://antonyschool.in/api/maintenance/db-proxy?collection=students', { 
               mode: 'cors',
-              signal: AbortSignal.timeout(2000)
+              signal: AbortSignal.timeout(5000)
             });
             const contentType = directRes.headers.get('content-type') || '';
             if (directRes.ok && contentType.includes('application/json')) {
@@ -1788,7 +1788,7 @@ export const dbService = {
           try {
             const directRes = await fetch(`https://antonyschool.in/api/maintenance/db-proxy?collection=attendance${querySuffix}`, { 
               mode: 'cors',
-              signal: AbortSignal.timeout(2000)
+              signal: AbortSignal.timeout(5000)
             });
             const contentType = directRes.headers.get('content-type') || '';
             if (directRes.ok && contentType.includes('application/json')) {
@@ -1836,7 +1836,7 @@ export const dbService = {
           try {
             const directRes = await fetch('https://antonyschool.in/api/maintenance/db-proxy?collection=exams', { 
               mode: 'cors',
-              signal: AbortSignal.timeout(2000)
+              signal: AbortSignal.timeout(5000)
             });
             const contentType = directRes.headers.get('content-type') || '';
             if (directRes.ok && contentType.includes('application/json')) {
@@ -1905,7 +1905,7 @@ export const dbService = {
           try {
             const directRes = await fetch(`https://antonyschool.in/api/maintenance/db-proxy?${qStr}`, { 
               mode: 'cors',
-              signal: AbortSignal.timeout(2000)
+              signal: AbortSignal.timeout(5000)
             });
             const contentType = directRes.headers.get('content-type') || '';
             if (directRes.ok && contentType.includes('application/json')) {
@@ -1948,7 +1948,7 @@ export const dbService = {
           try {
             const directRes = await fetch('https://antonyschool.in/api/maintenance/db-proxy?collection=class10_daily_marks', { 
               mode: 'cors',
-              signal: AbortSignal.timeout(2000)
+              signal: AbortSignal.timeout(5000)
             });
             const contentType = directRes.headers.get('content-type') || '';
             if (directRes.ok && contentType.includes('application/json')) {

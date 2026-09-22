@@ -346,7 +346,7 @@ async function forwardToLiveProxy(operation: string, colPath: string, id: any, d
         constraints,
         ...body
       }),
-      signal: AbortSignal.timeout(2000)
+      signal: AbortSignal.timeout(5000)
     });
     if (vpsRes.ok) {
       const vpsData = await vpsRes.json();

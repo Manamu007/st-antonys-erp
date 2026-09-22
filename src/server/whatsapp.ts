@@ -2,6 +2,7 @@ import * as baileys from '@whiskeysockets/baileys';
 const makeWASocket = baileys.makeWASocket || baileys.default || (baileys as any).default?.default || baileys;
 const DisconnectReason = baileys.DisconnectReason;
 const fetchLatestBaileysVersion = baileys.fetchLatestBaileysVersion;
+const fetchLatestWaWebVersion = baileys.fetchLatestWaWebVersion;
 const makeCacheableSignalKeyStore = baileys.makeCacheableSignalKeyStore;
 const jidDecode = baileys.jidDecode;
 const delay = baileys.delay;
@@ -1922,18 +1923,45 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
     
     let version: any = cachedBaileysVersion;
     if (!version) {
-      console.log(`[WhatsApp ${process.pid}] Fetching latest Baileys version with 4s timeout...`);
-      const versionPromise = fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1043857760] }));
-      const timeoutPromise = new Promise<{ version: any }>((_, reject) => setTimeout(() => reject(new Error("Timeout (4s)")), 4000));
+      console.log(`[WhatsApp ${process.pid}] Fetching latest WhatsApp Web version...`);
       try {
-        const versionResult: any = await Promise.race([versionPromise, timeoutPromise]);
-        version = versionResult.version;
-        cachedBaileysVersion = version;
-      } catch (e: any) {
-        console.warn(`[WhatsApp ${process.pid}] Failed or timed out fetching Baileys version: ${e.message || e}. Using fallback [2, 3000, 1043857760].`);
-        version = [2, 3000, 1043857760];
-        cachedBaileysVersion = version;
+        // Try fetchLatestWaWebVersion first with 3s timeout
+        if (typeof fetchLatestWaWebVersion === 'function') {
+          const webPromise = fetchLatestWaWebVersion();
+          const timeoutPromise = new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Timeout (3s)")), 3000));
+          const res = await Promise.race([webPromise, timeoutPromise]);
+          if (res && res.version && Array.isArray(res.version)) {
+            version = res.version;
+            console.log(`[WhatsApp ${process.pid}] Successfully fetched WaWeb version: ${version.join('.')}`);
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[WhatsApp ${process.pid}] Failed or timed out fetching WaWeb version: ${err.message || err}. Trying Baileys version...`);
       }
+
+      if (!version) {
+        try {
+          // Try fetchLatestBaileysVersion second with 3s timeout
+          if (typeof fetchLatestBaileysVersion === 'function') {
+            const baileysPromise = fetchLatestBaileysVersion();
+            const timeoutPromise = new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Timeout (3s)")), 3000));
+            const res = await Promise.race([baileysPromise, timeoutPromise]);
+            if (res && res.version && Array.isArray(res.version)) {
+              version = res.version;
+              console.log(`[WhatsApp ${process.pid}] Successfully fetched Baileys version: ${version.join('.')}`);
+            }
+          }
+        } catch (err: any) {
+          console.warn(`[WhatsApp ${process.pid}] Failed or timed out fetching Baileys version: ${err.message || err}. Using stable fallback...`);
+        }
+      }
+
+      if (!version) {
+        // Fallback to the latest verified live stable version array [2, 3000, 1048120390]
+        version = [2, 3000, 1048120390];
+        console.log(`[WhatsApp ${process.pid}] Using hardcoded stable fallback WhatsApp Web version: ${version.join('.')}`);
+      }
+      cachedBaileysVersion = version;
     }
     console.log(`[WhatsApp ${process.pid}] Using Baileys version: ${version.join('.')}`);
 
