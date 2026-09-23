@@ -131,8 +131,31 @@ export default defineConfig(({command, mode}) => {
       outDir: 'dist',
       sourcemap: false,
       cssCodeSplit: true,
+      chunkSizeWarningLimit: 1000,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules')) {
+              if (id.includes('jspdf') || id.includes('html2canvas') || id.includes('xlsx')) {
+                return 'vendor-export';
+              }
+              if (id.includes('face-api.js')) {
+                return 'vendor-faceapi';
+              }
+              if (id.includes('lucide-react')) {
+                return 'vendor-icons';
+              }
+              if (id.includes('react') || id.includes('react-dom') || id.includes('react-router')) {
+                return 'vendor-react';
+              }
+              return 'vendor';
+            }
+          }
+        }
+      }
     },
     server: {
+      allowedHosts: true,
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',

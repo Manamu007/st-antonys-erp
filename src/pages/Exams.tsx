@@ -1480,7 +1480,14 @@ const Exams: React.FC = () => {
         }
         return;
       }
-      setLoading(true);
+      // SWR Cache Check: if students are already in memory cache, avoid showing the prolonged blocking spinner
+      const cachedBatchStudents = dbService.getCached('students', [where('batchId', '==', selectedBatch)]);
+      const cachedClassStudents = selectedClass ? dbService.getCached('students', [where('classId', '==', selectedClass)]) : [];
+      if (cachedBatchStudents && (!selectedClass || cachedClassStudents)) {
+        // Data is cached, skip the full blocking spinner for instant transition
+      } else {
+        setLoading(true);
+      }
       try {
         // 1. Fetch students by batchId
         const batchStudents = await dbService.list('students', [where('batchId', '==', selectedBatch)]);

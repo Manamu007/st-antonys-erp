@@ -675,6 +675,15 @@ export function enforceSecuredAccess(path: string, item: any): any | null {
 const listCache = new Map<string, { data: any[], timestamp: number }>();
 const paginatedCache = new Map<string, { data: any[], lastDoc: any, timestamp: number }>();
 
+interface SubscriptionRegistryItem {
+  callbacks: Set<(data: any[]) => void>;
+  errorCallbacks: Set<(error: any) => void>;
+  currentData?: any[];
+  intervalId?: any;
+  lastFetched?: number;
+}
+const activeSubscriptionRegistry = new Map<string, SubscriptionRegistryItem>();
+
 const getListCacheKey = (path: string, constraints: any[]) => {
   try {
     const parts = constraints.map(c => {
@@ -1179,6 +1188,16 @@ export const dbService = {
       clearDocCache(path, id);
     }
     clearCollectionCache(path);
+  },
+
+  getCached(path: string, constraints: any[] = []) {
+    const cacheKey = getListCacheKey(path, constraints);
+    const cached = listCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+      const secured = cached.data.map(i => enforceSecuredAccess(path, i)).filter(Boolean);
+      return deduplicateArrayByID(secured);
+    }
+    return null;
   },
 
   // Generic CRUD
@@ -2252,74 +2271,120 @@ export const dbService = {
       return () => {};
     }
 
-    let activeUnsubscribe: () => void = () => {};
-    let isTerminated = false;
+    const subKey = `${path}_${getListCacheKey(path, constraints)}`;
 
-    const startProxyPolling = () => {
-      if (isTerminated) return;
-      
-      const fetchAndCallback = async () => {
-        try {
-          const proxyRes = await proxyRequest('list', path, { constraints });
-          if (proxyRes && proxyRes.data) {
-            const rawData = proxyRes.data.map((item: any) => {
-              const cleanItem = { ...item };
-              if (path === 'students') {
-                cleanItem.uniqueStudentId = cleanItem.uniqueStudentId || generateUniqueStudentId(cleanItem);
-              }
-              return cleanItem;
-            });
-            const data = rawData.map((item: any) => enforceSecuredAccess(path, item)).filter(Boolean);
-            callback(deduplicateArrayByID(data));
-          }
-        } catch (err) {
-          console.warn(`[Proxy Polling Sub Retry] Subscription polling failed for ${path}:`, err);
-          if (errorCallback) errorCallback(err);
-        }
-      };
+    // Special collections that have distinct custom polling endpoints
+    const isSpecialPath = path === 'login_logs' || path === 'audit_logs' || path === 'stop_backups';
 
-      fetchAndCallback();
-      const pollingInterval = (path === 'attendance' || path === 'user_activities' || path === 'whatsapp_logs') ? 30000 : 60000;
-      const intervalId = setInterval(fetchAndCallback, pollingInterval);
-      activeUnsubscribe = () => {
-        clearInterval(intervalId);
-      };
-    };
+    if (activeSubscriptionRegistry.has(subKey)) {
+      const activeSub = activeSubscriptionRegistry.get(subKey)!;
+      activeSub.callbacks.add(callback);
+      if (errorCallback) activeSub.errorCallbacks.add(errorCallback);
 
-    if (path === 'login_logs' || path === 'audit_logs' || path === 'stop_backups') {
-      const endpoint = path === 'login_logs' 
-        ? '/api/attendance/list-login-logs' 
-        : path === 'audit_logs'
-          ? '/api/attendance/list-audit-logs'
-          : '/api/transport/stop-backups';
-        
-      const fetchAndCallback = async () => {
-        try {
-          const res = await resilientFetch(endpoint);
-          if (res && res.ok) {
-            const data = await parseResponseJson(res, []);
-            if (Array.isArray(data)) {
-              callback(deduplicateArrayByID(data));
-            }
-          }
-        } catch (err) {
-          console.warn(`Polling subscription failed for ${path}:`, err);
-          if (errorCallback) errorCallback(err);
-        }
-      };
+      // If we already have fresh cached data, emit it instantly
+      if (activeSub.currentData) {
+        const cachedData = activeSub.currentData;
+        setTimeout(() => {
+          callback(cachedData);
+        }, 0);
+      }
 
-      fetchAndCallback();
-      const intervalId = setInterval(fetchAndCallback, 60000);
       return () => {
-        isTerminated = true;
-        clearInterval(intervalId);
+        activeSub.callbacks.delete(callback);
+        if (errorCallback) activeSub.errorCallbacks.delete(errorCallback);
+
+        if (activeSub.callbacks.size === 0) {
+          if (activeSub.intervalId) {
+            clearInterval(activeSub.intervalId);
+          }
+          activeSubscriptionRegistry.delete(subKey);
+        }
       };
     }
 
-    startProxyPolling();
+    // New active background poll subscription
+    const activeSub: SubscriptionRegistryItem = {
+      callbacks: new Set([callback]),
+      errorCallbacks: new Set(errorCallback ? [errorCallback] : []),
+      currentData: undefined,
+      intervalId: null,
+      lastFetched: 0
+    };
+
+    activeSubscriptionRegistry.set(subKey, activeSub);
+
+    const triggerFetch = async () => {
+      try {
+        let rawData: any[] = [];
+        if (isSpecialPath) {
+          const endpoint = path === 'login_logs' 
+            ? '/api/attendance/list-login-logs' 
+            : path === 'audit_logs'
+              ? '/api/attendance/list-audit-logs'
+              : '/api/transport/stop-backups';
+          const res = await resilientFetch(endpoint);
+          if (res && res.ok) {
+            const parsed = await parseResponseJson(res, []);
+            if (Array.isArray(parsed)) {
+              rawData = parsed;
+            }
+          }
+        } else {
+          const proxyRes = await proxyRequest('list', path, { constraints });
+          if (proxyRes && Array.isArray(proxyRes.data)) {
+            rawData = proxyRes.data;
+          }
+        }
+
+        const cleanedData = rawData.map((item: any) => {
+          const cleanItem = { ...item };
+          if (path === 'students') {
+            cleanItem.uniqueStudentId = cleanItem.uniqueStudentId || generateUniqueStudentId(cleanItem);
+          }
+          return cleanItem;
+        });
+
+        const securedData = cleanedData.map((item: any) => enforceSecuredAccess(path, item)).filter(Boolean);
+        const finalData = deduplicateArrayByID(securedData);
+
+        activeSub.currentData = finalData;
+        activeSub.lastFetched = Date.now();
+
+        // Broadcast to all active listeners
+        activeSub.callbacks.forEach(cb => {
+          try {
+            cb(finalData);
+          } catch (e) {
+            console.error(`Error in subscription callback for ${path}:`, e);
+          }
+        });
+      } catch (err) {
+        console.warn(`[Consolidated Sub Polling Failed] ${path}:`, err);
+        activeSub.errorCallbacks.forEach(ecb => {
+          try {
+            ecb(err);
+          } catch (e) {}
+        });
+      }
+    };
+
+    // Initial load
+    triggerFetch();
+
+    // Set polling interval
+    const pollingInterval = (path === 'attendance' || path === 'user_activities' || path === 'whatsapp_logs') ? 30000 : 60000;
+    activeSub.intervalId = setInterval(triggerFetch, pollingInterval);
+
     return () => {
-      isTerminated = true;
-      activeUnsubscribe();
+      activeSub.callbacks.delete(callback);
+      if (errorCallback) activeSub.errorCallbacks.delete(errorCallback);
+
+      if (activeSub.callbacks.size === 0) {
+        if (activeSub.intervalId) {
+          clearInterval(activeSub.intervalId);
+        }
+        activeSubscriptionRegistry.delete(subKey);
+      }
     };
   },
 

@@ -1,4 +1,10 @@
-import * as faceapiModule from 'face-api.js/build/es6/index.js';
+// Dynamic face-api.js module state
+let faceapiModule: any = null;
+
+const getRawFaceApi = () => {
+  return faceapiModule;
+};
+
 
 // Patch CanvasRenderingContext2D.prototype.getImageData to be completely crash-proof
 if (
@@ -130,20 +136,15 @@ if (
   }
 }
 
-// Robust resolver for CJS/ESM bundling differences to ensure .nets is always defined
-const rawFaceApi = (faceapiModule as any).default && (faceapiModule as any).default.nets
-  ? (faceapiModule as any).default
-  : faceapiModule;
-
-// Direct Prototype-level Patching on Box Class inside face-api.js
-if (rawFaceApi && rawFaceApi.Box) {
+// Helper function to apply prototype level patching on the loaded module
+function applyFaceApiPatches(rawFaceApi: any) {
+  if (!rawFaceApi || !rawFaceApi.Box || rawFaceApi.__is_patched__) return;
   try {
     const OriginalBox = rawFaceApi.Box;
 
     // 1. Bypass asset/assert validations to prevent constructor crash on negative/invalid values
     OriginalBox.assertIsValidBox = function (box: any, callee: string, allowNegativeDimensions?: boolean) {
       if (!box || typeof box.x !== 'number' || typeof box.y !== 'number' || typeof box.width !== 'number' || typeof box.height !== 'number') {
-        console.warn(`[Box Patch] assertIsValidBox bypassed invalid rect: ${JSON.stringify(box)}`);
         return;
       }
     };
@@ -222,6 +223,7 @@ if (rawFaceApi && rawFaceApi.Box) {
       enumerable: true
     });
 
+    rawFaceApi.__is_patched__ = true;
     console.log("[Box Patch] Successfully installed global, CJS/ESM-compatible face-api.js Box patches.");
   } catch (err) {
     console.error("[Box Patch] Failed to apply prototype-level patches to Box class:", err);
@@ -229,8 +231,13 @@ if (rawFaceApi && rawFaceApi.Box) {
 }
 
 // Create a Proxy over faceapi to safely intercept Box, resizeResults, and other potential failure points
-const faceapi = new Proxy(rawFaceApi, {
-  get(target, prop, receiver) {
+const faceapi: any = new Proxy({}, {
+  get(dummyTarget, prop, receiver) {
+    const target = getRawFaceApi();
+    if (!target) {
+      return undefined;
+    }
+
     if (prop === 'Box' || prop === 'Rect' || prop === 'BoundingBox' || prop === 'PredictedBox' || prop === 'LabeledBox') {
       const OriginalBox = target[prop as any];
       if (!OriginalBox) return undefined;
@@ -367,15 +374,17 @@ const faceapi = new Proxy(rawFaceApi, {
       };
     }
 
-    const value = Reflect.get(target, prop, receiver);
+    const value = Reflect.get(target, prop);
     if (typeof value === 'function') {
       return value.bind(target);
     }
     return value;
   },
-  set(target, prop, value, receiver) {
+  set(dummyTarget, prop, value, receiver) {
+    const target = getRawFaceApi();
+    if (!target) return true;
     try {
-      return Reflect.set(target, prop, value, receiver);
+      return Reflect.set(target, prop, value);
     } catch (e) {
       // Ignore assignment errors for read-only namespaces
       return true;
@@ -389,14 +398,15 @@ let modelsLoaded = false;
 let loadingPromise: Promise<void> | null = null;
 
 /**
- * Returns the resolved face-api.js instance
+ * Returns the resolved face-api.js instance after ensuring it and its models are loaded
  */
 export const loadFaceApi = async () => {
+  await loadModels();
   return faceapi;
 };
 
 /**
- * Loads the state-of-the-art RetinaFace (landmark extractor) and ArcFace/InsightFace weights
+ * Loads the face-api.js library dynamically and pulls the models from the public folder
  */
 export const loadModels = async () => {
   if (modelsLoaded) return;
@@ -404,27 +414,39 @@ export const loadModels = async () => {
 
   loadingPromise = (async () => {
     try {
-      console.log("[faceRecognitionService] Loading face-api models from /models...");
-      if (faceapi && faceapi.nets) {
+      console.log("[faceRecognitionService] Loading face-api library dynamically...");
+      if (!faceapiModule) {
+        const mod = await import('face-api.js/build/es6/index.js');
+        // Handle CJS/ESM exports mismatch
+        const rawFaceApi = mod.default && mod.default.nets ? mod.default : mod;
+        faceapiModule = rawFaceApi;
+        
+        // Install patches dynamically on the loaded module
+        applyFaceApiPatches(faceapiModule);
+      }
+
+      console.log("[faceRecognitionService] Loading neural network weight models from /models...");
+      const fa = faceapiModule;
+      if (fa && fa.nets) {
         const loadTasks = [];
-        if (!faceapi.nets.tinyFaceDetector.isLoaded) {
-          loadTasks.push(faceapi.nets.tinyFaceDetector.loadFromUri('/models'));
+        if (!fa.nets.tinyFaceDetector.isLoaded) {
+          loadTasks.push(fa.nets.tinyFaceDetector.loadFromUri('/models'));
         }
-        if (!faceapi.nets.ssdMobilenetv1.isLoaded) {
-          loadTasks.push(faceapi.nets.ssdMobilenetv1.loadFromUri('/models'));
+        if (!fa.nets.ssdMobilenetv1.isLoaded) {
+          loadTasks.push(fa.nets.ssdMobilenetv1.loadFromUri('/models'));
         }
-        if (!faceapi.nets.faceLandmark68Net.isLoaded) {
-          loadTasks.push(faceapi.nets.faceLandmark68Net.loadFromUri('/models'));
+        if (!fa.nets.faceLandmark68Net.isLoaded) {
+          loadTasks.push(fa.nets.faceLandmark68Net.loadFromUri('/models'));
         }
-        if (!faceapi.nets.faceRecognitionNet.isLoaded) {
-          loadTasks.push(faceapi.nets.faceRecognitionNet.loadFromUri('/models'));
+        if (!fa.nets.faceRecognitionNet.isLoaded) {
+          loadTasks.push(fa.nets.faceRecognitionNet.loadFromUri('/models'));
         }
         await Promise.all(loadTasks);
       }
       modelsLoaded = true;
-      console.log("[faceRecognitionService] All face-api models successfully loaded from /models!");
+      console.log("[faceRecognitionService] All face-api models and assets successfully loaded!");
     } catch (err) {
-      console.warn("[faceRecognitionService] Error loading face-api models from /models:", err);
+      console.warn("[faceRecognitionService] Error loading face-api or weight models:", err);
       modelsLoaded = true; // allow fallback execution
     }
   })();

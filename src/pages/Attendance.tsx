@@ -781,13 +781,21 @@ const Attendance: React.FC = () => {
         return;
       }
 
-      setLoading(true);
+      const dateStr = format(selectedDate, 'yyyy-MM-dd');
+      const userConstraints: any[] = [];
+      const currentProfileCollection = (activeTab === 'staff' || activeTab === 'staff_auto') ? 'staff' : 'students';
+      const currentCollection = (activeTab === 'staff' || activeTab === 'staff_auto') ? 'staff_attendance' : 'attendance';
+      const attendanceConstraints: any[] = [where('date', '==', dateStr)];
+
+      // SWR Cache Check: skip the blocking screen spinner if the user roster and attendance data is already cached
+      const cachedUsers = dbService.getCached(currentProfileCollection, [...userConstraints, limit(5000)]);
+      const cachedAttendance = dbService.getCached(currentCollection, [...attendanceConstraints, limit(5000)]);
+      if (cachedUsers && cachedAttendance) {
+        // Data is cached, skip blocking loader
+      } else {
+        setLoading(true);
+      }
       try {
-        const dateStr = format(selectedDate, 'yyyy-MM-dd');
-        const userConstraints: any[] = [];
-        const currentProfileCollection = (activeTab === 'staff' || activeTab === 'staff_auto') ? 'staff' : 'students';
-        const currentCollection = (activeTab === 'staff' || activeTab === 'staff_auto') ? 'staff_attendance' : 'attendance';
-        const attendanceConstraints: any[] = [where('date', '==', dateStr)];
         const isSearching = !!debouncedSearch.trim();
 
         if (isPersonalView) {

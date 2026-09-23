@@ -132,8 +132,9 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
 }
 
 import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
 import LandingPage from './pages/LandingPage';
+
+const Dashboard = lazyWithRetry(() => import('./pages/Dashboard'));
 
 // Resilient Lazy loading for secondary modules
 const Students = lazyWithRetry(() => import('./pages/Students'));
