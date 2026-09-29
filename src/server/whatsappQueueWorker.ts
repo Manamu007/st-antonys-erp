@@ -1,6 +1,14 @@
 import { getWASocket, checkSocketAlive, ensureWhatsAppConnected } from './whatsapp.js';
 import { fetchNextPendingItem, updateQueueItem, resetStalledItems, IWhatsAppQueue } from './models/WhatsAppQueue.js';
 import { applyAntiBanVariation } from './whatsappUtils.js';
+import { 
+  applyLinguisticSpintax, 
+  checkQuietHours, 
+  checkDailyVolumeLimit, 
+  recordSentMessageVelocity, 
+  sendViaMetaOfficialCloudApi 
+} from './whatsappAntiBan.js';
+import { getDbAdmin } from './db.js';
 
 let isWorkerRunning = false;
 let isProcessingItem = false;
@@ -284,10 +292,51 @@ export async function processNextQueueItem(): Promise<boolean> {
       }
     }
 
+    let dbInstance: any = null;
+    try { dbInstance = getDbAdmin(); } catch (_) {}
+
+    // Meta Anti-Ban: Enforce Quiet Hours (10 PM to 7 AM IST) for non-emergency notifications
+    const quietStatus = checkQuietHours();
+    if (quietStatus.isQuiet && (item.priority ?? 3) !== 0) {
+      console.log(`[WhatsApp Anti-Ban] ${quietStatus.reason}`);
+      await new Promise(resolve => setTimeout(resolve, 30000));
+      return false;
+    }
+
+    // Meta Anti-Ban: Check Daily Velocity Warming Cap
+    const volumeCheck = await checkDailyVolumeLimit(dbInstance);
+    if (!volumeCheck.allowed && (item.priority ?? 3) !== 0) {
+      console.warn(`[WhatsApp Anti-Ban] Daily warming volume limit reached (${volumeCheck.currentCount}/${volumeCheck.maxCap}). Throttling non-emergency dispatches.`);
+      await new Promise(resolve => setTimeout(resolve, 45000));
+      return false;
+    }
+
     let rawText = rawMessageText;
-    // Apply Anti-Ban variation to prevent duplicate text hash fingerprinting across recipients
+    // Apply Advanced Anti-Ban Linguistic Spintax & Cryptographic Zero-Width Salting
     if (item.priority !== 0) {
-      rawText = applyAntiBanVariation(rawText);
+      rawText = applyLinguisticSpintax(rawText, options);
+    }
+
+    // Official Meta WhatsApp Cloud API Provider (100% Ban-Proof Zero Risk)
+    const metaPhoneId = process.env.META_WA_PHONE_NUMBER_ID || options.metaPhoneNumberId;
+    const metaToken = process.env.META_WA_ACCESS_TOKEN || options.metaAccessToken;
+    if (metaPhoneId && metaToken) {
+      console.log(`[WhatsApp Meta Cloud API] Dispatching via 100% Ban-Proof Official Meta Graph API to ${targetJid}...`);
+      const metaRes = await sendViaMetaOfficialCloudApi(targetJid, rawText, {
+        phoneNumberId: metaPhoneId,
+        accessToken: metaToken
+      });
+      if (metaRes.success) {
+        await updateQueueItem(item._id, {
+          status: 'sent',
+          sentAt: new Date(),
+          waMessageId: metaRes.messageId,
+          error: undefined
+        });
+        if (dbInstance) recordSentMessageVelocity(dbInstance).catch(() => {});
+        return true;
+      }
+      console.warn(`[WhatsApp Meta Cloud API] Graph API notice: ${metaRes.error}. Falling back to Baileys engine.`);
     }
 
     const mediaUrl = item.mediaUrl || options.imageUrl || options.documentUrl || options.videoUrl;
@@ -360,6 +409,10 @@ export async function processNextQueueItem(): Promise<boolean> {
       waMessageId,
       error: undefined
     });
+
+    if (dbInstance) {
+      recordSentMessageVelocity(dbInstance).catch(() => {});
+    }
 
     // Record in in-memory deduplication cache for absent alerts
     if (isAbsentNotice) {

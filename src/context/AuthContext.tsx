@@ -280,7 +280,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Also call immediately to support synchronous init of bypass session
     checkBypassAndSetUser(auth.currentUser, false);
 
-    return unsubscribe;
+    const safetyTimer = setTimeout(() => {
+      setLoading(false);
+    }, 1500);
+
+    return () => {
+      clearTimeout(safetyTimer);
+      unsubscribe();
+    };
   }, [setStableProfile, setStableAvailableProfiles]);
 
   useEffect(() => {

@@ -164,8 +164,8 @@ const NoticeSection = () => {
              <p className="text-neutral-400 font-bold uppercase tracking-widest">No notices published yet</p>
           </div>
         ) : (
-          notices.map(notice => (
-            <div key={notice.id} className="bg-white p-6 rounded-[2rem] border border-neutral-100 shadow-sm space-y-4 hover:shadow-md transition-all group">
+          notices.map((notice, idx) => (
+            <div key={`${notice.id || idx}-${idx}`} className="bg-white p-6 rounded-[2rem] border border-neutral-100 shadow-sm space-y-4 hover:shadow-md transition-all group">
               <div className="flex items-start justify-between">
                 <div className="flex items-center gap-3">
                   <div className={`w-2 h-2 rounded-full ${
@@ -544,9 +544,9 @@ const CalendarSection = () => {
 
             <div className="space-y-4">
               {selectedDateEvents.length > 0 ? (
-                selectedDateEvents.map((event) => (
+                selectedDateEvents.map((event, idx) => (
                   <div 
-                    key={event.id} 
+                    key={`${event.id || idx}-${idx}`} 
                     className={`p-4 rounded-2xl border transition-all relative group ${
                       event.type === 'holiday' 
                         ? 'bg-red-50 border-red-100' 
@@ -852,8 +852,8 @@ const EnquirySection = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-50">
-                {filteredItems.map((item) => (
-                  <tr key={item.id} className="hover:bg-neutral-50 transition-colors group">
+                {filteredItems.map((item, idx) => (
+                  <tr key={`${item.id || idx}-${idx}`} className="hover:bg-neutral-50 transition-colors group">
                     <td className="px-4 py-4">
                       <div className="flex items-center gap-3">
                          <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center text-primary font-bold text-[10px] uppercase">
@@ -911,8 +911,8 @@ const EnquirySection = () => {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {filteredItems.map((e) => (
-              <div key={e.id} className="bg-neutral-50 border border-neutral-100 rounded-3xl p-6 space-y-4 relative group hover:border-primary/30 transition-all shadow-sm">
+            {filteredItems.map((e, idx) => (
+              <div key={`${e.id || idx}-${idx}`} className="bg-neutral-50 border border-neutral-100 rounded-3xl p-6 space-y-4 relative group hover:border-primary/30 transition-all shadow-sm">
                 <div className="flex justify-between items-start">
                    <div className="w-10 h-10 rounded-xl bg-white shadow-sm border border-neutral-100 flex items-center justify-center text-primary font-black uppercase">
                      {(String(e.parentName || e.email || "")).charAt(0)}

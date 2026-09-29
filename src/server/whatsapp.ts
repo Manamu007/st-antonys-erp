@@ -317,12 +317,19 @@ const QUEUE_COLLECTION = 'whatsapp_queue';
 let isConnecting = false;
 let cachedBaileysVersion: any = null;
 let lastProcessedGroupRefreshTrigger = '';
+let currentSaveCreds: (() => Promise<void>) | null = null;
 
-const updateStatus = async (status: typeof connectionStatus, localOnly = false) => {
-  if (connectionStatus !== status) {
-    console.log(`[WhatsApp] Status changing: ${connectionStatus} -> ${status}${localOnly ? ' (localOnly)' : ''}`);
-    connectionStatus = status;
-    io?.emit('wa:status', status);
+const updateStatus = async (status: typeof connectionStatus, localOnly = false, forceQrSync = false) => {
+  const statusChanged = connectionStatus !== status;
+  if (statusChanged || (status === 'qr' && forceQrSync)) {
+    if (statusChanged) {
+      console.log(`[WhatsApp] Status changing: ${connectionStatus} -> ${status}${localOnly ? ' (localOnly)' : ''}`);
+      connectionStatus = status;
+      io?.emit('wa:status', status);
+    }
+    if (status === 'qr' && qrCode) {
+      io?.emit('wa:qr', qrCode);
+    }
     
     if (localOnly) return;
     
@@ -351,7 +358,9 @@ const updateStatus = async (status: typeof connectionStatus, localOnly = false) 
           updatedAt: new Date().toISOString()
         }, { merge: true });
 
-        safeLogWhatsappEvent('status_change', { status, instanceId, pid: process.pid });
+        if (statusChanged) {
+          safeLogWhatsappEvent('status_change', { status, instanceId, pid: process.pid });
+        }
       }
     } catch(e: any) {
       if (isQuotaOrPermissionError(e)) {
@@ -1913,57 +1922,58 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
     } finally {
       sock = null;
     }
-    // Allow WhatsApp servers 1.5s to unbind previous WebSocket connection
-    await delay(1500);
+    // Allow WhatsApp servers time to unbind previous WebSocket connection
+    if (!isForce) {
+      await delay(1000);
+    } else {
+      await delay(150);
+    }
   }
 
   try {
     await initializationPromise;
     const { state, saveCreds, clearState, clearKeys } = await useFirestoreAuthState(getSessionId());
+    currentSaveCreds = saveCreds;
     
     let version: any = cachedBaileysVersion;
     if (!version) {
-      console.log(`[WhatsApp ${process.pid}] Fetching latest WhatsApp Web version...`);
+      console.log(`[WhatsApp ${process.pid}] Resolving compatible WhatsApp Web protocol version...`);
       try {
-        // Try fetchLatestWaWebVersion first with 3s timeout
-        if (typeof fetchLatestWaWebVersion === 'function') {
-          const webPromise = fetchLatestWaWebVersion();
-          const timeoutPromise = new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Timeout (3s)")), 3000));
-          const res = await Promise.race([webPromise, timeoutPromise]);
+        if (typeof fetchLatestBaileysVersion === 'function') {
+          const baileysPromise = fetchLatestBaileysVersion();
+          const timeoutPromise = new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Timeout (5s)")), 5000));
+          const res = await Promise.race([baileysPromise, timeoutPromise]);
           if (res && res.version && Array.isArray(res.version)) {
             version = res.version;
-            console.log(`[WhatsApp ${process.pid}] Successfully fetched WaWeb version: ${version.join('.')}`);
+            console.log(`[WhatsApp ${process.pid}] Successfully fetched matching Baileys protocol version: ${version.join('.')}`);
           }
         }
       } catch (err: any) {
-        console.warn(`[WhatsApp ${process.pid}] Failed or timed out fetching WaWeb version: ${err.message || err}. Trying Baileys version...`);
+        console.warn(`[WhatsApp ${process.pid}] Baileys version fetch notice: ${err.message || err}. Trying WaWeb version...`);
       }
 
       if (!version) {
         try {
-          // Try fetchLatestBaileysVersion second with 3s timeout
-          if (typeof fetchLatestBaileysVersion === 'function') {
-            const baileysPromise = fetchLatestBaileysVersion();
-            const timeoutPromise = new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Timeout (3s)")), 3000));
-            const res = await Promise.race([baileysPromise, timeoutPromise]);
+          if (typeof fetchLatestWaWebVersion === 'function') {
+            const webPromise = fetchLatestWaWebVersion({});
+            const timeoutPromise = new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Timeout (7s)")), 7000));
+            const res = await Promise.race([webPromise, timeoutPromise]);
             if (res && res.version && Array.isArray(res.version)) {
               version = res.version;
-              console.log(`[WhatsApp ${process.pid}] Successfully fetched Baileys version: ${version.join('.')}`);
+              console.log(`[WhatsApp ${process.pid}] Successfully fetched live WaWeb version: ${version.join('.')}`);
             }
           }
-        } catch (err: any) {
-          console.warn(`[WhatsApp ${process.pid}] Failed or timed out fetching Baileys version: ${err.message || err}. Using stable fallback...`);
-        }
+        } catch (_) {}
       }
 
       if (!version) {
-        // Fallback to the latest verified live stable version array [2, 3000, 1048120390]
-        version = [2, 3000, 1048120390];
-        console.log(`[WhatsApp ${process.pid}] Using hardcoded stable fallback WhatsApp Web version: ${version.join('.')}`);
+        // Fallback to verified stable modern WhatsApp Web protocol version
+        version = [2, 3000, 1048620361];
+        console.log(`[WhatsApp ${process.pid}] Using stable modern default WhatsApp version: ${version.join('.')}`);
       }
       cachedBaileysVersion = version;
     }
-    console.log(`[WhatsApp ${process.pid}] Using Baileys version: ${version.join('.')}`);
+    console.log(`[WhatsApp ${process.pid}] Using WhatsApp Web version: ${version.join('.')}`);
 
     sock = makeWASocket({
       version,
@@ -1974,7 +1984,8 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
         keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
       msgRetryCounterCache,
-      browser: Browsers ? Browsers.ubuntu('Chrome') : ['Ubuntu', 'Chrome', '20.0.04'],
+      // Meta Anti-Ban: Present realistic desktop browser identity (avoid mismatched Chrome 14.4.1 OS version signature)
+      browser: Browsers?.windows ? Browsers.windows('Desktop') : ['Windows', 'Chrome', '128.0.6613.120'],
       syncFullHistory: false,
       emitOwnEvents: true,
       shouldIgnoreJid: jid => jid?.includes('broadcast') || jid?.includes('@newsletter'),
@@ -1982,10 +1993,11 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
       connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 60000,
       keepAliveIntervalMs: 30000,
-      retryRequestDelayMs: 250,
-      maxMsgRetryCount: 5,
+      retryRequestDelayMs: 500,
+      maxMsgRetryCount: 3,
       generateHighQualityLinkPreview: true,
-      markOnlineOnConnect: true,
+      // Meta Anti-Ban: Never force 24/7 artificial online presence without human idle pauses
+      markOnlineOnConnect: false,
       getMessage: async (key) => {
         try {
           if (!key || !key.id) return undefined;
@@ -2047,17 +2059,32 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
     }
 
       sock.ev.on('connection.update', async (update: any) => {
-        const { connection, lastDisconnect, qr } = update;
-        console.log(`[WhatsApp ${process.pid}] Connection Update: ${connection || 'none'}, QR: ${!!qr}`);
+        const { connection, lastDisconnect, qr, isNewLogin } = update;
+        console.log(`[WhatsApp ${process.pid}] Connection Update: ${connection || 'none'}, QR: ${!!qr}, isNewLogin: ${!!isNewLogin}`);
         
+        if (isNewLogin) {
+          console.log(`[WhatsApp ${process.pid}] Device successfully paired with WhatsApp!`);
+          qrCode = null;
+          state.creds.registered = true;
+          try {
+            await (currentSaveCreds ? currentSaveCreds() : saveCreds());
+          } catch (_) {}
+          io?.emit('wa:pairing', { status: 'success', message: 'Device linked successfully! Finalizing connection...' });
+        }
+
         if (qr) {
           console.log(`[WhatsApp ${process.pid}] QR Code received.`);
           qrCode = qr;
-          await updateStatus('qr');
+          await updateStatus('qr', false, true);
           io?.emit('wa:qr', qr);
           isConnecting = false; 
           consecutiveErrors = 0; // Reset errors when QR is shown
           if (lockTimeout) { clearTimeout(lockTimeout); lockTimeout = null; }
+        }
+
+        if (connection === 'connecting') {
+          console.log(`[WhatsApp ${process.pid}] Connection handshake in progress...`);
+          io?.emit('wa:pairing', { status: 'pairing', message: 'Mobile device detected! Linking WhatsApp account...' });
         }
 
       if (connection === 'close') {
@@ -2090,20 +2117,23 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
         const errData = (lastDisconnect?.error as any)?.data;
         const errReason = errData?.reason ? String(errData.reason) : '';
         const isConflict = statusCode === 440 || errorMsg.includes('conflict') || statusCode === DisconnectReason.connectionReplaced;
-        const isLoggedOut = (
+        
+        // CRITICAL FIX: Only actual registered sessions can be 'logged out'.
+        // If the account was not registered yet, status 401/403/connection failure is a temporary packet negotiation drop!
+        // Wiping out credentials when !isRegistered destroys the pairing keys while the user's phone is linking!
+        const isRegistered = Boolean(state?.creds?.registered || state?.creds?.me?.id || (state?.creds as any)?.account);
+        if (isRegistered && !state?.creds?.registered) {
+          state.creds.registered = true;
+          try { await (currentSaveCreds ? currentSaveCreds() : saveCreds()); } catch (_) {}
+        }
+
+        const isLoggedOut = isRegistered && (
           statusCode === DisconnectReason.loggedOut ||
           statusCode === 401 ||
-          statusCode === 403 ||
-          statusCode === 405 ||
-          statusCode === 411 ||
           errReason === '401' ||
-          errReason === '403' ||
-          errReason === '405' ||
-          errReason === '411' ||
-          errorMsg.includes('logged out') ||
-          (errorMsg.includes('connection failure') && (statusCode === 405 || errReason === '405'))
+          errorMsg.includes('logged out')
         ) && !isConflict;
-        const isBadSession = (statusCode === DisconnectReason.badSession || errorMsg.includes('bad-session')) && !isConflict;
+        const isBadSession = isRegistered && (statusCode === DisconnectReason.badSession || errorMsg.includes('bad-session')) && !isConflict;
 
         const isNetworkOrTimeout = 
           statusCode === 408 || 
@@ -2131,7 +2161,7 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
         if (isLoggedOut) {
           await updateStatus('close');
           qrCode = null;
-          console.log(`[WhatsApp ${process.pid}] Logged Out or Session Revoked. Code: ${statusCode}, Msg: ${errorMsg}, Reason: ${errReason}. Clearing session...`);
+          console.log(`[WhatsApp ${process.pid}] Registered session Logged Out. Code: ${statusCode}, Msg: ${errorMsg}. Clearing session...`);
           
           await initializationPromise;
           const { clearState } = await useFirestoreAuthState(getSessionId());
@@ -2142,7 +2172,6 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
           } catch (_) {}
           
           io.emit('wa:error', 'WhatsApp Session Expired or Logged Out. Generating fresh QR code...');
-          // Auto-reconnect to get new QR with force flag
           setTimeout(() => connectToWhatsApp(io, true, true), 2000);
           return;
         }
@@ -2150,7 +2179,7 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
         if (isBadSession) {
           await updateStatus('close');
           qrCode = null;
-          console.warn(`[WhatsApp ${process.pid}] Bad Session detected. Code: ${statusCode}, Msg: ${errorMsg}. Healing session keys to recover sync and retrying connection...`);
+          console.warn(`[WhatsApp ${process.pid}] Bad Session detected. Code: ${statusCode}, Msg: ${errorMsg}. Healing session keys...`);
           try {
             await clearKeys();
           } catch (err: any) {
@@ -2161,8 +2190,20 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
           return;
         }
 
+        // Handle pairing negotiation drop without wiping auth credentials - use safe humane backoff
+        if (!isRegistered && (statusCode === 401 || statusCode === 403 || statusCode === 405 || errorMsg.includes('connection failure'))) {
+          console.warn(`[WhatsApp ${process.pid}] Pairing negotiation drop (Code: ${statusCode}, Msg: ${errorMsg}). Retaining credentials and reconnecting with safe backoff...`);
+          await updateStatus('connecting');
+          io?.emit('wa:status', 'connecting');
+          const pairingWait = 5000 + Math.floor(Math.random() * 3000); // 5s-8s safe jitter
+          setTimeout(() => {
+            connectToWhatsApp(io, true, false);
+          }, pairingWait);
+          return;
+        }
+
         if (isConflict) {
-          console.warn(`[WhatsApp ${process.pid}] Session conflict (440) detected.`);
+          console.warn(`[WhatsApp ${process.pid}] Session conflict (440) detected. Another active instance holds the WhatsApp session.`);
           consecutiveConflicts++;
           lastConflictTime = Date.now();
           isCooldownActive = false;
@@ -2185,6 +2226,14 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
             sock = null;
           }
 
+          // Meta Anti-Ban: If multiple consecutive conflicts occur, step down completely to protect account from multi-login bans!
+          if (consecutiveConflicts >= 2) {
+            console.warn(`[WhatsApp ${process.pid}] Multiple 440 conflicts detected (${consecutiveConflicts}). Stepping down standby instance completely to safeguard WhatsApp account from Meta dual-login bans.`);
+            await updateStatus('close', true);
+            io?.emit('wa:error', 'WhatsApp is active on primary server. Standby instance stepped down to protect account.');
+            return;
+          }
+
           // Check if another active process/container instance holds the lock
           const canClaimLock = await acquireLock(true, false);
           if (!canClaimLock) {
@@ -2193,15 +2242,35 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
             return;
           }
 
-          // Maintain connecting status
+          // Maintain connecting status with relaxed cooling backoff (25s - 35s)
           await updateStatus('connecting');
-
-          // Backoff delay before reconnecting (3s - 5s with random jitter) to allow WS unbind
-          const conflictWait = 3000 + Math.floor(Math.random() * 2000);
+          const conflictWait = 25000 + Math.floor(Math.random() * 10000);
           console.log(`[WhatsApp ${process.pid}] Reconnecting in ${conflictWait}ms after 440 conflict...`);
           setTimeout(() => {
             connectToWhatsApp(io, true, false);
           }, conflictWait);
+          return;
+        }
+
+        // Handle normal post-pairing / stream restart (code 515) without treating it as a failure
+        const isRestartRequired = statusCode === 515 || errorMsg.includes('restart required');
+        if (isRestartRequired || isNewLogin) {
+          console.log(`[WhatsApp ${process.pid}] Stream restart required / Pairing handshake complete (Code ${statusCode || 515}). Waiting 4s for WhatsApp backend before reconnecting...`);
+          await updateStatus('connecting');
+          io?.emit('wa:status', 'connecting');
+          io?.emit('wa:pairing', { status: 'pairing', message: 'Device scanned! Finalizing secure WhatsApp session...' });
+          isConnecting = false;
+          setTimeout(() => {
+            connectToWhatsApp(io, true, false);
+          }, 4000);
+          return;
+        }
+
+        // For unregistered sockets that closed (e.g. 428 QR refresh or network blip), stay in connecting/qr mode and reconnect safely
+        if (!isRegistered) {
+          console.log(`[WhatsApp ${process.pid}] Pairing socket stream reset (Code: ${statusCode || 'none'}). Reconnecting in 5s...`);
+          await delay(5000 + Math.floor(Math.random() * 2000));
+          connectToWhatsApp(io, true, false);
           return;
         }
 
@@ -2217,10 +2286,10 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
           qrCode = null;
         }
 
-        // Fast reconnect for transient stream resets (300ms), standard backoff for others
-        const waitTime = isTransient && consecutiveErrors <= 3 
-          ? 300 
-          : Math.min(2000 + (consecutiveErrors * 2000), 15000);
+        // Meta Anti-Ban: Use humane backoff instead of instant reconnect bursts
+        const waitTime = isTransient && consecutiveErrors <= 2 
+          ? 4000 + Math.floor(Math.random() * 2000)
+          : Math.min(8000 + (consecutiveErrors * 4000), 45000);
 
         // Sanitize messages to avoid triggering platform automated error scans
         const sanitizedReason = (errorMsg || 'Generic Close')
@@ -2282,10 +2351,13 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
       }
     });
 
-    sock.ev.on('creds.update', async () => {
+    sock.ev.on('creds.update', async (updateCreds: any) => {
       console.log(`[WhatsApp ${process.pid}] Credentials updated.`);
       try {
-        await saveCreds();
+        if (updateCreds && typeof updateCreds === 'object') {
+          Object.assign(state.creds, updateCreds);
+        }
+        await (currentSaveCreds ? currentSaveCreds() : saveCreds());
       } catch (err: any) {
         console.error(`[WhatsApp] Creds update save error:`, err?.message || err);
       }
@@ -3186,12 +3258,16 @@ export async function startWhatsAppWatchdog(io: Server) {
                 const isRecent = docTime === 0 || (Date.now() - docTime < 60000);
 
                 if (isRecent && data.status && data.status !== connectionStatus) {
-                  console.log(`[WhatsApp Sync] Status synchronized from Firestore: ${connectionStatus} -> ${data.status}`);
-                  connectionStatus = data.status;
-                  io?.emit('wa:status', connectionStatus);
+                  // Only sync status if remote is open, OR if we do not have an active local socket
+                  if (data.status === 'open' || !sock) {
+                    console.log(`[WhatsApp Sync] Status synchronized from Firestore: ${connectionStatus} -> ${data.status}`);
+                    connectionStatus = data.status;
+                    io?.emit('wa:status', connectionStatus);
+                  }
                 }
-                if (isRecent && data.qr !== qrCode && data.status === 'qr') {
-                  console.log(`[WhatsApp Sync] QR code synchronized from Firestore`);
+                // NEVER overwrite local active socket's QR code with foreign QR code from Firestore
+                if (isRecent && data.qr !== qrCode && data.status === 'qr' && !sock) {
+                  console.log(`[WhatsApp Sync] QR code synchronized from Firestore (standby mode)`);
                   qrCode = data.qr || null;
                   io?.emit('wa:qr', qrCode);
                 }
@@ -3722,6 +3798,59 @@ export const getWAStatus = () => {
   return { status: connectionStatus, qr: qrCode };
 };
 export { checkSocketAlive, ensureWhatsAppConnected };
+
+export const getPairingCode = async (phoneNumber: string): Promise<string> => {
+  if (!sock || !sock.ws || !(sock.ws as any).isOpen) {
+    if (io) {
+      await connectToWhatsApp(io, false, true);
+      // Wait up to 5s for socket WebSocket to open
+      for (let i = 0; i < 20; i++) {
+        if (sock && sock.ws && (sock.ws as any).isOpen) break;
+        await delay(250);
+      }
+    }
+  }
+  if (!sock) {
+    throw new Error("WhatsApp socket could not be started. Please click 'Generate QR Code / Retry' first.");
+  }
+  if (connectionStatus === 'open') {
+    throw new Error("WhatsApp is already connected.");
+  }
+
+  let clean = String(phoneNumber || '').replace(/\D/g, '');
+  if (clean.startsWith('0') && clean.length === 11) {
+    clean = clean.slice(1);
+  }
+  if (clean.length === 10) {
+    clean = `91${clean}`;
+  }
+  if (!clean || clean.length < 10 || clean.length > 15) {
+    throw new Error("Invalid phone number format. Please enter your mobile number (e.g. 9876543210 or 919876543210).");
+  }
+
+  if (typeof (sock as any).requestPairingCode !== 'function') {
+    throw new Error("Pairing code method not available on this socket.");
+  }
+
+  console.log(`[WhatsApp ${process.pid}] Requesting pairing code for ${clean}...`);
+  const rawCode = await (sock as any).requestPairingCode(clean);
+  const formattedCode = rawCode?.match(/.{1,4}/g)?.join('-') || rawCode;
+  console.log(`[WhatsApp ${process.pid}] Pairing code generated: ${formattedCode}`);
+
+  // Persist updated creds immediately so pairingCode and me are securely preserved on disk
+  try {
+    if (currentSaveCreds) {
+      await currentSaveCreds();
+    } else {
+      const { saveCreds } = await useFirestoreAuthState(getSessionId());
+      await saveCreds();
+    }
+  } catch (err: any) {
+    console.warn("[WhatsApp] Failed to save creds after pairing code:", err?.message || err);
+  }
+
+  return formattedCode;
+};
 
 let cachedRemoteStatus: { status: string; qr: string | null } | null = null;
 let lastRemoteStatusFetch = 0;

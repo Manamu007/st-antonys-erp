@@ -55,6 +55,7 @@ import { extractHandwrittenMarks } from '../services/aiService';
 import { sortAlphabetically, resolveStudentClassAndBatch } from '../lib/utils';
 import { isDemoStudentRecord, isKnownDemoName } from '../constants/systemAccounts';
 import { SortAsc, SortDesc } from 'lucide-react';
+import { resolveApiUrl } from '../lib/apiClient';
 
 type TabType = 'schedule' | 'class10-daily' | 'subject-entry' | 'class-view' | 'whatsapp' | 'central-register' | 'abstract-summary';
 
@@ -87,7 +88,7 @@ export const sortByRollNumber = (a: any, b: any) => {
  */
 export async function fetchExamsFromLiveProxy(): Promise<any[]> {
   const localUrl = '/api/maintenance/db-proxy?collection=exams';
-  const directUrl = 'https://antonyschool.in/api/maintenance/db-proxy?collection=exams';
+  const directUrl = resolveApiUrl('https://antonyschool.in/api/maintenance/db-proxy?collection=exams');
 
   try {
     const res2 = await fetch(localUrl, { mode: 'cors' });
@@ -132,8 +133,8 @@ export async function fetchExamMarksFromLiveProxy(selectedClass?: string, select
   const endpoints = [
     { url: `/api/exam-marks?class=${encodeURIComponent(selectedClass || '')}&exam=${encodeURIComponent(selectedExam || '')}&batch=${encodeURIComponent(selectedBatch || '')}`, local: true },
     { url: `/api/maintenance/db-proxy?${queryStr}`, local: true },
-    { url: `https://antonyschool.in/api/maintenance/db-proxy?${queryStr}`, local: false },
-    { url: `https://antonyschool.in/api/exam-marks?class=${encodeURIComponent(selectedClass || '')}&exam=${encodeURIComponent(selectedExam || '')}`, local: false }
+    { url: resolveApiUrl(`https://antonyschool.in/api/maintenance/db-proxy?${queryStr}`), local: false },
+    { url: resolveApiUrl(`https://antonyschool.in/api/exam-marks?class=${encodeURIComponent(selectedClass || '')}&exam=${encodeURIComponent(selectedExam || '')}`), local: false }
   ];
 
   for (const item of endpoints) {
@@ -2597,7 +2598,7 @@ const Exams: React.FC = () => {
               className="w-40 px-3 py-2 bg-neutral-50 border border-neutral-200 rounded-lg text-sm outline-none focus:border-primary font-bold"
             >
               <option value="">Select Class</option>
-              {availableClasses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              {availableClasses.map((c, idx) => <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name}</option>)}
             </select>
           </div>
           <div className="space-y-1">
@@ -2608,7 +2609,7 @@ const Exams: React.FC = () => {
               className="w-40 px-3 py-2 bg-neutral-50 border border-neutral-200 rounded-lg text-sm outline-none focus:border-primary font-bold"
             >
               <option value="">Select Batch</option>
-              {availableBatches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              {availableBatches.map((b, idx) => <option key={`${b.id || idx}-${idx}`} value={b.id}>{b.name}</option>)}
             </select>
           </div>
           {activeTab !== 'central-register' && (
@@ -2623,16 +2624,16 @@ const Exams: React.FC = () => {
                 {['FA-1', 'FA-2', 'SA-1', 'FA-3', 'FA-4', 'SA-2'].filter(title => {
                   if (!isTeacherRole && !hasPermission('exams_view_my_strict')) return true;
                   return exams.some(e => e.title === title);
-                }).map(standardTitle => {
+                }).map((standardTitle, idx) => {
                   const existingExam = exams.find(e => e.title === standardTitle);
                   return (
-                    <option key={standardTitle} value={existingExam?.id || ''} disabled={!existingExam}>
+                    <option key={`${standardTitle || idx}-${idx}`} value={existingExam?.id || ''} disabled={!existingExam}>
                       {standardTitle} {existingExam ? '' : '(Not Scheduled)'}
                     </option>
                   );
                 })}
-                {exams.filter(e => !['FA-1', 'FA-2', 'SA-1', 'FA-3', 'FA-4', 'SA-2'].includes(e.title) && e.title?.toLowerCase() !== 'formative-1' && e.title?.toLowerCase() !== 'formative - 1').map(e => (
-                  <option key={e.id} value={e.id}>{e.title}</option>
+                {exams.filter(e => !['FA-1', 'FA-2', 'SA-1', 'FA-3', 'FA-4', 'SA-2'].includes(e.title) && e.title?.toLowerCase() !== 'formative-1' && e.title?.toLowerCase() !== 'formative - 1').map((e, idx) => (
+                  <option key={`${e.id || idx}-${idx}`} value={e.id}>{e.title}</option>
                 ))}
               </select>
             </div>
@@ -2646,7 +2647,7 @@ const Exams: React.FC = () => {
                 className="w-40 px-3 py-2 bg-neutral-50 border border-neutral-200 rounded-lg text-sm outline-none focus:border-primary"
               >
                 <option value="">Select Subject</option>
-                {availableSubjects.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                {availableSubjects.map((s, idx) => <option key={`${s.id || idx}-${idx}`} value={s.id}>{s.name}</option>)}
               </select>
             </div>
           )}
@@ -3406,8 +3407,8 @@ const ExamTimetableModal = ({ exam, batchId, classId, subjects: propSubjects = [
                   onChange={(e) => handleClassChange(e.target.value)}
                   className="w-full px-3.5 py-2.5 bg-white border border-neutral-300 rounded-xl text-sm font-bold text-neutral-800 outline-none focus:ring-2 focus:ring-primary focus:border-primary shadow-xs"
                 >
-                  {classes.map((c: any) => (
-                    <option key={c.id} value={c.id}>
+                  {classes.map((c: any, idx: number) => (
+                    <option key={`${c.id || idx}-${idx}`} value={c.id}>
                       {c.name}
                     </option>
                   ))}
@@ -3424,8 +3425,8 @@ const ExamTimetableModal = ({ exam, batchId, classId, subjects: propSubjects = [
                   onChange={(e) => handleBatchChange(e.target.value)}
                   className="w-full px-3.5 py-2.5 bg-white border border-neutral-300 rounded-xl text-sm font-bold text-neutral-800 outline-none focus:ring-2 focus:ring-primary focus:border-primary shadow-xs"
                 >
-                  {availableBatchesForActiveClass.map((b: any) => (
-                    <option key={b.id} value={b.id}>
+                  {availableBatchesForActiveClass.map((b: any, idx: number) => (
+                    <option key={`${b.id || idx}-${idx}`} value={b.id}>
                       {b.name}
                     </option>
                   ))}
@@ -3497,13 +3498,13 @@ const ExamTimetableModal = ({ exam, batchId, classId, subjects: propSubjects = [
 
               {/* Class & Batches Grid */}
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5 max-h-[300px] overflow-y-auto pr-2">
-                {batchesByClass.map(clsGroup => {
+                {batchesByClass.map((clsGroup, idx) => {
                   const allClassBatchesSelected = clsGroup.batches.every(b => selectedBatches.includes(b.id));
                   const isCurrentActiveClass = clsGroup.classId === activeClassId;
 
                   return (
                     <div 
-                      key={clsGroup.classId} 
+                      key={`${clsGroup.classId || idx}-${idx}`} 
                       className={`p-3.5 rounded-xl space-y-2 border transition-all text-left ${
                         isCurrentActiveClass 
                           ? 'bg-primary/5 border-primary/30 ring-1 ring-primary/20' 
@@ -3531,11 +3532,11 @@ const ExamTimetableModal = ({ exam, batchId, classId, subjects: propSubjects = [
                       </div>
 
                       <div className="space-y-1.5">
-                        {clsGroup.batches.map((b: any) => {
+                        {clsGroup.batches.map((b: any, bIdx: number) => {
                           const isCurrent = b.id === activeBatchId;
                           const isChecked = selectedBatches.includes(b.id);
                           return (
-                            <label key={b.id} className="flex items-center gap-2 cursor-pointer group text-xs font-bold text-neutral-700 select-none">
+                            <label key={`${b.id || bIdx}-${bIdx}`} className="flex items-center gap-2 cursor-pointer group text-xs font-bold text-neutral-700 select-none">
                               <input
                                 type="checkbox"
                                 checked={isChecked}
@@ -3664,8 +3665,8 @@ const ExamTimetableModal = ({ exam, batchId, classId, subjects: propSubjects = [
                   required
                 >
                   <option value="">-- Select Subject --</option>
-                  {subjects.map((s: any) => (
-                    <option key={s.id} value={s.id}>
+                  {subjects.map((s: any, idx: number) => (
+                    <option key={`${s.id || idx}-${idx}`} value={s.id}>
                       {s.name} {s.code ? `(${s.code})` : ''}
                     </option>
                   ))}
@@ -5717,8 +5718,8 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
             <tr className="bg-neutral-50 text-[10px] font-bold uppercase text-neutral-500 tracking-wider">
               {isFA ? (
                 // Under FA, each subject has: Internal, FA-2, Subject Total
-                displaySubjects.map((s: any) => (
-                  <React.Fragment key={s.id}>
+                displaySubjects.map((s: any, idx: number) => (
+                  <React.Fragment key={`${s.id || idx}-${idx}`}>
                     <th className="p-1.5 text-center border border-neutral-300 bg-neutral-100 text-neutral-700 font-black">Internal</th>
                     <th className="p-1.5 text-center border border-neutral-300 bg-neutral-100 text-neutral-700 font-black">{examTitle}</th>
                     <th className="p-1.5 text-center border border-neutral-300 bg-rose-100 text-rose-900 font-black">{s.name} Total</th>
@@ -5726,8 +5727,8 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
                 ))
               ) : (
                 // Under SA, this row has the subject names
-                displaySubjects.map((s: any) => (
-                  <th key={s.id} className="p-2 text-center border border-neutral-300 bg-[#ffeb3b]/90 text-neutral-950 font-black text-[11px]">
+                displaySubjects.map((s: any, idx: number) => (
+                  <th key={`${s.id || idx}-${idx}`} className="p-2 text-center border border-neutral-300 bg-[#ffeb3b]/90 text-neutral-950 font-black text-[11px]">
                     {s.name}
                   </th>
                 ))
@@ -5744,11 +5745,11 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
             {/* Header Row 3: Max Marks */}
             <tr className="bg-neutral-100 text-[10px] font-black text-emerald-800 text-center">
               {isFA ? (
-                displaySubjects.map((s: any) => {
+                displaySubjects.map((s: any, idx: number) => {
                   const maxInternal = isPrimary ? 25 : 15;
                   const maxExam = isPrimary ? 25 : 35;
                   return (
-                    <React.Fragment key={s.id}>
+                    <React.Fragment key={`${s.id || idx}-${idx}`}>
                       <td className="p-1 border border-neutral-300 bg-neutral-55 font-mono">{maxInternal}</td>
                       <td className="p-1 border border-neutral-300 bg-neutral-55 font-mono">{maxExam}</td>
                       <td className="p-1 border border-neutral-300 bg-rose-50/55 font-mono text-rose-700">{50}</td>
@@ -5800,10 +5801,10 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
 
                   {/* Subject Marks */}
                   {isFA ? (
-                    rowInfo.subjectCells.map((cell: any) => {
+                    rowInfo.subjectCells.map((cell: any, idx: number) => {
                       if (cell.hasData) {
                         return (
-                          <React.Fragment key={cell.subjId}>
+                          <React.Fragment key={`${cell.subjId || idx}-${idx}`}>
                             {/* Internal Column */}
                             <td className="p-2 text-center border border-neutral-300 font-mono font-bold text-neutral-800 bg-[#ffffdd]/20">
                               {cell.internalDisplay}
@@ -5822,7 +5823,7 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
                         );
                       } else {
                         return (
-                          <React.Fragment key={cell.subjId}>
+                          <React.Fragment key={`${cell.subjId || idx}-${idx}`}>
                             <td className="p-2 text-center border border-neutral-300 text-neutral-400 font-mono font-bold">-</td>
                             <td className="p-2 text-center border border-neutral-300 text-neutral-400 font-mono font-bold">-</td>
                             <td className="p-2 text-center border border-neutral-300 bg-red-15 text-neutral-400 font-mono font-bold">-</td>
@@ -5831,9 +5832,9 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
                       }
                     })
                   ) : (
-                    rowInfo.subjectCells.map((cell: any) => {
+                    rowInfo.subjectCells.map((cell: any, idx: number) => {
                       return (
-                        <td key={cell.subjId} className={`p-2 text-center border border-neutral-300 font-mono font-bold text-neutral-900 ${
+                        <td key={`${cell.subjId || idx}-${idx}`} className={`p-2 text-center border border-neutral-300 font-mono font-bold text-neutral-900 ${
                           cell.saDisplay !== '-' && cell.saDisplay !== 'Absent' && !cell.isSubPass ? 'text-red-600 bg-red-50/50' : ''
                         }`}>
                           {cell.saDisplay}
@@ -8826,9 +8827,9 @@ const CentralRegister = ({
               >
                 All Exams
               </button>
-              {scheduledExams.map((e: any) => (
+              {scheduledExams.map((e: any, idx: number) => (
                 <button
-                  key={e.id}
+                  key={`${e.id || idx}-${idx}`}
                   onClick={() => setSelectedExamId(e.id)}
                   className={`px-3 py-1.5 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all ${
                     selectedExamId === e.id ? 'bg-primary text-white shadow-md shadow-primary/20' : 'text-neutral-500 hover:text-neutral-700'
@@ -9155,8 +9156,8 @@ const CentralRegister = ({
 
               {/* Row 3: Sub Group Headers */}
               <tr className="bg-neutral-50 text-neutral-600 font-bold border border-black text-[9px]">
-                {activeSubjects.map((sub: any) => (
-                  <React.Fragment key={sub.id}>
+                {activeSubjects.map((sub: any, idx: number) => (
+                  <React.Fragment key={`${sub.id || idx}-${idx}`}>
                     <th className="p-1.5 border border-black text-center font-bold">FA's & SA1 Ave. 20%</th>
                     <th className="p-1.5 border border-black text-center font-bold">SA-2 80</th>
                     <th className="p-1.5 border border-black text-center font-bold bg-neutral-100/80">Total 100</th>
@@ -9175,7 +9176,7 @@ const CentralRegister = ({
               ) : (
                 spreadsheetData.map((row: any, idx: number) => {
                   return (
-                    <tr key={row.student.id || row.student.uid} className="hover:bg-neutral-50/50 transition-colors bg-white font-medium text-neutral-800">
+                    <tr key={`${row.student.id || row.student.uid || idx}-${idx}`} className="hover:bg-neutral-50/50 transition-colors bg-white font-medium text-neutral-800">
                       {/* Admn No */}
                       <td className="p-2 border border-black text-center font-mono font-bold text-neutral-600 bg-neutral-50/30">
                         {row.admissionNo}
@@ -9204,11 +9205,11 @@ const CentralRegister = ({
                       </td>
 
                       {/* Subject Marks Columns */}
-                      {activeSubjects.map((sub: any) => {
+                      {activeSubjects.map((sub: any, idx: number) => {
                         const details = row.subjectDetails[sub.id] || { ave20: 0, sa2_80: null, total: 0 };
                         const isFailed = details.total < 35;
                         return (
-                          <React.Fragment key={sub.id}>
+                          <React.Fragment key={`${sub.id || idx}-${idx}`}>
                             <td className="p-2 border border-black text-center font-mono font-bold text-neutral-500 bg-neutral-50/10">
                               {details.ave20}
                             </td>
@@ -9303,7 +9304,7 @@ const CentralRegister = ({
                 processedData.map((row: any, idx: number) => {
                   return (
                     <tr 
-                      key={row.student.id || row.student.uid} 
+                      key={`${row.student.id || row.student.uid || idx}-${idx}`} 
                       className={`hover:bg-neutral-50/50 transition-colors ${row.isNonAttending ? 'bg-amber-50/20' : ''} ${!row.isPass && !row.isNonAttending ? 'bg-red-50/10' : ''}`}
                     >
                       <td className="p-4 text-center text-xs font-bold text-neutral-400 font-mono">
@@ -10711,11 +10712,11 @@ const AbstractSummaryTab = ({
   };
 
   // Render individual Excel Ledger Card
-  const renderExcelLedgerCard = (cs: any) => {
+  const renderExcelLedgerCard = (cs: any, idx: number) => {
     const totalRows = Math.max(7, cs.subjectFailures.length);
 
     return (
-      <div key={`${cs.classId}_${cs.batchId}`} className="flex flex-col bg-white rounded-2xl border border-neutral-200 shadow-sm overflow-hidden transition-all hover:shadow-md">
+      <div key={`${cs.classId}_${cs.batchId}_${idx}`} className="flex flex-col bg-white rounded-2xl border border-neutral-200 shadow-sm overflow-hidden transition-all hover:shadow-md">
         {/* Card Top Toolbar */}
         <div className="flex items-center justify-between px-4 py-2.5 bg-neutral-100/80 border-b border-neutral-200">
           <div className="flex items-center gap-2">
@@ -10868,8 +10869,8 @@ const AbstractSummaryTab = ({
               onChange={(e) => setSelectedExamId(e.target.value)}
               className="bg-transparent text-xs font-black uppercase tracking-wider outline-none text-sidebar cursor-pointer py-1"
             >
-              {scheduledExams.map((e: any) => (
-                <option key={e.id} value={e.id}>{e.title}</option>
+              {scheduledExams.map((e: any, idx: number) => (
+                <option key={`${e.id || idx}-${idx}`} value={e.id}>{e.title}</option>
               ))}
             </select>
           </div>
@@ -11023,7 +11024,7 @@ const AbstractSummaryTab = ({
             </div>
           ) : (
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-              {filteredSummaries.map((cs) => renderExcelLedgerCard(cs))}
+              {filteredSummaries.map((cs, idx) => renderExcelLedgerCard(cs, idx))}
             </div>
           )}
         </div>

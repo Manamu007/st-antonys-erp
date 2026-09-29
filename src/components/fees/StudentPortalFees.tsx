@@ -1354,7 +1354,7 @@ const StudentPortalFees: React.FC<StudentPortalFeesProps> = ({
                      </div>
 
                      <div className="space-y-1.5 flex-1 overflow-y-auto pr-1">
-                        {unpaidComponents.map(c => {
+                        {unpaidComponents.map((c, idx) => {
                            const paid = Number(effectivePaidComponents[c.id] || 0);
                            const remainingNum = Math.max(0, c.amount - paid);
                            const isChecked = !!selectedComponentsMap[c.id];
@@ -1362,7 +1362,7 @@ const StudentPortalFees: React.FC<StudentPortalFeesProps> = ({
 
                            return (
                               <div 
-                                 key={c.id} 
+                                 key={`${c.id || idx}-${idx}`} 
                                  className={`p-2 rounded-lg border transition-all flex items-center justify-between gap-2 ${
                                     isChecked 
                                        ? 'bg-white border-blue-400 shadow-2xs ring-1 ring-blue-200' 

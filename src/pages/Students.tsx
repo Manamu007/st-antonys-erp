@@ -139,9 +139,9 @@ const SearchableSelect: FC<{
       {isOpen && !disabled && (
         <div className="absolute z-[100] w-full mt-1 bg-white border border-neutral-200 rounded-xl shadow-xl max-h-60 overflow-y-auto">
           {filteredOptions.length > 0 ? (
-            filteredOptions.map((opt) => (
+            filteredOptions.map((opt, idx) => (
               <button
-                key={opt.value}
+                key={`${opt.value || idx}-${idx}`}
                 type="button"
                 className={`w-full px-4 py-2.5 text-left text-sm hover:bg-neutral-50 transition-colors font-bold ${
                   opt.value === value ? 'text-primary bg-primary/5' : 'text-neutral-700'
@@ -3422,7 +3422,7 @@ const Students: FC = () => {
             }}
           >
             {!isTeacherPortal && <option value="">All Classes</option>}
-            {availableClasses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            {availableClasses.map((c, idx) => <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name}</option>)}
           </select>
 
           <select
@@ -3432,8 +3432,8 @@ const Students: FC = () => {
             disabled={!filterClass}
           >
             {!isTeacherPortal && <option value="">All Batches</option>}
-            {availableBatches.map(b => (
-              <option key={b.id} value={b.id}>{b.name}</option>
+            {availableBatches.map((b, idx) => (
+              <option key={`${b.id || idx}-${idx}`} value={b.id}>{b.name}</option>
             ))}
           </select>
 
@@ -3601,8 +3601,8 @@ const Students: FC = () => {
                   </td>
                 </tr>
               ) : (
-                paginatedList.map((student) => (
-                  <React.Fragment key={student.uid || student.id}>
+                paginatedList.map((student, idx) => (
+                  <React.Fragment key={`${student.uid || student.id || idx}-${idx}`}>
                     <tr className="hover:bg-neutral-50/50 transition-colors">
                       <td className="px-6 py-4 font-mono text-neutral-600">{student.rollNumber || '---'}</td>
                       <td className="px-6 py-4">
@@ -4484,8 +4484,8 @@ const Students: FC = () => {
                       className="w-full px-4 py-3 bg-neutral-50 border border-neutral-200 focus:border-primary focus:bg-white rounded-xl outline-none transition-all font-medium text-[14px] text-neutral-700 font-bold"
                     >
                       <option value="">-- Choose Class --</option>
-                      {availableClasses.map(c => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
+                      {availableClasses.map((c, idx) => (
+                        <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name}</option>
                       ))}
                     </select>
                   </div>
@@ -4502,8 +4502,8 @@ const Students: FC = () => {
                       <option value="">-- Choose Batch --</option>
                       {batches
                         .filter(b => b.classId === studentFormData.classId)
-                        .map(b => (
-                          <option key={b.id} value={b.id}>{b.name}</option>
+                        .map((b, idx) => (
+                          <option key={`${b.id || idx}-${idx}`} value={b.id}>{b.name}</option>
                         ))
                       }
                     </select>
@@ -4594,8 +4594,8 @@ const Students: FC = () => {
                     >
                       <option value="">No Concession Applied</option>
                       <option value="custom">Custom Flat Waiver (₹ - Fixed)</option>
-                      {concessions.map(c => (
-                        <option key={c.id} value={c.id}>{c.name} ({c.type === 'percentage' ? `${c.value}%` : `₹${c.value}`})</option>
+                      {concessions.map((c, idx) => (
+                        <option key={`fee-${c.id || idx}-${idx}`} value={c.id}>{c.name} ({c.type === 'percentage' ? `${c.value}%` : `₹${c.value}`})</option>
                       ))}
                     </select>
                     {studentFormData.admissionConcessionType && (
@@ -4648,8 +4648,8 @@ const Students: FC = () => {
                     >
                       <option value="">No Concession Applied</option>
                       <option value="custom">Custom Flat Waiver (₹ - Fixed)</option>
-                      {concessions.map(c => (
-                        <option key={c.id} value={c.id}>{c.name} ({c.type === 'percentage' ? `${c.value}%` : `₹${c.value}`})</option>
+                      {concessions.map((c, idx) => (
+                        <option key={`adm-${c.id || idx}-${idx}`} value={c.id}>{c.name} ({c.type === 'percentage' ? `${c.value}%` : `₹${c.value}`})</option>
                       ))}
                     </select>
                     {studentFormData.feeConcessionType && (
@@ -4835,8 +4835,8 @@ const Students: FC = () => {
                           className="w-full px-4 py-3 bg-neutral-50 border border-neutral-200 focus:border-primary focus:bg-white rounded-xl outline-none transition-all font-medium text-[14px] text-neutral-700 font-bold"
                         >
                           <option value="">-- Select Bus Route --</option>
-                          {buses.map(bus => (
-                            <option key={bus.id} value={bus.id}>{bus.busNumber} ({bus.driverName})</option>
+                          {buses.map((bus, idx) => (
+                            <option key={`${bus.id || idx}-${idx}`} value={bus.id}>{bus.busNumber} ({bus.driverName})</option>
                           ))}
                         </select>
                       </div>
@@ -4859,8 +4859,8 @@ const Students: FC = () => {
                           <option value="">-- Choose Stop --</option>
                           {stops
                             .filter(s => s.busId === studentFormData.busRoute)
-                            .map(s => (
-                              <option key={s.id} value={s.id}>{s.villageName} - ₹{Number(s.fee).toLocaleString()}</option>
+                            .map((s, idx) => (
+                              <option key={`${s.id || idx}-${idx}`} value={s.id}>{s.villageName} - ₹{Number(s.fee).toLocaleString()}</option>
                             ))
                           }
                         </select>
@@ -5399,7 +5399,7 @@ const Students: FC = () => {
                       onChange={(e) => setExportFilters({ ...exportFilters, classId: e.target.value, batchId: '' })}
                     >
                       <option value="">All Classes</option>
-                      {availableClasses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      {availableClasses.map((c, idx) => <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name}</option>)}
                     </select>
                   </div>
 
@@ -5412,7 +5412,7 @@ const Students: FC = () => {
                       onChange={(e) => setExportFilters({ ...exportFilters, batchId: e.target.value })}
                     >
                       <option value="">All Batches</option>
-                      {exportAvailableBatches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                      {exportAvailableBatches.map((b, idx) => <option key={`${b.id || idx}-${idx}`} value={b.id}>{b.name}</option>)}
                     </select>
                   </div>
 
@@ -5424,7 +5424,7 @@ const Students: FC = () => {
                       onChange={(e) => setExportFilters({ ...exportFilters, busRoute: e.target.value })}
                     >
                       <option value="">All Bus Routes</option>
-                      {buses.map(b => <option key={b.id} value={b.id}>Bus: {b.busNumber} ({b.driverName})</option>)}
+                      {buses.map((b, idx) => <option key={`${b.id || idx}-${idx}`} value={b.id}>Bus: {b.busNumber} ({b.driverName})</option>)}
                     </select>
                   </div>
 

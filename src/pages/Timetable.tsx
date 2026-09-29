@@ -2849,11 +2849,11 @@ Format:
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-100">
-                  {batches.map(batch => {
+                  {batches.map((batch, idx) => {
                     const tt = timetables.find(t => t.day === masterViewDay && t.batchId === batch.id);
 
                     return (
-                      <tr key={batch.id} className="hover:bg-neutral-50/20 transition-colors">
+                      <tr key={`${batch.id || idx}-${idx}`} className="hover:bg-neutral-50/20 transition-colors">
                         <td className="p-4 border-r border-neutral-100 bg-neutral-50/30 sticky left-0 z-10 font-black text-sidebar text-sm">
                           {batch.name}
                         </td>
@@ -3659,12 +3659,12 @@ Format:
                     {subjects.length === 0 ? (
                       <p className="text-xs font-bold text-neutral-400 py-4 text-center">No subjects registered yet. Please add subjects first.</p>
                     ) : (
-                      subjects.map((sub) => {
+                      subjects.map((sub, idx) => {
                         const currentTarget = schedulerConfig.subjectRequiredPeriods?.[sub.id] !== undefined
                           ? schedulerConfig.subjectRequiredPeriods[sub.id]
                           : 5;
                         return (
-                          <div key={sub.id} className="p-4 bg-neutral-50 rounded-2xl border border-neutral-100/80 space-y-3">
+                          <div key={`${sub.id || idx}-${idx}`} className="p-4 bg-neutral-50 rounded-2xl border border-neutral-100/80 space-y-3">
                             {/* Header row: Subject Name, Code and its Global default slider */}
                             <div className="flex items-center justify-between gap-4">
                               <div className="space-y-0.5">
@@ -4616,8 +4616,8 @@ Format:
                       </div>
                     ) : (
                       <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
-                        {getFilteredCustomRules().map((rule) => (
-                          <div key={rule.id} className="flex items-center justify-between p-3.5 bg-neutral-50 hover:bg-neutral-100/50 rounded-2xl border border-neutral-200/50 transition-colors">
+                        {getFilteredCustomRules().map((rule, idx) => (
+                          <div key={`${rule.id || idx}-${idx}`} className="flex items-center justify-between p-3.5 bg-neutral-50 hover:bg-neutral-100/50 rounded-2xl border border-neutral-200/50 transition-colors">
                             <div className="flex items-start gap-3 max-w-[80%]">
                               <input
                                 type="checkbox"
@@ -4863,7 +4863,7 @@ Format:
                 return <p className="text-xs font-bold text-neutral-400 col-span-full py-2">No scheduled subjects or targets defined yet.</p>;
               }
               
-              return relevantSubjects.map(sub => {
+              return relevantSubjects.map((sub, idx) => {
                 const scheduled = scheduledCounts[sub.id] || 0;
                 const target = schedulerConfig.subjectRequiredPeriods?.[`${sub.id}_${selectedBatchId}`] !== undefined
                   ? schedulerConfig.subjectRequiredPeriods[`${sub.id}_${selectedBatchId}`]
@@ -4874,7 +4874,7 @@ Format:
                 const isMet = scheduled >= target;
                 
                 return (
-                  <div key={sub.id} className="p-3.5 rounded-2xl border border-neutral-100 bg-neutral-50/50 space-y-2.5">
+                  <div key={`${sub.id || idx}-${idx}`} className="p-3.5 rounded-2xl border border-neutral-100 bg-neutral-50/50 space-y-2.5">
                     <div className="flex justify-between items-start">
                       <div>
                         <h5 className="text-xs font-black text-sidebar leading-tight truncate">{sub.name}</h5>

@@ -259,9 +259,9 @@ export const NotificationCenter: React.FC = () => {
                 </div>
               ) : (
                 <div className="space-y-1">
-                  {notifications.map((notif) => (
+                  {notifications.map((notif, idx) => (
                     <div 
-                      key={notif.id}
+                      key={`${notif.id || idx}-${idx}`}
                       onClick={() => {
                         setNotifications(prev => prev.map(n => n.id === notif.id ? { ...n, isRead: true } : n));
                       }}

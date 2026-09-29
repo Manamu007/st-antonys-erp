@@ -1207,11 +1207,11 @@ export default function FrontOffice() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-100">
-                  {filteredStaff.map((person) => {
+                  {filteredStaff.map((person, idx) => {
                     const status = getAttendanceStatus(person.uid);
                     const staffName = getStaffDisplayName(person);
                     return (
-                    <tr key={person.uid} className="hover:bg-neutral-50 transition-colors">
+                    <tr key={`${person.uid || idx}-${idx}`} className="hover:bg-neutral-50 transition-colors">
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-3">
                           {(person.photoURL || person.photoUrl || person.facePhotoURL || person.facePhotoUrl) ? (
@@ -1351,8 +1351,8 @@ export default function FrontOffice() {
                   className="px-4 py-2 bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm font-bold text-neutral-700"
                 >
                   <option value="all">All Classes</option>
-                  {classes.map(c => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
+                  {classes.map((c, idx) => (
+                    <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name}</option>
                   ))}
                 </select>
                 <select
@@ -1361,8 +1361,8 @@ export default function FrontOffice() {
                   className="px-4 py-2 bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm font-bold text-neutral-700"
                 >
                   <option value="all">All Batches</option>
-                  {batches.filter(b => selectedClassId === 'all' || b.classId === selectedClassId).map(b => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
+                  {batches.filter(b => selectedClassId === 'all' || b.classId === selectedClassId).map((b, idx) => (
+                    <option key={`${b.id || idx}-${idx}`} value={b.id}>{b.name}</option>
                   ))}
                 </select>
               </div>
@@ -1431,12 +1431,12 @@ export default function FrontOffice() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-100">
-                  {filteredStudents.map((student) => {
+                  {filteredStudents.map((student, idx) => {
                     const studentPerms = permissionsRecords.filter(p => p.studentId === student.uid);
                     const studentName = getPersonDisplayName(student);
 
                     return (
-                    <tr key={student.uid} className="hover:bg-neutral-50 transition-colors">
+                    <tr key={`${student.uid || idx}-${idx}`} className="hover:bg-neutral-50 transition-colors">
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-3">
                           {(student.photoURL || student.photoUrl || student.facePhotoURL || student.facePhotoUrl) ? (
@@ -1544,8 +1544,8 @@ export default function FrontOffice() {
                     className="px-4 py-2 bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 text-sm font-bold text-neutral-700"
                   >
                     <option value="all">All Classes</option>
-                    {classes.map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
+                    {classes.map((c, idx) => (
+                      <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name}</option>
                     ))}
                   </select>
                   <select
@@ -1554,8 +1554,8 @@ export default function FrontOffice() {
                     className="px-4 py-2 bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 text-sm font-bold text-neutral-700"
                   >
                     <option value="all">All Batches</option>
-                    {batches.filter(b => selectedClassId === 'all' || b.classId === selectedClassId).map(b => (
-                      <option key={b.id} value={b.id}>{b.name}</option>
+                    {batches.filter(b => selectedClassId === 'all' || b.classId === selectedClassId).map((b, idx) => (
+                      <option key={`${b.id || idx}-${idx}`} value={b.id}>{b.name}</option>
                     ))}
                   </select>
                 </div>
@@ -1621,10 +1621,10 @@ export default function FrontOffice() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-100">
-                  {faceRegMembers.map((member) => {
+                  {faceRegMembers.map((member, idx) => {
                     const memberName = getPersonDisplayName(member);
                     return (
-                    <tr key={member.uid} className="hover:bg-neutral-50/50 transition-colors group">
+                    <tr key={`${member.uid || idx}-${idx}`} className="hover:bg-neutral-50/50 transition-colors group">
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-4">
                           {(member.photoURL || member.photoUrl || member.facePhotoURL || member.facePhotoUrl) ? (

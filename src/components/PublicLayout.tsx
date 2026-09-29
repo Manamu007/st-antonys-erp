@@ -106,9 +106,10 @@ const PublicLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => 
              </button>
              <Link 
                 to="/login"
-                className="flex items-center justify-center w-11 h-11 bg-white/10 hover:bg-white/20 rounded-full transition-all group"
+                className="flex items-center gap-1.5 px-4 py-2.5 bg-primary/90 hover:bg-primary text-white rounded-full text-[10px] font-black uppercase tracking-wider transition-all shadow-md hover:scale-105"
              >
-               <ArrowUpRight className="w-5 h-5 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+               <span>ERP Portal</span>
+               <ArrowUpRight className="w-3.5 h-3.5" />
              </Link>
            </div>
         </div>

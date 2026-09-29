@@ -2171,7 +2171,7 @@ export default function IdCards() {
                   className="w-full bg-neutral-50 border border-neutral-200 rounded-xl px-4 py-2 text-sm font-medium focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
                 >
                   <option value="all">All Classes</option>
-                  {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  {classes.map((c, idx) => <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name}</option>)}
                 </select>
               )}
 
@@ -2190,8 +2190,8 @@ export default function IdCards() {
             </div>
 
             <div className="flex-1 overflow-y-auto pr-2 rounded-xl border border-neutral-200 bg-neutral-50/50 p-2 space-y-1.5 custom-scrollbar min-h-[150px]">
-              {filteredList.map(p => (
-                <label key={p.uid} className="flex items-center gap-3 p-2 bg-white hover:bg-indigo-50/50 rounded-lg cursor-pointer transition-all border border-neutral-100 hover:border-indigo-200 shadow-sm">
+              {filteredList.map((p, idx) => (
+                <label key={`${p.uid || idx}-${idx}`} className="flex items-center gap-3 p-2 bg-white hover:bg-indigo-50/50 rounded-lg cursor-pointer transition-all border border-neutral-100 hover:border-indigo-200 shadow-sm">
                   <input 
                     type="checkbox" 
                     checked={selectedIds.has(p.uid)}

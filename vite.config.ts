@@ -102,12 +102,8 @@ export default defineConfig(({command, mode}) => {
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
-        'react': path.resolve(__dirname, 'node_modules/react'),
-        'react-dom': path.resolve(__dirname, 'node_modules/react-dom'),
-        'react/jsx-runtime': path.resolve(__dirname, 'node_modules/react/jsx-runtime.js'),
-        'react/jsx-dev-runtime': path.resolve(__dirname, 'node_modules/react/jsx-dev-runtime.js'),
       },
-      dedupe: ['react', 'react-dom', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'react-router-dom', 'motion', 'motion/react'],
+      dedupe: ['react', 'react-dom', 'react-router-dom', 'motion', 'motion/react'],
     },
     optimizeDeps: {
       include: [
@@ -131,28 +127,7 @@ export default defineConfig(({command, mode}) => {
       outDir: 'dist',
       sourcemap: false,
       cssCodeSplit: true,
-      chunkSizeWarningLimit: 1000,
-      rollupOptions: {
-        output: {
-          manualChunks(id) {
-            if (id.includes('node_modules')) {
-              if (id.includes('jspdf') || id.includes('html2canvas') || id.includes('xlsx')) {
-                return 'vendor-export';
-              }
-              if (id.includes('face-api.js')) {
-                return 'vendor-faceapi';
-              }
-              if (id.includes('lucide-react')) {
-                return 'vendor-icons';
-              }
-              if (id.includes('react') || id.includes('react-dom') || id.includes('react-router')) {
-                return 'vendor-react';
-              }
-              return 'vendor';
-            }
-          }
-        }
-      }
+      chunkSizeWarningLimit: 1000
     },
     server: {
       allowedHosts: true,

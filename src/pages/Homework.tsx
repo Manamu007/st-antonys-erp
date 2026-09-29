@@ -679,7 +679,7 @@ const Homework: React.FC = () => {
               <div className="col-span-2 text-center py-12 text-neutral-400 bg-white rounded-2xl border border-dashed border-neutral-200">
                 No homework assigned yet.
               </div>
-            ) : filteredHomeworks.map((hw) => {
+            ) : filteredHomeworks.map((hw, idx) => {
               const todayStr = new Date().toISOString().split('T')[0];
               const isAssignedToday = hw.createdAt ? hw.createdAt.split('T')[0] === todayStr : false;
               const isDueToday = hw.dueDate === todayStr;
@@ -687,7 +687,7 @@ const Homework: React.FC = () => {
 
               return (
                 <div 
-                  key={hw.id} 
+                  key={`${hw.id || idx}-${idx}`} 
                   className={`p-5 rounded-2xl shadow-sm hover:shadow-xl transition-all group relative overflow-hidden transition-all duration-300 border-2 ${
                     isPresentDay 
                       ? 'bg-gradient-to-br from-emerald-500/[0.01] to-teal-500/[0.03] border-emerald-500/80 shadow-md shadow-emerald-500/5 hover:border-emerald-500 ring-2 ring-emerald-500/5'
@@ -879,8 +879,8 @@ const Homework: React.FC = () => {
                       onChange={(e) => setNewHomework({...newHomework, class: e.target.value})}
                     >
                       <option value="">Select Class/Batch</option>
-                      {availableBatches.map(b => (
-                        <option key={b.id} value={b.id}>
+                      {availableBatches.map((b, idx) => (
+                        <option key={`${b.id || idx}-${idx}`} value={b.id}>
                           {(availableClasses.find(c => c.id === b.classId)?.name) || ''} - {b.name}
                         </option>
                       ))}
@@ -925,9 +925,9 @@ const Homework: React.FC = () => {
                       {Object.keys(subjectsHomework).length === 0 ? (
                         <p className="text-xs text-neutral-500 text-center py-4">No subjects mapped to this class.</p>
                       ) : (
-                        Object.entries(subjectsHomework).map(([subName, data]) => (
+                        Object.entries(subjectsHomework).map(([subName, data], idx) => (
                           <div 
-                            key={subName} 
+                            key={`${subName || idx}-${idx}`} 
                             className={`border rounded-xl p-3.5 transition-all duration-200 ${
                               data.checked 
                                 ? 'bg-white border-primary/30 shadow-xs ring-1 ring-primary/5' 
@@ -1053,8 +1053,8 @@ const Homework: React.FC = () => {
                       onChange={(e) => setSuggestionSubject(e.target.value)}
                     >
                       <option value="">Choose Class Subject</option>
-                      {getClassRelatedSubjects().map(subName => (
-                        <option key={subName} value={subName}>
+                      {getClassRelatedSubjects().map((subName, idx) => (
+                        <option key={`${subName || idx}-${idx}`} value={subName}>
                           {subName}
                         </option>
                       ))}

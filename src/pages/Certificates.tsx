@@ -572,9 +572,9 @@ const Certificates: React.FC = () => {
                   (String(s.rollNumber || "")).toLowerCase().includes(searchTerm.toLowerCase())
                 )
                 .slice(0, 4)
-                .map(student => (
+                .map((student, idx) => (
                   <button 
-                    key={student.uid}
+                    key={`${student.uid || idx}-${idx}`}
                     onClick={() => {
                       setSelectedStudent(student);
                       setSearchTerm(student.name);
@@ -787,10 +787,10 @@ const Certificates: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100">
-                {issuedCertificates.map(cert => {
+                {issuedCertificates.map((cert, idx) => {
                   const student = students.find(s => s.uid === cert.studentId);
                   return (
-                    <tr key={cert.id} className="hover:bg-neutral-50/50 transition-colors">
+                    <tr key={`${cert.id || idx}-${idx}`} className="hover:bg-neutral-50/50 transition-colors">
                       <td className="px-8 py-6 font-black text-xs text-sidebar">{cert.certificateNumber}</td>
                       <td className="px-8 py-6">
                         <div className="flex items-center gap-3">

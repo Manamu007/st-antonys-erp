@@ -288,9 +288,9 @@ const StudentAttendancePortal: React.FC<StudentAttendancePortalProps> = ({ profi
           <div className="flex flex-col gap-1 w-full md:w-auto">
             <span className="text-[10px] font-black uppercase text-neutral-400 tracking-widest leading-none font-mono">Select Active Sibling</span>
             <div className="flex items-center gap-2 p-1 bg-white rounded-2xl border border-neutral-150 shadow-sm flex-wrap w-fit">
-              {studentProfiles.map((child) => (
+              {studentProfiles.map((child, idx) => (
                 <button
-                  key={child.uid || child.id}
+                  key={`${child.uid || child.id || idx}-${idx}`}
                   onClick={() => switchProfile(child.uid || child.id)}
                   className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
                     (profile.uid || profile.id) === (child.uid || child.id)
@@ -588,7 +588,7 @@ const Attendance: React.FC = () => {
       }
     };
     fetchStatus();
-    const interval = setInterval(fetchStatus, 45000); // Check every 45s, pause when hidden
+    const interval = setInterval(fetchStatus, 180000); // Check every 180s, pause when hidden
     return () => {
       active = false;
       clearInterval(interval);
@@ -3606,8 +3606,8 @@ const Attendance: React.FC = () => {
                     disabled={isTeacherRole && availableClasses.length <= 1}
                   >
                     {(canViewAllClasses && !isTeacherRole) && <option value="all">All Classes</option>}
-                    {availableClasses.map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
+                    {availableClasses.map((c, idx) => (
+                      <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name}</option>
                     ))}
                   </select>
                 )}
@@ -3619,8 +3619,8 @@ const Attendance: React.FC = () => {
                     disabled={filterClass === 'all' || (isTeacherRole && availableBatches.length <= 1)}
                   >
                      {(canViewAllBatches && !isTeacherRole) && <option value="all">All Batches</option>}
-                    {availableBatches.map(b => (
-                      <option key={b.id} value={b.id}>{b.name}</option>
+                    {availableBatches.map((b, idx) => (
+                      <option key={`${b.id || idx}-${idx}`} value={b.id}>{b.name}</option>
                     ))}
                   </select>
                 )}
@@ -3798,12 +3798,12 @@ const Attendance: React.FC = () => {
                   <tr><td colSpan={5} className="px-6 py-12 text-center text-neutral-400">Loading...</td></tr>
                 ) : paginatedPeople.length === 0 ? (
                   <tr><td colSpan={5} className="px-6 py-12 text-center text-neutral-400">No records found.</td></tr>
-                ) : paginatedPeople.map((person) => {
+                ) : paginatedPeople.map((person, idx) => {
                   const personId = person.uid || person.id;
                   const status = getStatus(personId);
                   const personDisplayName = getPersonDisplayName(person);
                   return (
-                    <tr key={personId} className="hover:bg-neutral-50/50 transition-colors group">
+                    <tr key={`${personId || idx}-${idx}`} className="hover:bg-neutral-50/50 transition-colors group">
                       {activeTab === 'student' ? (
                         <>
                           <td className="px-6 py-4 text-lg text-neutral-800 font-mono font-bold">
@@ -3993,12 +3993,12 @@ const Attendance: React.FC = () => {
                     No frequent absentees found.
                   </div>
                 ) : (
-                  frequentAbsentees.filter(fa => filteredPeople.some(p => (p.uid || p.id) === fa.id)).map(fa => {
+                  frequentAbsentees.filter(fa => filteredPeople.some(p => (p.uid || p.id) === fa.id)).map((fa, idx) => {
                     const person = filteredPeople.find(p => (p.uid || p.id) === fa.id)!;
                     const personId = person?.uid || person?.id || fa.id;
                     const personDisplayName = getPersonDisplayName(person);
                     return (
-                      <div key={personId} className="flex items-center justify-between p-2 hover:bg-neutral-50 rounded-lg transition-colors cursor-pointer group">
+                      <div key={`${personId || idx}-${idx}`} className="flex items-center justify-between p-2 hover:bg-neutral-50 rounded-lg transition-colors cursor-pointer group">
                         <div className="flex items-center gap-3">
                           {person?.photoURL ? (
                             <img src={person.photoURL} alt={personDisplayName} className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
@@ -4036,11 +4036,11 @@ const Attendance: React.FC = () => {
                     {activeTab === 'staff' ? "No staff marked absent today" : "No students marked absent today"}
                   </div>
                 ) : (
-                  filteredPeople.filter(p => !isNonAttendingPerson(p) && getStatus(p.uid || p.id) === 'absent').map(absentee => {
+                  filteredPeople.filter(p => !isNonAttendingPerson(p) && getStatus(p.uid || p.id) === 'absent').map((absentee, idx) => {
                     const absenteeId = absentee.uid || absentee.id;
                     const absenteeDisplayName = getPersonDisplayName(absentee);
                     return (
-                    <div key={absenteeId} className="flex items-center justify-between p-2 hover:bg-neutral-50 rounded-lg transition-colors cursor-pointer group">
+                    <div key={`${absenteeId || idx}-${idx}`} className="flex items-center justify-between p-2 hover:bg-neutral-50 rounded-lg transition-colors cursor-pointer group">
                       <div className="flex items-center gap-3">
                         {absentee.photoURL ? (
                           <img src={absentee.photoURL} alt={absenteeDisplayName} className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
@@ -4559,7 +4559,7 @@ const ConsolidatedAttendanceRegister = ({ students, selectedClass, selectedBatch
                   const percentage = workingGrandTotal > 0 ? (grandTotal / workingGrandTotal) * 100 : 0;
 
                   return (
-                    <tr key={sId} className="hover:bg-neutral-50 transition-colors group">
+                    <tr key={`${sId || idx}-${idx}`} className="hover:bg-neutral-50 transition-colors group">
                       <td className="border border-neutral-200 p-1.5 font-black text-blue-800">{student.admissionNumber || ''}</td>
                       <td className="border border-neutral-200 p-1.5 text-red-600 font-bold">{student.rollNumber || (realIdx + 1)}</td>
                       <td className={`border border-neutral-200 p-1.5 text-left pl-3 font-medium not-italic ${(String(student.gender || "")).toLowerCase() === 'female' ? 'text-blue-600' : 'text-sidebar'}`}>{getPersonDisplayName(student)}</td>

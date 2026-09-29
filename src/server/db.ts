@@ -126,7 +126,10 @@ export class MongoDocRef {
       try {
         const res = await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          },
           body: JSON.stringify({
             operation: "get",
             path: this.colName,
@@ -278,8 +281,14 @@ export class MongoDocRef {
   onSnapshot(onNext: (doc: any) => void, onError?: (err: any) => void) {
     this.get().then(snap => onNext(snap)).catch(err => onError?.(err));
     const interval = setInterval(() => {
-      this.get().then(snap => onNext(snap)).catch(err => onError?.(err));
-    }, 5000);
+      this.get().then(snap => onNext(snap)).catch(err => {
+        onError?.(err);
+        const errText = String(err?.message || err);
+        if (errText.includes('Quota exceeded') || errText.includes('RESOURCE_EXHAUSTED') || (err as any)?.code === 8) {
+          clearInterval(interval);
+        }
+      });
+    }, 25000);
     return () => clearInterval(interval);
   }
 }
@@ -327,7 +336,10 @@ export class MongoQueryRef {
       try {
         const res = await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          },
           body: JSON.stringify({
             operation: "list",
             path: this.colName,
@@ -456,8 +468,14 @@ export class MongoQueryRef {
   onSnapshot(onNext: (snap: any) => void, onError?: (err: any) => void) {
     this.get().then(snap => onNext(snap)).catch(err => onError?.(err));
     const interval = setInterval(() => {
-      this.get().then(snap => onNext(snap)).catch(err => onError?.(err));
-    }, 5000);
+      this.get().then(snap => onNext(snap)).catch(err => {
+        onError?.(err);
+        const errText = String(err?.message || err);
+        if (errText.includes('Quota exceeded') || errText.includes('RESOURCE_EXHAUSTED') || (err as any)?.code === 8) {
+          clearInterval(interval);
+        }
+      });
+    }, 25000);
     return () => clearInterval(interval);
   }
 }

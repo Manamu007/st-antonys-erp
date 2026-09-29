@@ -421,7 +421,7 @@ const RiskPrediction: React.FC = () => {
                   onChange={(e) => setFilterClassId(e.target.value)}
                 >
                   <option value="">Select Class</option>
-                  {classes.map(c => <option key={c.id || c.uid} value={c.id || c.uid}>{c.name}</option>)}
+                  {classes.map((c, idx) => <option key={`${(c.id || c.uid) || idx}-${idx}`} value={c.id || c.uid}>{c.name}</option>)}
                 </select>
               </div>
 
@@ -438,7 +438,7 @@ const RiskPrediction: React.FC = () => {
                   <option value="">Select Batch</option>
                   {batches
                     .filter(b => !filterClassId || b.classId === filterClassId)
-                    .map(b => <option key={b.id || b.uid} value={b.id || b.uid}>{b.name}</option>)}
+                    .map((b, idx) => <option key={`${(b.id || b.uid) || idx}-${idx}`} value={b.id || b.uid}>{b.name}</option>)}
                 </select>
               </div>
 

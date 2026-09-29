@@ -94,9 +94,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
     const isChunkError = 
       errorMsg.includes('Failed to fetch dynamically imported module') || 
       errorMsg.includes('Loading chunk') || 
-      errorMsg.includes('dynamic') ||
       errorMsg.includes('Importing a module script failed') ||
-      errorMsg.includes('module script') ||
       error?.name === 'ChunkLoadError';
 
     if (isChunkError && typeof window !== 'undefined') {
@@ -120,9 +118,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
       const isChunkError = 
         errorMsg.includes('Failed to fetch dynamically imported module') || 
         errorMsg.includes('Loading chunk') || 
-        errorMsg.includes('dynamic') ||
         errorMsg.includes('Importing a module script failed') ||
-        errorMsg.includes('module script') ||
         this.state.error?.name === 'ChunkLoadError';
 
       return (

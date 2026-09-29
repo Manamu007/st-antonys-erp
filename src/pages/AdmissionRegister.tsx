@@ -641,7 +641,7 @@ export default function AdmissionRegister() {
             className="w-full px-4 py-2.5 bg-neutral-900/60 border border-white/10 rounded-xl text-sm text-neutral-300 focus:outline-none focus:border-rose-500"
           >
             <option value="all">All Classes</option>
-            {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            {classes.map((c, idx) => <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name}</option>)}
           </select>
         </div>
 
@@ -656,8 +656,8 @@ export default function AdmissionRegister() {
             <option value="all">All Batches</option>
             {batches
               .filter(b => b.classId === selectedClass)
-              .map(b => (
-                <option key={b.id} value={b.id}>{b.name}</option>
+              .map((b, idx) => (
+                <option key={`${b.id || idx}-${idx}`} value={b.id}>{b.name}</option>
               ))
             }
           </select>
@@ -839,7 +839,7 @@ export default function AdmissionRegister() {
 
                       return (
                         <tr 
-                          key={s.id} 
+                          key={`${s.id || idx}-${idx}`} 
                           className={`hover:bg-rose-500/5 transition-colors ${
                             vintageTheme 
                               ? `${idx % 2 === 0 ? 'bg-[#faf8f2]' : 'bg-[#f4efe3]'} text-neutral-800 border-amber-100` 

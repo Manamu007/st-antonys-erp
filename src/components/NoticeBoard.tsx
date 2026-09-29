@@ -64,7 +64,7 @@ const NoticeBoard: React.FC<NoticeBoardProps> = ({ isPublic = false }) => {
     };
 
     fetchNotices();
-    const interval = setInterval(fetchNotices, 60000);
+    const interval = setInterval(fetchNotices, 180000);
     return () => {
       isMounted = false;
       clearInterval(interval);
@@ -137,7 +137,7 @@ const NoticeBoard: React.FC<NoticeBoardProps> = ({ isPublic = false }) => {
           <AnimatePresence>
             {notices.map((notice, idx) => (
               <motion.div
-                key={notice.id}
+                key={`${notice.id || idx}-${idx}`}
                 initial={{ opacity: 0, y: 30 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: idx * 0.1, duration: 0.5 }}

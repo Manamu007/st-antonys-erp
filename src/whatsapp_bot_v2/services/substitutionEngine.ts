@@ -401,14 +401,15 @@ export async function startSubstitutionEngineListener(): Promise<void> {
           }
         });
       }, (error: any) => {
-        if (isQuotaOrPermissionError(error)) {
-          handleFirestoreError(error, 'Substitution Engine Listener');
+        const errText = String(error?.message || error).toLowerCase();
+        if (isQuotaOrPermissionError(error) || errText.includes('quota') || errText.includes('exhausted') || errText.includes('permission')) {
           if (unsubscribeLeavesListener) {
             try { unsubscribeLeavesListener(); } catch {}
             unsubscribeLeavesListener = null;
           }
+          console.warn(`[Substitution Engine Listener] Firestore listener deactivated due to quota: ${errText}`);
         } else {
-          console.error(`[Substitution Engine Listener] Firestore listener encountered an error:`, error);
+          console.warn(`[Substitution Engine Listener] Firestore listener notice:`, error?.message || error);
         }
       });
   } catch (err: any) {

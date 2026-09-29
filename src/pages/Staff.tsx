@@ -2207,11 +2207,11 @@ const Staff: FC = () => {
 
           {!selectedBatchId ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-              {staffBatches.length > 0 ? staffBatches.map((batch: any) => {
+              {staffBatches.length > 0 ? staffBatches.map((batch: any, idx: number) => {
                 const assignedStaff = staff.filter(s => s.staffBatches?.includes(batch.id));
                 return (
                   <div 
-                    key={batch.id} 
+                    key={`${batch.id || idx}-${idx}`} 
                     onClick={() => setSelectedBatchId(batch.id)}
                     className="group bg-white p-8 rounded-[2.5rem] border-2 border-neutral-100 hover:border-indigo-600 cursor-pointer transition-all duration-300 hover:shadow-2xl hover:shadow-indigo-100/50 relative overflow-hidden text-left"
                   >
@@ -2250,7 +2250,7 @@ const Staff: FC = () => {
                     <div className="flex items-center justify-between pt-6 border-t border-neutral-50">
                       <div className="flex -space-x-2 overflow-hidden">
                         {assignedStaff.slice(0, 4).map((s, i) => (
-                          <div key={s.uid} style={{ zIndex: 4-i }} className="w-8 h-8 rounded-full border-2 border-white bg-indigo-100 flex items-center justify-center text-[10px] font-bold text-indigo-700">
+                          <div key={`${s.uid || i}-${i}`} style={{ zIndex: 4-i }} className="w-8 h-8 rounded-full border-2 border-white bg-indigo-100 flex items-center justify-center text-[10px] font-bold text-indigo-700">
                             {(s.name || 'S').charAt(0)}
                           </div>
                         ))}
@@ -2311,8 +2311,8 @@ const Staff: FC = () => {
                           <div className="pt-6 border-t border-white/10">
                             <p className="text-xs font-black uppercase tracking-widest opacity-40 mb-4">Current Assignments ({allActiveStaffList.filter(s => s.staffBatches?.includes(selectedBatchId)).length})</p>
                             <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-                              {allActiveStaffList.filter(s => s.staffBatches?.includes(selectedBatchId)).map(s => (
-                                <div key={s.uid} className="flex items-center gap-3 p-3 bg-white/10 backdrop-blur-md rounded-2xl border border-white/5 group transition-all hover:bg-white/20">
+                              {allActiveStaffList.filter(s => s.staffBatches?.includes(selectedBatchId)).map((s, idx) => (
+                                <div key={`${s.uid || idx}-${idx}`} className="flex items-center gap-3 p-3 bg-white/10 backdrop-blur-md rounded-2xl border border-white/5 group transition-all hover:bg-white/20">
                                   <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center font-black text-sm">
                                     {(getStaffDisplayName(s) || 'S').charAt(0)}
                                   </div>
@@ -2395,13 +2395,13 @@ const Staff: FC = () => {
                                   s.status === 'active' && 
                                   ((s.name || '').toLowerCase().includes(shiftSearchTerm.toLowerCase()) || 
                                    (s.role || '').toLowerCase().includes(shiftSearchTerm.toLowerCase()))
-                               ).map(s => {
+                               ).map((s, idx) => {
                                  const isAssignedToThisShift = s.staffBatches?.includes(selectedBatchId!);
                                  const isAssignedToAnyShift = (s.staffBatches || []).length > 0;
                                  
                                  return (
                                    <button 
-                                     key={s.uid}
+                                     key={`${s.uid || idx}-${idx}`}
                                      disabled={isAssignedToThisShift}
                                      onClick={() => {
                                        handleAssignToBatch(s.uid, selectedBatchId!);
@@ -2458,9 +2458,9 @@ const Staff: FC = () => {
                     {allActiveStaffList
                       .filter(s => s.status === 'active' && !s.staffBatches?.includes(selectedBatchId!))
                       .slice(0, 4)
-                      .map(s => (
+                      .map((s, idx) => (
                         <button
-                          key={s.uid}
+                          key={`${s.uid || idx}-${idx}`}
                           onClick={() => handleAssignToBatch(s.uid, selectedBatchId!)}
                           className="flex items-center gap-4 p-5 bg-neutral-50 border-2 border-neutral-50 hover:border-indigo-600 hover:bg-white rounded-3xl transition-all text-left group"
                         >
@@ -2619,12 +2619,12 @@ const Staff: FC = () => {
         </tr>
       ) : (
                 <>
-                  {sortedStaff.map((member) => {
+                  {sortedStaff.map((member, idx) => {
                     const assignedClassTeacherBatch = getAssignedClassTeacherBatch(member, batches);
                     const ctClassName = assignedClassTeacherBatch ? (classes.find(c => c.id === assignedClassTeacherBatch.classId)?.name || assignedClassTeacherBatch.className || 'Class') : '';
 
                     return (
-                    <React.Fragment key={member.uid || member.id}>
+                    <React.Fragment key={`${member.uid || member.id || idx}-${idx}`}>
                       <tr className="hover:bg-neutral-50/50 transition-colors group">
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-3">
@@ -3334,16 +3334,16 @@ const Staff: FC = () => {
                         }}
                       >
                         <option value="">Select a shift to assign</option>
-                        {staffBatches.map(b => (
-                          <option key={b.id} value={b.id}>{b.name} ({b.startTime} - {b.endTime})</option>
+                        {staffBatches.map((b, idx) => (
+                          <option key={`${b.id || idx}-${idx}`} value={b.id}>{b.name} ({b.startTime} - {b.endTime})</option>
                         ))}
                       </select>
                     </div>
                     <div className="flex flex-wrap gap-2 mt-2">
-                      {formData.staffBatches.map(sb => {
+                      {formData.staffBatches.map((sb, idx) => {
                         const batch = (staffBatches || []).find(b => b && b.id === sb);
                         return (
-                          <span key={sb} className="px-3 py-1 bg-indigo-50 border border-indigo-100 text-indigo-700 text-xs font-bold rounded-full flex items-center gap-1 shadow-sm">
+                          <span key={`${sb || idx}-${idx}`} className="px-3 py-1 bg-indigo-50 border border-indigo-100 text-indigo-700 text-xs font-bold rounded-full flex items-center gap-1 shadow-sm">
                             {batch?.name || sb}
                             <X 
                               className="w-3 h-3 cursor-pointer hover:text-red-500" 
@@ -3423,8 +3423,8 @@ const Staff: FC = () => {
                           }}
                         >
                           <option value="">Select Class</option>
-                          {classes.map(c => (
-                            <option key={c.id} value={c.id}>{c.name}</option>
+                          {classes.map((c, idx) => (
+                            <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name}</option>
                           ))}
                         </select>
                       </div>
@@ -3440,8 +3440,8 @@ const Staff: FC = () => {
                           <option value="">Select Batch</option>
                           {batches
                             .filter(b => b.classId === selectedAssignClass)
-                            .map(b => (
-                              <option key={b.id} value={b.id}>{b.name}</option>
+                            .map((b, idx) => (
+                              <option key={`${b.id || idx}-${idx}`} value={b.id}>{b.name}</option>
                             ))}
                         </select>
                       </div>
@@ -3454,8 +3454,8 @@ const Staff: FC = () => {
                           onChange={(e) => setSelectedAssignSubject(e.target.value)}
                         >
                           <option value="">Select Subject</option>
-                          {subjectsList.map(s => (
-                            <option key={s.id} value={s.id}>{s.name} ({s.code || 'N/A'})</option>
+                          {subjectsList.map((s, idx) => (
+                            <option key={`${s.id || idx}-${idx}`} value={s.id}>{s.name} ({s.code || 'N/A'})</option>
                           ))}
                         </select>
                       </div>
@@ -3971,8 +3971,8 @@ const Staff: FC = () => {
                   Currently Assigned ({allActiveStaffList.filter(s => s.staffBatches?.includes(activeBatchForAssignments.id)).length})
                 </h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {allActiveStaffList.filter(s => s.staffBatches?.includes(activeBatchForAssignments.id)).map(s => (
-                    <div key={s.uid} className="flex items-center gap-3 p-3 rounded-2xl bg-indigo-50 border border-indigo-100 group">
+                  {allActiveStaffList.filter(s => s.staffBatches?.includes(activeBatchForAssignments.id)).map((s, idx) => (
+                    <div key={`${s.uid || idx}-${idx}`} className="flex items-center gap-3 p-3 rounded-2xl bg-indigo-50 border border-indigo-100 group">
                       <div className="w-8 h-8 rounded-full bg-indigo-200 flex items-center justify-center text-indigo-700 font-bold text-xs ring-2 ring-white">
                         {getStaffDisplayName(s).charAt(0)}
                       </div>
@@ -4049,11 +4049,11 @@ const Staff: FC = () => {
                             s.status === 'active' && 
                             ((s.name || '').toLowerCase().includes(shiftSearchTerm.toLowerCase()) || 
                              (s.role || '').toLowerCase().includes(shiftSearchTerm.toLowerCase()))
-                          ).map(s => {
+                          ).map((s, idx) => {
                             const isAssigned = s.staffBatches?.includes(activeBatchForAssignments.id);
                             return (
                               <button 
-                                key={s.uid} 
+                                key={`${s.uid || idx}-${idx}`} 
                                 disabled={isAssigned}
                                 onClick={() => {
                                   handleAssignToBatch(s.uid, activeBatchForAssignments.id);
@@ -4097,9 +4097,9 @@ const Staff: FC = () => {
                   {allActiveStaffList
                     .filter(s => s.status === 'active' && !s.staffBatches?.includes(activeBatchForAssignments.id))
                     .slice(0, 4)
-                    .map(s => (
+                    .map((s, idx) => (
                       <button
-                        key={s.uid}
+                        key={`${s.uid || idx}-${idx}`}
                         onClick={() => handleAssignToBatch(s.uid, activeBatchForAssignments.id)}
                         className="px-3 py-1.5 bg-neutral-100 hover:bg-indigo-100 hover:text-indigo-700 rounded-full text-[11px] font-bold text-neutral-600 transition-all flex items-center gap-2"
                       >

@@ -576,9 +576,9 @@ const ParentDashboard: React.FC = () => {
             <div className="flex flex-col gap-1.5 align-start">
               <span className="text-[10px] font-black uppercase text-neutral-400 tracking-widest leading-none font-mono">Select Sibling Profile</span>
               <div className="flex items-center gap-2 p-1 bg-white rounded-2xl border border-neutral-150 shadow-sm flex-wrap">
-                {children.map((child) => (
+                {children.map((child, idx) => (
                   <button
-                    key={child.uid || child.id}
+                    key={`${child.uid || child.id || idx}-${idx}`}
                     onClick={() => switchProfile(child.uid || child.id)}
                     className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
                       (profile.uid || profile.id) === (child.uid || child.id)

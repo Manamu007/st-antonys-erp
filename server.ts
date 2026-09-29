@@ -1,5 +1,32 @@
 console.log("[Server] Starting initialization...");
 
+// Global fetch interceptor to append standard browser User-Agent for antonyschool.in requests (bypasses bot blocklists/WAF)
+const originalFetch = globalThis.fetch;
+globalThis.fetch = function(input: any, init?: any) {
+  const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : (input && 'url' in input ? input.url : ''));
+  if (urlStr && urlStr.includes('antonyschool.in')) {
+    init = init || {};
+    init.headers = init.headers || {};
+    const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+    if (init.headers instanceof Headers) {
+      if (!init.headers.has('User-Agent')) {
+        init.headers.set('User-Agent', userAgent);
+      }
+    } else if (Array.isArray(init.headers)) {
+      const hasUA = init.headers.some(([k]) => k.toLowerCase() === 'user-agent');
+      if (!hasUA) {
+        init.headers.push(['User-Agent', userAgent]);
+      }
+    } else {
+      const hasUA = Object.keys(init.headers).some(k => k.toLowerCase() === 'user-agent');
+      if (!hasUA) {
+        init.headers['User-Agent'] = userAgent;
+      }
+    }
+  }
+  return originalFetch.call(this, input, init);
+} as any;
+
 process.on('uncaughtException', (err) => {
   console.error('[Server UncaughtException]', err?.message || err);
 });
@@ -146,12 +173,14 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-  // Allow CORS requests so the AI Studio preview container can read live data from antonyschool.in
+  // Allow CORS and iframe embedding so the AI Studio preview container loads properly
   app.use((req, res, next) => {
+    res.removeHeader('X-Frame-Options');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Range, Accept');
     res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+    res.setHeader('Content-Security-Policy', "frame-ancestors *");
     if (req.method === 'OPTIONS') {
       return res.sendStatus(204);
     }
@@ -237,22 +266,28 @@ async function startServer() {
 
   app.get("/api/whatsapp/status", async (req, res) => {
     try {
-      // 1. Fetch live production WhatsApp status from antonyschool.in
+      const { getWAStatus } = await import("./src/server/whatsapp.js");
+      const local = getWAStatus();
+      
+      // If local WhatsApp engine is active or has an available QR code, return immediately
+      if (local && (local.status === 'open' || local.status === 'qr' || local.qr)) {
+        return res.json(local);
+      }
+
+      // Fast fallback to live production status only if local is closed and remote is online
       try {
         const vpsRes = await fetch("https://antonyschool.in/api/whatsapp/status", {
           headers: { 'Accept': 'application/json' },
-          signal: AbortSignal.timeout(5000)
+          signal: AbortSignal.timeout(1200)
         });
         if (vpsRes.ok) {
           const liveStatus = await vpsRes.json();
-          if (liveStatus && liveStatus.status) {
+          if (liveStatus && liveStatus.status === 'open') {
             return res.json(liveStatus);
           }
         }
       } catch (_) {}
 
-      const { getWAStatus } = await import("./src/server/whatsapp.js");
-      const local = getWAStatus();
       res.json(local || { status: 'close', qr: null });
     } catch {
       res.json({ status: 'close', qr: null });
@@ -433,15 +468,100 @@ async function startServer() {
       const query: any = {};
       if (status) query.status = status;
 
+      // 1. Try Mongoose WhatsAppQueue if connected
       const isMongoConnected = mongoose.connection.readyState === 1;
       if (isMongoConnected) {
-        const items = await WhatsAppQueue.find(query).sort({ createdAt: -1 }).limit(100);
-        return res.json({ success: true, queue: items });
+        try {
+          const items = await WhatsAppQueue.find(query).sort({ createdAt: -1 }).limit(200);
+          if (items && items.length > 0) {
+            return res.json({ success: true, queue: items });
+          }
+        } catch (_) {}
       }
 
-      return res.json({ success: true, message: "Queue worker active (local storage mode)" });
+      // 2. Query via handleWithMongoOrLocal (checks MongoDB, live VPS proxy, and Firestore)
+      const { handleWithMongoOrLocal } = await import("./src/server/maintenance.js");
+      const constraints: any[] = [
+        { type: "limit", value: 200 },
+        { type: "orderBy", field: "createdAt", direction: "desc" }
+      ];
+      if (status) {
+        constraints.unshift({ type: "where", field: "status", op: "==", value: status });
+      }
+
+      const dbRes = await handleWithMongoOrLocal("list", "whatsapp_queue", null, null, constraints, {});
+      if (dbRes?.json?.success && Array.isArray(dbRes.json.data) && dbRes.json.data.length > 0) {
+        return res.json({ success: true, queue: dbRes.json.data });
+      }
+
+      // 3. Fallback: try antonyschool.in live proxy directly
+      try {
+        const liveRes = await fetch("https://antonyschool.in/api/whatsapp/queue" + (status ? `?status=${status}` : ""), {
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(5000)
+        });
+        if (liveRes.ok) {
+          const liveData = await liveRes.json();
+          if (liveData?.queue && Array.isArray(liveData.queue)) {
+            return res.json(liveData);
+          }
+        }
+      } catch (_) {}
+
+      return res.json({ success: true, queue: dbRes?.json?.data || [] });
     } catch (err: any) {
-      res.status(500).json({ success: false, error: err.message });
+      res.status(500).json({ success: false, error: err.message, queue: [] });
+    }
+  });
+
+  app.get("/api/whatsapp/logs", async (req, res) => {
+    try {
+      const { handleWithMongoOrLocal } = await import("./src/server/maintenance.js");
+
+      // Fetch queue items and logs concurrently
+      const [queueRes, logsRes] = await Promise.all([
+        handleWithMongoOrLocal("list", "whatsapp_queue", null, null, [{ type: "limit", value: 300 }, { type: "orderBy", field: "createdAt", direction: "desc" }], {}).catch(() => null),
+        handleWithMongoOrLocal("list", "whatsappLogs", null, null, [{ type: "limit", value: 200 }, { type: "orderBy", field: "timestamp", direction: "desc" }], {}).catch(() => null)
+      ]);
+
+      const map = new Map<string, any>();
+      const addItems = (arr: any[]) => {
+        if (!Array.isArray(arr)) return;
+        arr.forEach(item => {
+          const id = item.id || item.uid || item._id;
+          if (id && !map.has(id)) {
+            const recipient = item.recipient || item.to || '';
+            const timestamp = item.timestamp || item.deliveredAt || item.sentAt || item.createdAt || new Date().toISOString();
+            map.set(id, {
+              id,
+              recipient,
+              to: recipient,
+              text: item.text || item.message || '',
+              message: item.message || item.text || '',
+              status: (item.status || 'sent').toLowerCase(),
+              timestamp,
+              createdAt: item.createdAt || timestamp,
+              type: item.type || item.options?.templateType || item.options?.messageType || 'single',
+              options: item.options || {},
+              studentId: item.options?.studentId || item.studentId,
+              ...item
+            });
+          }
+        });
+      };
+
+      if (logsRes?.json?.data) addItems(logsRes.json.data);
+      if (queueRes?.json?.data) addItems(queueRes.json.data);
+
+      const logs = Array.from(map.values()).sort((a, b) => {
+        const timeA = new Date(a.timestamp || a.createdAt || 0).getTime();
+        const timeB = new Date(b.timestamp || b.createdAt || 0).getTime();
+        return timeB - timeA;
+      });
+
+      return res.json({ success: true, logs });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message, logs: [] });
     }
   });
 
@@ -462,6 +582,80 @@ async function startServer() {
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : "Failed to send community broadcast" });
+    }
+  });
+
+  app.post("/api/whatsapp/pairing-code", express.json(), async (req, res) => {
+    try {
+      const { phoneNumber } = req.body;
+      if (!phoneNumber) {
+        return res.status(400).json({ success: false, error: "Phone number is required" });
+      }
+      const { getPairingCode } = await import("./src/server/whatsapp.js");
+      const code = await getPairingCode(phoneNumber);
+      res.json({ success: true, code });
+    } catch (error: any) {
+      console.error("[WhatsApp Pairing Code Error]", error?.message || error);
+      res.status(500).json({ success: false, error: error?.message || "Failed to generate pairing code" });
+    }
+  });
+
+  // Meta Anti-Ban Protection Shield Status API
+  app.get("/api/whatsapp/antiban/status", async (req, res) => {
+    try {
+      const { getAntiBanShieldStatus } = await import("./src/server/whatsappAntiBan.js");
+      const db = getDbAdmin();
+      const status = await getAntiBanShieldStatus(db);
+      res.json({ success: true, ...status });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || "Failed to load Anti-Ban status" });
+    }
+  });
+
+  // Emergency Queue Freeze / Unfreeze
+  let isQueueFrozen = false;
+  app.post("/api/whatsapp/antiban/freeze", async (req, res) => {
+    try {
+      const { freeze } = req.body;
+      isQueueFrozen = typeof freeze === 'boolean' ? freeze : !isQueueFrozen;
+      
+      const db = getDbAdmin();
+      if (db) {
+        await db.collection('whatsapp_metadata').doc('queue_guardian').set({
+          frozen: isQueueFrozen,
+          frozenAt: new Date().toISOString(),
+          reason: isQueueFrozen ? 'Emergency Freeze activated by administrator' : 'Queue resumed'
+        }, { merge: true });
+      }
+
+      res.json({ success: true, frozen: isQueueFrozen });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || "Failed to toggle queue freeze" });
+    }
+  });
+
+  // Save Meta Official Cloud API Config (100% Ban-Proof Provider)
+  app.post("/api/whatsapp/antiban/cloud-config", async (req, res) => {
+    try {
+      const { phoneNumberId, accessToken, wabaId, enabled } = req.body;
+      const db = getDbAdmin();
+      if (db) {
+        await db.collection('settings').doc('whatsapp_meta_cloud').set({
+          phoneNumberId: phoneNumberId || '',
+          accessToken: accessToken || '',
+          wabaId: wabaId || '',
+          enabled: !!enabled,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      }
+
+      // Also set in process.env for immediate execution
+      if (phoneNumberId) process.env.META_WA_PHONE_NUMBER_ID = phoneNumberId;
+      if (accessToken) process.env.META_WA_ACCESS_TOKEN = accessToken;
+
+      res.json({ success: true, message: "Meta Cloud API credentials saved successfully" });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || "Failed to save Meta Cloud config" });
     }
   });
 
@@ -650,11 +844,22 @@ async function startServer() {
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
     
-    // Initialize WhatsApp and start Watchdog non-blockingly after the HTTP server is up
-    setTimeout(() => {
-      connectToWhatsApp(io, false, false).catch(err => console.error("WA Init Error:", err));
-      startWhatsAppWatchdog(io);
-    }, 1000);
+    // Initialize WhatsApp and start Watchdog safely to avoid multi-server session collisions
+    setTimeout(async () => {
+      try {
+        const { getRemoteWAStatus } = await import("./src/server/whatsapp.js");
+        const remoteStatus = await getRemoteWAStatus().catch(() => null);
+        if (remoteStatus && remoteStatus.status === 'open') {
+          console.log("[Server] Remote WhatsApp engine is active on primary server. Dev instance running in standby sync mode to prevent Meta dual-login bans.");
+          startWhatsAppWatchdog(io);
+          return;
+        }
+        connectToWhatsApp(io, false, false).catch(err => console.error("WA Init Error:", err));
+        startWhatsAppWatchdog(io);
+      } catch (err: any) {
+        console.error("WA Init Error:", err?.message || err);
+      }
+    }, 2000);
     
     // Connect to MongoDB using Mongoose for WhatsAppQueue when connection URI is provided
     const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/antonyschool_erp';

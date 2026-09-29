@@ -82,7 +82,7 @@ const UserActivityPanel: React.FC = () => {
 
   useEffect(() => {
     fetchActivities();
-    const interval = setInterval(fetchActivities, 60000);
+    const interval = setInterval(fetchActivities, 180000);
     return () => clearInterval(interval);
   }, []);
 
@@ -127,9 +127,9 @@ const UserActivityPanel: React.FC = () => {
         ) : (
           <div className="divide-y divide-neutral-50">
             <AnimatePresence mode="popLayout">
-              {activities.map((activity) => (
+              {activities.map((activity, idx) => (
                 <motion.div 
-                  key={activity.id}
+                  key={`${activity.id || idx}-${idx}`}
                   initial={{ opacity: 0, x: -10 }}
                   animate={{ opacity: 1, x: 0 }}
                   className="p-4 hover:bg-neutral-50 transition-all flex items-start gap-4 group"

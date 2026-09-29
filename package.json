@@ -21,7 +21,7 @@
     "@google/genai": "^1.51.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
-    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
     "@xyflow/react": "^12.11.1",
     "chart.js": "^4.5.1",
     "clsx": "^2.1.1",

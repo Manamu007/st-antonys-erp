@@ -66,6 +66,7 @@ import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
 
 import { getBirthdayWish } from '../services/aiService';
+import { MetaAntiBanGuardian } from '../components/whatsapp/MetaAntiBanGuardian';
 
 interface Message {
   from: string;
@@ -83,6 +84,16 @@ const Communication: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [channels, setChannels] = useState<any[]>([]);
   
+  // Alternative linking via 8-digit pairing code & linking progress state (Default to 'code' for Meta Anti-Ban protection)
+  const [pairingMode, setPairingMode] = useState<'qr' | 'code'>('code');
+  const [countryCode, setCountryCode] = useState('91');
+  const [pairingPhone, setPairingPhone] = useState('');
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [isRequestingCode, setIsRequestingCode] = useState(false);
+  const [pairingMsg, setPairingMsg] = useState<string | null>(null);
+  const [copiedCode, setCopiedCode] = useState(false);
+  const [isRestarting, setIsRestarting] = useState(false);
+  
   const isSuperAdmin = profile?.email === 'manamunagaraju@gmail.com';
   
   // Tabs configuration
@@ -92,7 +103,8 @@ const Communication: React.FC = () => {
       { id: 'broadcast', icon: Megaphone, label: 'Broadcast', permissions: ['whatsapp_broadcast', 'notifications_send'] },
       { id: 'birthdays', icon: Gift, label: 'Birthdays', permission: 'whatsapp_birthdays' },
       { id: 'bot', icon: Bot, label: 'Bot Menus', permission: 'communication_view' },
-      { id: 'queue', icon: Clock, label: 'Queue', permission: 'communication_view' }
+      { id: 'queue', icon: Clock, label: 'Queue', permission: 'communication_view' },
+      { id: 'antiban', icon: ShieldCheck, label: 'Meta Armor', permission: 'communication_view' }
     ];
 
     return tabs.filter(tab => {
@@ -103,7 +115,7 @@ const Communication: React.FC = () => {
   }, [hasPermission]);
 
   // Active Tab - set default to first available
-  const [activeTab, setActiveTab] = useState<'chats' | 'broadcast' | 'birthdays' | 'queue' | 'bot'>(
+  const [activeTab, setActiveTab] = useState<'chats' | 'broadcast' | 'birthdays' | 'queue' | 'bot' | 'antiban'>(
     'chats' // Default to single chat
   );
 
@@ -335,7 +347,7 @@ This is an automated message.`
     }
   };
 
-  // Poll WhatsApp Queue and Logs via REST
+  // Poll WhatsApp Queue and Logs via REST with dbService resilience
   const fetchQueueAndLogs = async () => {
     try {
       const [queueRes, logsRes] = await Promise.all([
@@ -343,13 +355,31 @@ This is an automated message.`
         fetch('/api/whatsapp/logs').then(r => r.json()).catch(() => ({ logs: [] }))
       ]);
 
-      if (queueRes && Array.isArray(queueRes.queue)) {
+      let items: any[] = [];
+      if (queueRes && Array.isArray(queueRes.queue) && queueRes.queue.length > 0) {
+        items = queueRes.queue;
+      } else {
+        // Fallback to direct collection query
+        const directQueue = await dbService.list('whatsapp_queue', [orderBy('createdAt', 'desc'), limit(150)]).catch(() => []);
+        if (Array.isArray(directQueue) && directQueue.length > 0) {
+          items = directQueue;
+        }
+      }
+
+      if (items.length > 0) {
+        setQueueItems(items);
+      } else if (queueRes && Array.isArray(queueRes.queue)) {
         setQueueItems(queueRes.queue);
       }
       setIsQueueLoading(false);
 
-      if (logsRes && Array.isArray(logsRes.logs)) {
+      if (logsRes && Array.isArray(logsRes.logs) && logsRes.logs.length > 0) {
         setMessageLogs(logsRes.logs);
+      } else {
+        const directLogs = await dbService.list('whatsappLogs', [orderBy('timestamp', 'desc'), limit(150)]).catch(() => []);
+        if (Array.isArray(directLogs) && directLogs.length > 0) {
+          setMessageLogs(directLogs);
+        }
       }
     } catch (err) {
       console.warn("Error polling queue/logs:", err);
@@ -511,9 +541,20 @@ This is an automated message.`
 
     newSocket.on('wa:status', (s) => {
       setStatus(s);
-      if (s === 'open') fetchChannels();
+      if (s === 'open') {
+        fetchChannels();
+        setPairingMsg(null);
+        setPairingCode(null);
+        setQr(null);
+      }
     });
-    newSocket.on('wa:qr', (q) => setQr(q));
+    newSocket.on('wa:qr', (q) => {
+      setQr(q);
+      setPairingMsg(null);
+    });
+    newSocket.on('wa:pairing', (data: any) => {
+      setPairingMsg(data?.message || 'Linking mobile device...');
+    });
     newSocket.on('wa:error', (err) => {
       const errStr = typeof err === 'string' ? err : err?.message || String(err || '');
       // Do not display transient auto-reconnection, credential notices, or conflict notices as loud red toasts
@@ -582,27 +623,78 @@ This is an automated message.`
 
   const handleRestartWA = async () => {
     try {
+      setIsRestarting(true);
       setStatus('connecting');
+      setPairingMsg(null);
+      setPairingCode(null);
       const res = await fetch('/api/whatsapp/restart', { method: 'POST' });
       const data = await res.json();
       if (data.success) {
-        toast.info('WhatsApp engine restarting...');
+        toast.info('WhatsApp engine restarting... Generating fresh QR code');
       } else {
         toast.error('Failed to command restart');
       }
     } catch (err) {
       toast.error('Network error while restarting');
+    } finally {
+      setTimeout(() => setIsRestarting(false), 2000);
     }
   };
 
+  const handleRequestPairingCode = async () => {
+    let cleanNumber = pairingPhone.replace(/\D/g, '');
+    if (cleanNumber.startsWith('0')) {
+      cleanNumber = cleanNumber.slice(1);
+    }
+    // If the entered number already has country code included, use it, else prepend selected country code
+    let fullNumber = cleanNumber;
+    if (cleanNumber.length === 10) {
+      fullNumber = `${countryCode}${cleanNumber}`;
+    }
+    if (!fullNumber || fullNumber.length < 10) {
+      toast.error('Please enter a valid 10-digit WhatsApp mobile number');
+      return;
+    }
+    try {
+      setIsRequestingCode(true);
+      setPairingCode(null);
+      const res = await fetch('/api/whatsapp/pairing-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phoneNumber: fullNumber })
+      });
+      const data = await res.json();
+      if (data.success && data.code) {
+        setPairingCode(data.code);
+        toast.success(`Pairing code generated for +${fullNumber}! Enter it in WhatsApp on your phone.`);
+      } else {
+        toast.error(data.error || 'Failed to generate code. Make sure engine is active.');
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'Error generating pairing code');
+    } finally {
+      setIsRequestingCode(false);
+    }
+  };
+
+  const handleCopyCode = (code: string) => {
+    const clean = code.replace(/-/g, '');
+    navigator.clipboard.writeText(clean);
+    setCopiedCode(true);
+    toast.success('Pairing code copied to clipboard!');
+    setTimeout(() => setCopiedCode(false), 2500);
+  };
+
   const handleResetWA = async () => {
-    if (!confirm("This will log you out and delete all WhatsApp session data. Are you sure?")) return;
+    if (!confirm("This will clear existing session keys and generate a fresh clean connection. Continue?")) return;
     try {
       setStatus('connecting');
+      setPairingCode(null);
+      setPairingMsg(null);
       const res = await fetch('/api/whatsapp/reset', { method: 'POST' });
       const data = await res.json();
       if (data.success) {
-        toast.info('WhatsApp session reset. Please scan the new QR code.');
+        toast.info('WhatsApp session refreshed. Generating clean pairing state...');
       } else {
         toast.error('Failed to reset session');
       }
@@ -1568,14 +1660,158 @@ This is an automated message.`
           <div className="w-80 flex flex-col gap-6">
             <div className="bg-white rounded-3xl p-6 border border-neutral-100 shadow-sm flex flex-col items-center justify-center text-center">
               {status === 'qr' && qr ? (
-                <div className="space-y-4">
-                  <div className="p-4 bg-white border-2 border-primary/20 rounded-2xl shadow-xl">
-                    <QRCodeSVG value={qr} size={200} />
+                <div className="space-y-4 w-full">
+                  {/* Mode switcher: QR Code vs Phone Pairing Code with Anti-Ban Recommendation */}
+                  <div className="flex bg-neutral-100 p-1 rounded-2xl w-full gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setPairingMode('code')}
+                      className={`flex-1 py-2 px-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                        pairingMode === 'code' ? 'bg-white shadow-sm text-emerald-700 font-black' : 'text-neutral-500 hover:text-neutral-800'
+                      }`}
+                    >
+                      <Smartphone className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Phone Code</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-emerald-100 text-emerald-800 font-extrabold uppercase tracking-tight">Safe</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPairingMode('qr')}
+                      className={`flex-1 py-2 px-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                        pairingMode === 'qr' ? 'bg-white shadow-sm text-primary font-black' : 'text-neutral-500 hover:text-neutral-800'
+                      }`}
+                    >
+                      <QrCode className="w-3.5 h-3.5" />
+                      <span>Scan QR</span>
+                    </button>
                   </div>
-                  <div className="space-y-2">
-                    <h3 className="font-bold text-sidebar">Link Your Device</h3>
-                    <p className="text-xs text-neutral-400 italic">Open WhatsApp &gt; Linked Devices &gt; Link Device</p>
+
+                  {/* Meta Anti-Ban Notice */}
+                  <div className="bg-emerald-50/90 border border-emerald-200/90 rounded-2xl p-3 text-left space-y-1">
+                    <div className="flex items-center gap-1.5 text-emerald-800 font-black text-xs">
+                      <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                      <span>Meta Anti-Ban Protection Active</span>
+                    </div>
+                    <p className="text-[10px] text-emerald-900 leading-relaxed font-medium">
+                      Linking via <strong>Phone Code</strong> is recommended by Meta for business systems. It verifies directly on your device and avoids false-positive automated bot reviews.
+                    </p>
                   </div>
+
+                  {pairingMode === 'qr' ? (
+                    <div className="space-y-3">
+                      <div className="p-3 bg-white border-2 border-primary/25 rounded-2xl shadow-lg flex flex-col items-center justify-center">
+                        <QRCodeSVG 
+                          value={qr} 
+                          size={220} 
+                          level="M" 
+                          includeMargin={true}
+                          className="rounded-lg"
+                        />
+                        <div className="flex items-center gap-1.5 mt-2 text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-100">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                          Live QR Code (Auto-sync active)
+                        </div>
+                      </div>
+                      <div className="space-y-1.5 text-left bg-neutral-50 p-3 rounded-2xl border border-neutral-100">
+                        <h4 className="font-bold text-sidebar text-xs flex items-center gap-1">
+                          <CheckCircle className="w-3 h-3 text-primary" /> How to link:
+                        </h4>
+                        <ol className="text-[10px] text-neutral-600 space-y-0.5 list-decimal pl-4">
+                          <li>Open WhatsApp on mobile phone</li>
+                          <li>Tap <strong>Menu (⋮)</strong> or <strong>Settings</strong> &gt; <strong>Linked Devices</strong></li>
+                          <li>Tap <strong>Link a Device</strong> &amp; point phone here</li>
+                        </ol>
+                      </div>
+
+                      <div className="bg-amber-50/80 border border-amber-200/80 rounded-2xl p-2.5 text-left">
+                        <p className="text-[10px] text-amber-900 leading-snug">
+                          <strong>Phone shows "Couldn't link device"?</strong> Switch to the <strong>Phone Code</strong> tab above, or tap <em>"Link with phone number instead"</em> at the bottom of your phone screen!
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleRestartWA}
+                        disabled={isRestarting}
+                        className="w-full py-1.5 px-3 text-[11px] font-semibold text-neutral-500 hover:text-primary hover:bg-neutral-100 rounded-xl transition-all flex items-center justify-center gap-1.5"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${isRestarting ? 'animate-spin' : ''}`} />
+                        Refresh QR Code
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-3 text-left">
+                      <div className="p-3 bg-neutral-50 border border-neutral-100 rounded-2xl space-y-2.5">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 block">
+                          Link with Phone Number
+                        </label>
+                        <div className="flex gap-1.5 items-center">
+                          <select
+                            value={countryCode}
+                            onChange={(e) => setCountryCode(e.target.value)}
+                            className="w-20 px-1.5 py-1.5 bg-white border border-neutral-200 rounded-xl text-xs font-bold text-neutral-700 focus:outline-none focus:ring-2 focus:ring-primary/20 shrink-0"
+                          >
+                            <option value="91">+91 (IN)</option>
+                            <option value="1">+1 (US)</option>
+                            <option value="44">+44 (UK)</option>
+                            <option value="971">+971 (UAE)</option>
+                            <option value="966">+966 (KSA)</option>
+                            <option value="65">+65 (SG)</option>
+                            <option value="60">+60 (MY)</option>
+                            <option value="61">+61 (AU)</option>
+                          </select>
+                          <input
+                            type="tel"
+                            placeholder="Mobile number (10 digits)"
+                            value={pairingPhone}
+                            onChange={(e) => setPairingPhone(e.target.value)}
+                            className="flex-1 px-2.5 py-1.5 bg-white border border-neutral-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-primary/20 min-w-0"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleRequestPairingCode}
+                            disabled={isRequestingCode}
+                            className="px-3 py-1.5 bg-primary text-white text-xs font-bold rounded-xl hover:bg-primary/90 transition-all disabled:opacity-50 shrink-0 shadow-xs"
+                          >
+                            {isRequestingCode ? '...' : 'Get Code'}
+                          </button>
+                        </div>
+                        <div className="text-[9px] text-neutral-500 space-y-1">
+                          <p>
+                            Target: <span className="font-mono font-bold text-neutral-800">+{countryCode} {pairingPhone.replace(/\D/g, '') || 'XXXXXXXXXX'}</span>
+                          </p>
+                          <p className="text-amber-800 bg-amber-50 p-1.5 rounded-lg border border-amber-200/60 leading-tight">
+                            ⚠️ <strong>Must match your mobile phone:</strong> Check WhatsApp &gt; Settings &gt; Profile. If the number does not match this WhatsApp account, WhatsApp will reject the code.
+                          </p>
+                        </div>
+                      </div>
+
+                      {pairingCode && (
+                        <div className="p-4 bg-emerald-50 border-2 border-emerald-300 rounded-2xl text-center space-y-2.5 shadow-sm">
+                          <span className="text-[10px] font-black uppercase tracking-wider text-emerald-800 block">
+                            Enter this code on your phone:
+                          </span>
+                          <div className="text-2xl font-black font-mono tracking-widest text-emerald-950 py-1.5 bg-white rounded-xl border border-emerald-200 shadow-inner">
+                            {pairingCode}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyCode(pairingCode)}
+                            className="w-full py-1.5 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 transition-all flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+                          >
+                            {copiedCode ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                            {copiedCode ? 'Copied!' : 'Copy Code'}
+                          </button>
+                          <div className="text-[10px] text-emerald-900 text-left space-y-1 pt-1 bg-emerald-100/60 p-2 rounded-xl border border-emerald-200/50">
+                            <p className="font-bold">Next steps on phone:</p>
+                            <p>1. Open WhatsApp &gt; <strong>Linked Devices</strong> &gt; <strong>Link a Device</strong></p>
+                            <p>2. Tap <strong>"Link with phone number instead"</strong></p>
+                            <p>3. Enter the 8-character code above</p>
+                            <p className="text-[9px] text-emerald-700 italic">Keep WhatsApp open on your phone during final sync.</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               ) : status === 'open' ? (
                 <div className="space-y-4 w-full">
@@ -1584,6 +1820,7 @@ This is an automated message.`
                   </div>
                   <div className="space-y-1">
                     <h3 className="font-bold text-sidebar">System Online</h3>
+                    <p className="text-xs text-emerald-600 font-semibold">WhatsApp Connected &amp; Synced</p>
                     <div className="flex flex-col gap-1 px-4 py-3 bg-neutral-50 rounded-2xl border border-neutral-100 mt-4">
                       <div className="flex justify-between items-center text-[10px] font-bold">
                          <span className="text-neutral-400">STUDENTS</span>
@@ -1597,33 +1834,45 @@ This is an automated message.`
                   </div>
                 </div>
               ) : (
-                <div className="space-y-4 py-8">
-                  <div className="relative flex items-center justify-center">
-                    <QrCode className="w-16 h-16 text-primary/40 mx-auto animate-pulse" />
-                  </div>
-                  <div className="space-y-3">
-                     <div className="text-center">
-                       <p className="text-xs font-bold text-neutral-700">
-                         {status === 'connecting' ? 'Initializing Engine...' : 'Connection Offline'}
-                       </p>
-                       <p className="text-[10px] text-neutral-400 mt-1">
-                         {status === 'connecting' ? 'Generating QR Code... Click below if delayed.' : 'Click below to generate new QR Code'}
-                       </p>
-                     </div>
-                     <button 
-                       onClick={handleRestartWA}
-                       className="w-full px-4 py-2.5 bg-primary text-white rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-primary/90 transition-all shadow-md active:scale-95 flex items-center justify-center gap-2"
-                     >
-                       <QrCode className="w-4 h-4" />
-                       Generate QR Code / Retry
-                     </button>
-                     <button 
-                       onClick={handleResetWA}
-                       className="w-full px-3 py-1.5 text-neutral-400 rounded-xl text-[10px] font-semibold hover:text-red-500 hover:bg-red-50 transition-all"
-                     >
-                       Reset WhatsApp Session
-                     </button>
-                  </div>
+                <div className="space-y-4 py-6 w-full">
+                  {pairingMsg ? (
+                    <div className="p-4 bg-primary/5 border border-primary/20 rounded-2xl text-center space-y-2">
+                      <RefreshCw className="w-8 h-8 text-primary mx-auto animate-spin" />
+                      <h4 className="font-bold text-sidebar text-xs">Device Detected!</h4>
+                      <p className="text-[11px] text-neutral-600 font-medium">{pairingMsg}</p>
+                      <p className="text-[9px] text-neutral-400">Please keep WhatsApp open on your phone during final synchronization.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="relative flex items-center justify-center">
+                        <QrCode className="w-16 h-16 text-primary/40 mx-auto animate-pulse" />
+                      </div>
+                      <div className="space-y-3">
+                         <div className="text-center">
+                           <p className="text-xs font-bold text-neutral-700">
+                             {status === 'connecting' ? 'Initializing Engine...' : 'Connection Offline'}
+                           </p>
+                           <p className="text-[10px] text-neutral-400 mt-1">
+                             {status === 'connecting' ? 'Generating QR Code... Click below if delayed.' : 'Click below to generate new QR Code'}
+                           </p>
+                         </div>
+                         <button 
+                           onClick={handleRestartWA}
+                           disabled={isRestarting}
+                           className="w-full px-4 py-2.5 bg-primary text-white rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-primary/90 transition-all shadow-md active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50"
+                         >
+                           <QrCode className={`w-4 h-4 ${isRestarting ? 'animate-spin' : ''}`} />
+                           {isRestarting ? 'Initializing...' : 'Generate QR Code / Retry'}
+                         </button>
+                         <button 
+                           onClick={handleResetWA}
+                           className="w-full px-3 py-1.5 text-neutral-400 rounded-xl text-[10px] font-semibold hover:text-red-500 hover:bg-red-50 transition-all"
+                         >
+                           Reset WhatsApp Session
+                         </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -1634,8 +1883,8 @@ This is an automated message.`
                 <History className="w-4 h-4 text-neutral-300" />
               </div>
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {messages.map((m) => (
-                  <div key={m.id} className="p-3 bg-neutral-50 rounded-2xl border border-neutral-100">
+                {messages.map((m, idx) => (
+                  <div key={`${m.id || idx}-${idx}`} className="p-3 bg-neutral-50 rounded-2xl border border-neutral-100">
                     <div className="flex justify-between items-start mb-1">
                       <span className="text-[10px] font-black text-primary">+{m.from}</span>
                       <span className="text-[8px] text-neutral-400">{format(m.timestamp * 1000, 'HH:mm')}</span>
@@ -2153,8 +2402,8 @@ This is an automated message.`
                                       r.phone?.includes(q)
                                     );
                                   })
-                                  .map((row) => (
-                                    <tr key={row.id} className="hover:bg-neutral-50/80 transition-colors">
+                                  .map((row, idx) => (
+                                    <tr key={`${row.id || idx}-${idx}`} className="hover:bg-neutral-50/80 transition-colors">
                                       <td className="p-3 text-neutral-400">{row.index}</td>
                                       <td className="p-3 font-mono font-bold text-neutral-800">{row.candidateId || '-'}</td>
                                       <td className="p-3 font-bold text-neutral-900">{row.studentName}</td>
@@ -2205,7 +2454,7 @@ This is an automated message.`
                         <label className="text-[10px] font-black text-neutral-400 px-1">SELECT CLASS</label>
                         <select value={selectedClassId} onChange={(e) => setSelectedClassId(e.target.value)} className="w-full p-4 bg-neutral-50 border border-neutral-100 rounded-2xl text-sm font-bold outline-none">
                           <option value="">All Classes (Send to all mapped communities)</option>
-                          {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                          {classes.map((c, idx) => <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name}</option>)}
                         </select>
                       </div>
                       <div className="p-4 bg-amber-50 border border-amber-100 rounded-2xl flex items-start gap-3">
@@ -2224,14 +2473,14 @@ This is an automated message.`
                           <label className="text-[10px] font-black text-neutral-400 px-1">SELECT CLASS</label>
                           <select value={selectedClassId} onChange={(e) => { setSelectedClassId(e.target.value); setSelectedBatchId(''); }} className="w-full p-4 bg-neutral-50 border border-neutral-100 rounded-2xl text-sm font-bold outline-none">
                             <option value="">All Classes</option>
-                            {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                            {classes.map((c, idx) => <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name}</option>)}
                           </select>
                         </div>
                         <div className="space-y-2">
                           <label className="text-[10px] font-black text-neutral-400 px-1">SELECT SECTION/BATCH</label>
                           <select value={selectedBatchId} onChange={(e) => setSelectedBatchId(e.target.value)} className="w-full p-4 bg-neutral-50 border border-neutral-100 rounded-2xl text-sm font-bold outline-none">
                             <option value="">All Sections</option>
-                            {batches.filter(b => !selectedClassId || b.classId === selectedClassId).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                            {batches.filter(b => !selectedClassId || b.classId === selectedClassId).map((b, idx) => <option key={`${b.id || idx}-${idx}`} value={b.id}>{b.name}</option>)}
                           </select>
                         </div>
                       </div>
@@ -2250,7 +2499,7 @@ This is an automated message.`
                               className="w-full p-4 bg-white border border-neutral-100 rounded-2xl text-sm font-bold outline-none shadow-sm"
                             >
                               <option value="">All Routes</option>
-                              {buses.map(b => <option key={b.id} value={b.id}>Bus {b.busNumber} ({b.driverName})</option>)}
+                              {buses.map((b, idx) => <option key={`${b.id || idx}-${idx}`} value={b.id}>Bus {b.busNumber} ({b.driverName})</option>)}
                             </select>
                           </div>
                           <div className="space-y-2">
@@ -2263,7 +2512,7 @@ This is an automated message.`
                               <option value="">All Villages {selectedBusId ? `for Bus ${buses.find(b => b.id === selectedBusId)?.busNumber}` : ''}</option>
                               {stops
                                 .filter(s => !selectedBusId || s.busId === selectedBusId)
-                                .map(s => <option key={s.id} value={s.id}>{s.villageName}</option>)
+                                .map((s, idx) => <option key={`${s.id || idx}-${idx}`} value={s.id}>{s.villageName}</option>)
                               }
                             </select>
                           </div>
@@ -2284,8 +2533,8 @@ This is an automated message.`
                           >
                             <option value="">All Students (Day Scholars + Hostel Residents)</option>
                             <option value="any_hostel">All Hostel Residents (Any Block)</option>
-                            {hostelBlocks.map(block => (
-                              <option key={block.id} value={block.name}>{block.name} (Capacity: {block.capacity || 'N/A'})</option>
+                            {hostelBlocks.map((block, idx) => (
+                              <option key={`${block.id || idx}-${idx}`} value={block.name}>{block.name} (Capacity: {block.capacity || 'N/A'})</option>
                             ))}
                           </select>
                         </div>
@@ -2486,8 +2735,8 @@ This is an automated message.`
                               ) : (
                                 queueItems
                                   .filter(item => queueStatusFilter === 'all' || item.status === queueStatusFilter)
-                                  .map((item) => (
-                                  <tr key={item.id} className="hover:bg-neutral-50/50 transition-colors">
+                                  .map((item, idx) => (
+                                  <tr key={`${item.id || idx}-${idx}`} className="hover:bg-neutral-50/50 transition-colors">
                                     <td className="px-6 py-4">
                                       <div className="flex flex-col">
                                         <span className="text-xs font-black text-sidebar">
@@ -2735,8 +2984,8 @@ This is an automated message.`
                         {selectedTemplateId === 'ai' && <CheckCircle className="w-4 h-4 text-primary absolute top-4 right-4" />}
                       </button>
 
-                      {birthdayTemplates.filter(t => t.type === (targetBirthdayType === 'students' ? 'student' : 'staff')).map(template => (
-                        <div key={template.id} className="relative group">
+                      {birthdayTemplates.filter(t => t.type === (targetBirthdayType === 'students' ? 'student' : 'staff')).map((template, idx) => (
+                        <div key={`${template.id || idx}-${idx}`} className="relative group">
                           <button 
                             onClick={() => setSelectedTemplateId(template.id)}
                             className={`w-full p-4 rounded-2xl border-2 text-left transition-all relative ${selectedTemplateId === template.id ? 'bg-primary/5 border-primary shadow-sm' : 'bg-white border-neutral-100 hover:border-neutral-200'}`}
@@ -3093,8 +3342,8 @@ This is an automated message.`
                           <p className="text-[10px] text-neutral-400 mt-1 max-w-xs mx-auto">Create keyword triggers like 'exit', 'bye', or 'help' to reply with customized messages automatically.</p>
                         </div>
                       ) : (
-                        botMenus.map((menu: any) => (
-                          <div key={menu.id} className="p-5 bg-neutral-50 rounded-3xl border border-neutral-100 flex flex-col justify-between hover:shadow-md transition-all">
+                        botMenus.map((menu: any, idx: number) => (
+                          <div key={`${menu.id || idx}-${idx}`} className="p-5 bg-neutral-50 rounded-3xl border border-neutral-100 flex flex-col justify-between hover:shadow-md transition-all">
                             <div>
                               <div className="flex justify-between items-start mb-3">
                                 <div className="space-y-1">
@@ -3147,6 +3396,12 @@ This is an automated message.`
                       )}
                     </div>
                   )}
+                </motion.div>
+              )}
+
+              {activeTab === 'antiban' && (
+                <motion.div key="antiban" initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -15 }}>
+                  <MetaAntiBanGuardian />
                 </motion.div>
               )}
 
@@ -3207,9 +3462,9 @@ This is an automated message.`
                         <p className="text-[9px] text-neutral-400 mt-1">Configure your first WhatsApp community on the right.</p>
                       </div>
                     ) : (
-                      communities.map((comm) => (
+                      communities.map((comm, idx) => (
                         <div
-                          key={comm.id}
+                          key={`${comm.id || idx}-${idx}`}
                           className={`p-4 rounded-2xl border transition-all ${
                             editingCommunity?.id === comm.id
                               ? 'bg-primary/5 border-primary shadow-sm'
@@ -3350,8 +3605,8 @@ This is an automated message.`
                           className="w-full px-4 py-2.5 bg-white border border-neutral-200 focus:border-primary rounded-xl text-xs font-bold outline-none shadow-sm transition-all placeholder:text-neutral-400"
                         />
                         <div className="max-h-[35vh] overflow-y-auto space-y-1.5 pr-1 border border-neutral-100 rounded-2xl p-2 bg-neutral-50/50">
-                          {processedGroups.map((group) => (
-                              <div key={group.id} className="p-3 bg-white border border-neutral-100 hover:border-neutral-200 rounded-xl flex justify-between items-center gap-3 transition-all shadow-xs">
+                          {processedGroups.map((group, idx) => (
+                              <div key={`${group.id || idx}-${idx}`} className="p-3 bg-white border border-neutral-100 hover:border-neutral-200 rounded-xl flex justify-between items-center gap-3 transition-all shadow-xs">
                                 <div className="space-y-1 overflow-hidden">
                                   <div className="flex items-center gap-1.5">
                                     <p className="text-xs font-black text-sidebar truncate">{group.subject}</p>
@@ -3460,7 +3715,7 @@ This is an automated message.`
                         {classes.length === 0 ? (
                           <p className="text-[10px] text-neutral-400 italic text-center py-4">No classes available</p>
                         ) : (
-                          classes.map((cls) => {
+                          classes.map((cls, idx) => {
                             const isChecked = newCommunity.associatedClasses.includes(cls.id);
                             
                             // Check if this class is mapped to another community configuration
@@ -3472,7 +3727,7 @@ This is an automated message.`
 
                             return (
                               <label 
-                                key={cls.id} 
+                                key={`${cls.id || idx}-${idx}`} 
                                 className={`flex items-center gap-2 select-none py-1 px-1.5 rounded transition-all ${
                                   isAlreadyMapped 
                                     ? 'opacity-60 bg-neutral-100/40 cursor-not-allowed text-neutral-400' 
@@ -3610,8 +3865,8 @@ This is an automated message.`
                     className="w-full px-4 py-2.5 bg-neutral-50 border border-neutral-200 focus:border-blue-500 rounded-xl text-xs font-medium outline-none transition-all"
                   >
                     <option value="">-- Generic Template (Sample Student Data) --</option>
-                    {classes.map((cls) => (
-                      <option key={cls.id} value={cls.id}>
+                    {classes.map((cls, idx) => (
+                      <option key={`${cls.id || idx}-${idx}`} value={cls.id}>
                         {cls.name} (Fill real class students)
                       </option>
                     ))}

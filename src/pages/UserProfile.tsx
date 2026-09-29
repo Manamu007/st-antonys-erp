@@ -925,7 +925,7 @@ const UserProfile: React.FC = () => {
                             className="w-full bg-neutral-50 px-5 py-4 pl-12 rounded-2xl border-2 border-transparent focus:border-primary focus:bg-white outline-none transition-all font-bold text-sidebar disabled:opacity-60 appearance-none"
                           >
                             <option value="">No Class</option>
-                            {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                            {classes.map((c, idx) => <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name}</option>)}
                           </select>
                           <GraduationCap className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" />
                         </div>
@@ -940,7 +940,7 @@ const UserProfile: React.FC = () => {
                             className="w-full bg-neutral-50 px-5 py-4 pl-12 rounded-2xl border-2 border-transparent focus:border-primary focus:bg-white outline-none transition-all font-bold text-sidebar disabled:opacity-60 appearance-none"
                           >
                             <option value="">No Batch</option>
-                            {batches.filter(b => b.classId === formData.classId).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                            {batches.filter(b => b.classId === formData.classId).map((b, idx) => <option key={`${b.id || idx}-${idx}`} value={b.id}>{b.name}</option>)}
                           </select>
                           <Users className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" />
                         </div>
@@ -1183,8 +1183,8 @@ const UserProfile: React.FC = () => {
                             className="w-full bg-neutral-50 px-5 py-4 rounded-2xl border-2 border-transparent focus:border-primary focus:bg-white outline-none transition-all font-bold text-sidebar disabled:opacity-60 appearance-none"
                           >
                             <option value="">No Bus Assigned</option>
-                            {buses.map(b => (
-                              <option key={b.id} value={b.id}>
+                            {buses.map((b, idx) => (
+                              <option key={`${b.id || idx}-${idx}`} value={b.id}>
                                 Bus {b.busNumber} ({b.driverName || 'No Driver'})
                               </option>
                             ))}
@@ -1200,8 +1200,8 @@ const UserProfile: React.FC = () => {
                             className="w-full bg-neutral-50 px-5 py-4 rounded-2xl border-2 border-transparent focus:border-primary focus:bg-white outline-none transition-all font-bold text-sidebar disabled:opacity-60 appearance-none"
                           >
                             <option value="">No Stop Assigned</option>
-                            {stops.filter(s => !formData.transportBusId || s.busId === formData.transportBusId).map(s => (
-                              <option key={s.id} value={s.id}>
+                            {stops.filter(s => !formData.transportBusId || s.busId === formData.transportBusId).map((s, idx) => (
+                              <option key={`${s.id || idx}-${idx}`} value={s.id}>
                                 {s.villageName || s.name} - ₹{s.fee || 0}/mo
                               </option>
                             ))}

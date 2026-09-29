@@ -39,6 +39,7 @@ import { FeeStructure, FeeConcession, FeeRecord, PaymentRecord, Expenditure } fr
 import { calculateStudentFee, normalizeYear } from '../lib/feeUtils';
 import StudentPortalFees from '../components/fees/StudentPortalFees';
 import { AdminFeesView } from '../components/fees/AdminFeesView';
+import { safeStorage as localStorage } from '../lib/safeStorage';
 
 const getComponentNameLabel = (id: string) => {
   if (!id) return 'OTHER FEE COMPONENT';

@@ -28,7 +28,10 @@
             msg.indexOf('loop limit exceeded') !== -1 ||
             msg.indexOf('Cannot set property fetch') !== -1 ||
             msg.indexOf('which has only a getter') !== -1 ||
-            msg.indexOf('Illegal invocation') !== -1
+            msg.indexOf('Illegal invocation') !== -1 ||
+            msg.indexOf('resource-exhausted') !== -1 ||
+            msg.indexOf('RESOURCE_EXHAUSTED') !== -1 ||
+            msg.indexOf('Quota exceeded') !== -1
           ) {
             e.preventDefault();
             e.stopImmediatePropagation();
@@ -44,7 +47,10 @@
             msg.indexOf('loop limit exceeded') !== -1 ||
             msg.indexOf('Cannot set property fetch') !== -1 ||
             msg.indexOf('which has only a getter') !== -1 ||
-            msg.indexOf('Illegal invocation') !== -1
+            msg.indexOf('Illegal invocation') !== -1 ||
+            msg.indexOf('resource-exhausted') !== -1 ||
+            msg.indexOf('RESOURCE_EXHAUSTED') !== -1 ||
+            msg.indexOf('Quota exceeded') !== -1
           ) {
             e.preventDefault();
             e.stopImmediatePropagation();

@@ -2902,8 +2902,8 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
                     className="w-full px-2.5 py-1.5 bg-neutral-50 border border-neutral-200 rounded-xl outline-none focus:border-indigo-500 font-semibold text-xs text-neutral-600 appearance-none uppercase cursor-pointer"
                   >
                     <option value="">-- All Classes --</option>
-                    {classes.map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
+                    {classes.map((c, idx) => (
+                      <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name}</option>
                     ))}
                   </select>
                 </div>
@@ -2918,8 +2918,8 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
                     <option value="">
                       {!selectedClass ? '-- Select Class First --' : '-- All Sections --'}
                     </option>
-                    {visibleBatches.map(b => (
-                      <option key={b.id} value={b.id}>{b.name}</option>
+                    {visibleBatches.map((b, idx) => (
+                      <option key={`${b.id || idx}-${idx}`} value={b.id}>{b.name}</option>
                     ))}
                   </select>
                 </div>
@@ -3028,7 +3028,7 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
                   </thead>
                   <tbody className="divide-y divide-neutral-100 text-sm font-bold text-neutral-700">
                     {paginatedMetrics.length > 0 ? (
-                      paginatedMetrics.map(m => {
+                      paginatedMetrics.map((m, idx) => {
                         const sClass = classes.find(c => c.id === m?.student?.classId)?.name || m?.student?.class || 'N/A';
                         const sBatch = batches.find(b => b.id === m?.student?.batchId)?.name || m?.student?.batch || 'N/A';
                         
@@ -3066,7 +3066,7 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
                         const studentId = m.student.uid || m.student.id;
                         const isExpanded = !!expandedStudentIds[studentId];
                         return (
-                          <React.Fragment key={studentId}>
+                          <React.Fragment key={`${studentId || idx}-${idx}`}>
                             <tr className="hover:bg-neutral-50/50 transition-colors">
                               <td className="px-4.5 py-3 font-mono text-sm font-black text-slate-800">
                               {m.student.rollNumber || m.student.rollNo || '001'}
@@ -3899,12 +3899,12 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
                     </thead>
                     <tbody className="divide-y divide-neutral-100 text-xs font-semibold text-neutral-600">
                       {sortedSchoolStructures.length > 0 ? (
-                        sortedSchoolStructures.map(str => {
+                        sortedSchoolStructures.map((str, idx) => {
                           const computedTotal = (str.term1 || 0) + (str.term2 || 0) + (str.term3 || 0);
                           const isKindergarten = ["nursery", "lkg", "ukg"].some(k => (str.name || '').toLowerCase().includes(k));
                           
                           return (
-                            <tr key={str.id || str.name} className="hover:bg-indigo-50/30 transition-all font-medium border-l-4 border-indigo-500/0 hover:border-indigo-500">
+                            <tr key={`${str.id || str.name || idx}-${idx}`} className="hover:bg-indigo-50/30 transition-all font-medium border-l-4 border-indigo-500/0 hover:border-indigo-500">
                               {isManagementOrAdmin && (
                                 <td className="px-4 py-4 text-center">
                                   <input
@@ -4061,10 +4061,10 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
                     </thead>
                     <tbody className="divide-y divide-neutral-100 text-xs font-semibold text-neutral-600">
                       {sortedTransportStructures.length > 0 ? (
-                        sortedTransportStructures.map(str => {
+                        sortedTransportStructures.map((str, idx) => {
                           const computedTotal = (str.term1 || 0) + (str.term2 || 0) + (str.term3 || 0);
                           return (
-                            <tr key={str.id || str.name} className="hover:bg-emerald-50/20 transition-all font-medium border-l-4 border-emerald-500/0 hover:border-emerald-500">
+                            <tr key={`${str.id || str.name || idx}-${idx}`} className="hover:bg-emerald-50/20 transition-all font-medium border-l-4 border-emerald-500/0 hover:border-emerald-500">
                               {isManagementOrAdmin && (
                                 <td className="px-4 py-4 text-center">
                                   <input
@@ -4221,10 +4221,10 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
                     </thead>
                     <tbody className="divide-y divide-neutral-100 text-xs font-semibold text-neutral-600">
                       {sortedHostelStructures.length > 0 ? (
-                        sortedHostelStructures.map(str => {
+                        sortedHostelStructures.map((str, idx) => {
                           const computedTotal = (str.term1 || 0) + (str.term2 || 0) + (str.term3 || 0);
                           return (
-                            <tr key={str.id || str.name} className="hover:bg-amber-50/20 transition-all font-medium border-l-4 border-amber-500/0 hover:border-amber-500">
+                            <tr key={`${str.id || str.name || idx}-${idx}`} className="hover:bg-amber-50/20 transition-all font-medium border-l-4 border-amber-500/0 hover:border-amber-500">
                               {isManagementOrAdmin && (
                                 <td className="px-4 py-4 text-center">
                                   <input
@@ -4331,8 +4331,8 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {concessions.map(conc => (
-                  <div key={conc.id} className="p-6 bg-white border border-neutral-100 rounded-3xl shadow-lg relative overflow-hidden group hover:shadow-xl transition-all">
+                {concessions.map((conc, idx) => (
+                  <div key={`${conc.id || idx}-${idx}`} className="p-6 bg-white border border-neutral-100 rounded-3xl shadow-lg relative overflow-hidden group hover:shadow-xl transition-all">
                     
                     <div className="absolute top-4 right-4 flex gap-1.5 z-10 transition-all">
                       {!isAccountant && (
@@ -4429,8 +4429,8 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
                           className="w-full text-xs font-bold p-3 bg-neutral-50 border border-neutral-200 rounded-xl outline-none focus:border-indigo-500 transition-colors disabled:opacity-50"
                         >
                           <option value="">-- Choose a Student --</option>
-                          {filteredStudentsForLastTerm.map(s => (
-                            <option key={s.uid} value={s.uid}>
+                          {filteredStudentsForLastTerm.map((s, idx) => (
+                            <option key={`${s.uid || idx}-${idx}`} value={s.uid}>
                               {s.name} {s.rollNumber || s.rollNo ? `(Roll: ${s.rollNumber || s.rollNo})` : ''}
                             </option>
                           ))}
@@ -4951,11 +4951,11 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
                     Loading book registers ...
                   </div>
                 ) : (
-                  receiptBooks.map(book => {
+                  receiptBooks.map((book, idx) => {
                     const isActive = book.active;
                     return (
                       <div 
-                        key={book.id} 
+                        key={`${book.id || idx}-${idx}`} 
                         className={`p-6 rounded-3xl border transition-all duration-200 relative overflow-hidden flex flex-col justify-between ${
                           isActive 
                             ? 'bg-neutral-50/70 border-indigo-500 shadow-md ring-1 ring-indigo-500/10' 
@@ -5445,12 +5445,12 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
                           <span className="text-indigo-600 font-bold">Configure Cart</span>
                         </h6>
                         <div className="space-y-2 max-h-[260px] lg:max-h-[360px] overflow-y-auto pr-1 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-                          {availableFeeTypes.map(ft => {
+                          {availableFeeTypes.map((ft, idx) => {
                             const IconComp = ft.icon;
                             const isSelected = !!activeCheckoutCategories[ft.id];
                             return (
                               <button
-                                key={ft.id}
+                                key={`${ft.id || idx}-${idx}`}
                                 type="button"
                                 onClick={() => handleToggleCategory(ft.id, ft.children)}
                                 className={`w-full text-left p-3.5 rounded-2xl border transition-all duration-200 flex items-center justify-between gap-3 group relative overflow-hidden cursor-pointer ${
@@ -5560,8 +5560,8 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
                               {receiptBooks.length === 0 ? (
                                 <option value="">No books configured - Seeding default...</option>
                               ) : (
-                                receiptBooks.map(bk => (
-                                  <option key={bk.id} value={bk.id}>
+                                receiptBooks.map((bk, idx) => (
+                                  <option key={`${bk.id || idx}-${idx}`} value={bk.id}>
                                     📖 {bk.name} ({bk.prefix || ''}{bk.currentSerial})
                                   </option>
                                 ))
@@ -5774,7 +5774,7 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
 
                       {/* Scrollable multi component table/list - Adjusted dynamically without scrollbars */}
                       <div className="space-y-2.5 w-full pr-1 overflow-y-auto flex-1 max-h-[35vh] sm:max-h-[42vh] lg:max-h-[50vh] xl:max-h-[58vh]">
-                        {getStudentFeeComponents(selectedStudentForPayment).map(c => {
+                        {getStudentFeeComponents(selectedStudentForPayment).map((c, idx) => {
                           const paid = Number(selectedStudentForPayment.paidComponents?.[c.id] || 0);
                           const remaining = Math.max(0, c.amount - paid);
                           const isChecked = !!checkoutSelectedMap[c.id];
@@ -5835,7 +5835,7 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
 
                           return (
                             <div 
-                              key={c.id}
+                              key={`${c.id || idx}-${idx}`}
                               className={`p-3 px-4 rounded-2xl border transition-all flex flex-col md:flex-row md:items-center justify-between gap-3 ${stylesClass}`}
                             >
                               <label className="flex items-start gap-3.5 cursor-pointer select-none flex-1">
@@ -6021,8 +6021,8 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
                   >
                     <option value="none">-- Revert / Remove Any Concessions --</option>
                     <option value="custom">Custom Flat Deductible Adjustment Fee</option>
-                    {concessions.map(c => (
-                      <option key={c.id} value={c.id}>{c.name} ({c.type === 'percentage' ? `${c.value}% Off` : `₹${c.value} Off`})</option>
+                    {concessions.map((c, idx) => (
+                      <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name} ({c.type === 'percentage' ? `${c.value}% Off` : `₹${c.value} Off`})</option>
                     ))}
                   </select>
                 </div>
@@ -6158,8 +6158,8 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
                     className="w-full text-xs font-bold p-3 bg-neutral-50 border border-neutral-200 rounded-xl outline-none"
                     required
                   >
-                    {getStudentFeeComponents(selectedStudentForExtension).map(comp => (
-                      <option key={comp.id} value={comp.id}>
+                    {getStudentFeeComponents(selectedStudentForExtension).map((comp, idx) => (
+                      <option key={`${comp.id || idx}-${idx}`} value={comp.id}>
                         {comp.label} (₹{comp.amount?.toLocaleString()})
                       </option>
                     ))}

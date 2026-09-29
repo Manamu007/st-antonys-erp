@@ -297,9 +297,9 @@ const StudentAcademicsPortal: React.FC<StudentAcademicsPortalProps> = ({ profile
           <div className="flex flex-col gap-1.5 align-start w-full md:w-auto">
             <span className="text-[10px] font-black uppercase text-neutral-400 tracking-widest leading-none font-mono">Select Sibling Profile</span>
             <div className="flex items-center gap-2 p-1 bg-white rounded-2xl border border-neutral-150 shadow-sm flex-wrap w-fit">
-              {studentProfiles.map((child) => (
+              {studentProfiles.map((child, idx) => (
                 <button
-                  key={child.uid || child.id}
+                  key={`${child.uid || child.id || idx}-${idx}`}
                   onClick={() => handleSiblingSwitch(child)}
                   className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
                     (profile.uid || profile.id) === (child.uid || child.id)
@@ -533,8 +533,8 @@ const StudentAcademicsPortal: React.FC<StudentAcademicsPortalProps> = ({ profile
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-neutral-100">
-                        {holidays.map((item) => (
-                          <tr key={item.id} className="hover:bg-neutral-50/50 transition-colors group">
+                        {holidays.map((item, idx) => (
+                          <tr key={`${item.id || idx}-${idx}`} className="hover:bg-neutral-50/50 transition-colors group">
                             <td className="px-6 py-4 font-mono font-bold text-primary text-sm whitespace-nowrap">
                               {item.date}
                               {item.toDate && item.toDate !== item.date && (
@@ -1776,7 +1776,7 @@ const Academics: React.FC = () => {
                       onChange={(e) => setPromotionSource({...promotionSource, classId: e.target.value, batchId: ''})}
                     >
                       <option value="">Select Class</option>
-                      {classes.filter(c => canViewAllClasses || c.id === profile?.classId).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      {classes.filter(c => canViewAllClasses || c.id === profile?.classId).map((c, idx) => <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name}</option>)}
                     </select>
                   </div>
                   <div className="space-y-1">
@@ -1790,8 +1790,8 @@ const Academics: React.FC = () => {
                       <option value="">Select Batch</option>
                       {findBatchesForClass({ id: promotionSource.classId }, displayedBatches)
                         .filter(b => canViewAllBatches || b.id === profile?.batchId)
-                        .map(b => (
-                          <option key={b.id} value={b.id}>
+                        .map((b, idx) => (
+                          <option key={`${b.id || idx}-${idx}`} value={b.id}>
                             {b.name} (Strength: {allStudents.filter(s => isStudentInBatch(s, b)).length})
                           </option>
                         ))}
@@ -1828,7 +1828,7 @@ const Academics: React.FC = () => {
                       onChange={(e) => setPromotionTarget({...promotionTarget, classId: e.target.value, batchId: ''})}
                     >
                       <option value="">Select Class</option>
-                      {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      {classes.map((c, idx) => <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name}</option>)}
                     </select>
                   </div>
                   <div className="space-y-1">
@@ -1840,8 +1840,8 @@ const Academics: React.FC = () => {
                       disabled={!promotionTarget.classId}
                     >
                       <option value="">Select Batch</option>
-                      {findBatchesForClass({ id: promotionTarget.classId }, displayedBatches).map(b => (
-                        <option key={b.id} value={b.id}>
+                      {findBatchesForClass({ id: promotionTarget.classId }, displayedBatches).map((b, idx) => (
+                        <option key={`${b.id || idx}-${idx}`} value={b.id}>
                           {b.name} (Strength: {allStudents.filter(s => isStudentInBatch(s, b)).length})
                         </option>
                       ))}
@@ -1879,14 +1879,14 @@ const Academics: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                   {students
                     .filter(s => s && s.classId === promotionSource.classId && s.batchId === promotionSource.batchId)
-                    .map(student => {
+                    .map((student, idx) => {
                       const isSelected = selectedStudents.includes(student.uid);
                       const fee = fees.find(f => f.studentId === student.uid && f.academicYear === promotionSource.academicYear);
                       const pending = fee ? (fee.totalAmount - fee.paidAmount) : 0;
 
                       return (
                         <button
-                          key={student.uid}
+                          key={`${student.uid || idx}-${idx}`}
                           onClick={() => {
                             if (isSelected) setSelectedStudents(selectedStudents.filter(id => id !== student.uid));
                             else setSelectedStudents([...selectedStudents, student.uid]);
@@ -2008,20 +2008,20 @@ const Academics: React.FC = () => {
                       (teacherAssignments?.assignedClassNames ? Array.from(teacherAssignments.assignedClassNames).some(cn => cn && (cName === cn || cName.includes(cn) || cn.includes(cName))) : false);
                   }
                   return canViewAllClasses || c.id === profile?.classId;
-                }).map((item) => {
+                }).map((item, idx) => {
                   const classBatches = findBatchesForClass(item, displayedBatches).filter(b => 
                     (isTeacherRole ? (teacherAssignedBatchIds.has(b.id) || (teacherAssignments?.assignedBatchNames ? Array.from(teacherAssignments.assignedBatchNames).some(bn => bn && (b.name || '').toLowerCase().trim().includes(bn)) : false)) : true)
                   );
                   
                   return (
-                    <tr key={item.id} className="hover:bg-neutral-50/50 transition-colors group">
+                    <tr key={`${item.id || idx}-${idx}`} className="hover:bg-neutral-50/50 transition-colors group">
                       <td className="px-6 py-4 font-bold text-sidebar">{item.name}</td>
                       <td className="px-6 py-4 text-neutral-600 font-mono text-sm">{item.code}</td>
                       <td className="px-6 py-4">
                         <div className="flex flex-wrap gap-1">
                           {classBatches.length > 0 ? (
-                            classBatches.map(b => (
-                              <span key={b.id} className="px-2 py-0.5 bg-neutral-100 text-neutral-600 text-[10px] font-bold rounded-md border border-neutral-200">
+                            classBatches.map((b, bIdx) => (
+                              <span key={`${b.id || bIdx}-${bIdx}`} className="px-2 py-0.5 bg-neutral-100 text-neutral-600 text-[10px] font-bold rounded-md border border-neutral-200">
                                 {b.name} ({allStudents.filter(s => isStudentInBatch(s, b)).length})
                               </span>
                             ))
@@ -2033,10 +2033,10 @@ const Academics: React.FC = () => {
                       <td className="px-6 py-4">
                         <div className="flex flex-wrap gap-1 max-w-[200px]">
                           {item.subjectIds && item.subjectIds.length > 0 ? (
-                            item.subjectIds.map((sid: string) => {
+                            item.subjectIds.map((sid: string, sIdx: number) => {
                               const s = subjects.find(sub => sub && sub.id === sid);
                               return s ? (
-                                <span key={sid} className="px-2 py-0.5 bg-primary/5 text-primary text-[10px] font-bold rounded-md border border-primary/10">
+                                <span key={`${sid || sIdx}-${sIdx}`} className="px-2 py-0.5 bg-primary/5 text-primary text-[10px] font-bold rounded-md border border-primary/10">
                                   {s.name}
                                 </span>
                               ) : null;
@@ -2075,11 +2075,11 @@ const Academics: React.FC = () => {
                       (teacherAssignments?.assignedBatchNames ? Array.from(teacherAssignments.assignedBatchNames).some(bn => bn && (bName === bn || bName.includes(bn) || bn.includes(bName))) : false);
                   }
                   return canViewAllBatches || b.id === profile?.batchId || b.classId === profile?.classId;
-                }).map((item) => {
+                }).map((item, idx) => {
                   const resolvedClass = findClassForBatch(item, classes);
                   const studentCount = allStudents.filter(s => isStudentInBatch(s, item)).length;
                   return (
-                  <tr key={item.id} className="hover:bg-neutral-50/50 transition-colors group">
+                  <tr key={`${item.id || idx}-${idx}`} className="hover:bg-neutral-50/50 transition-colors group">
                     <td className="px-6 py-4 font-bold text-sidebar">
                       <div className="flex items-center gap-2">
                         <span>{item.name}</span>
@@ -2121,10 +2121,10 @@ const Academics: React.FC = () => {
                     <td className="px-6 py-4">
                       <div className="flex flex-wrap gap-1 max-w-[200px]">
                         {item.subjectIds && item.subjectIds.length > 0 ? (
-                          item.subjectIds.map((sid: string) => {
+                          item.subjectIds.map((sid: string, sIdx: number) => {
                             const s = (subjects || []).find(sub => sub && sub.id === sid);
                             return s ? (
-                              <span key={sid} className="px-2 py-0.5 bg-primary/5 text-primary text-[10px] font-bold rounded-md border border-primary/10">
+                              <span key={`${sid || sIdx}-${sIdx}`} className="px-2 py-0.5 bg-primary/5 text-primary text-[10px] font-bold rounded-md border border-primary/10">
                                 {s.name}
                               </span>
                             ) : null;
@@ -2171,8 +2171,8 @@ const Academics: React.FC = () => {
                     );
                   }
                   return canViewAllSubjects || profile?.subjects?.includes(s.name) || profile?.subjects?.includes(s.id);
-                }).map((item) => (
-                  <tr key={item.id} className="hover:bg-neutral-50/50 transition-colors group">
+                }).map((item, idx) => (
+                  <tr key={`${item.id || idx}-${idx}`} className="hover:bg-neutral-50/50 transition-colors group">
                     <td className="px-6 py-4 font-bold text-sidebar">{item.name}</td>
                     <td className="px-6 py-4 text-neutral-600 font-mono text-sm">{item.code}</td>
                     <td className="px-6 py-4">
@@ -2204,8 +2204,8 @@ const Academics: React.FC = () => {
                     )}
                   </tr>
                 ))}
-                {activeTab === 'holidays' && getSortedData<any>(holidays).map((item) => (
-                  <tr key={item.id} className="hover:bg-neutral-50/50 transition-colors group">
+                {activeTab === 'holidays' && getSortedData<any>(holidays).map((item, idx) => (
+                  <tr key={`${item.id || idx}-${idx}`} className="hover:bg-neutral-50/50 transition-colors group">
                     <td className="px-6 py-4 font-mono font-bold text-primary text-sm whitespace-nowrap">
                       {item.date}
                       {item.toDate && item.toDate !== item.date && (
@@ -2327,9 +2327,9 @@ const Academics: React.FC = () => {
                     <label className="text-xs font-bold text-neutral-400 uppercase tracking-wider">Assign Subjects</label>
                     <p className="text-[10px] text-neutral-400 mb-2">Select subjects taught in this class</p>
                     <div className="grid grid-cols-2 gap-2 p-4 bg-neutral-50 rounded-2xl border border-neutral-100 max-h-48 overflow-y-auto">
-                      {subjects.map(s => (
+                      {subjects.map((s, idx) => (
                         <button
-                          key={s.id}
+                          key={`${s.id || idx}-${idx}`}
                           type="button"
                           onClick={() => {
                             const current = formData.subjectIds || [];
@@ -2425,7 +2425,7 @@ const Academics: React.FC = () => {
                       }}
                     >
                       <option value="">Select Class</option>
-                      {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      {classes.map((c, idx) => <option key={`${c.id || idx}-${idx}`} value={c.id}>{c.name}</option>)}
                     </select>
                   </div>
                   <div className="space-y-1">
@@ -2520,9 +2520,9 @@ const Academics: React.FC = () => {
                       <label className="text-xs font-bold text-neutral-400 uppercase tracking-wider">Assign Subjects</label>
                       <p className="text-[10px] text-neutral-400 mb-2">Select subjects specifically for this batch (optional override)</p>
                       <div className="grid grid-cols-2 gap-2 p-4 bg-neutral-50 rounded-2xl border border-neutral-100 max-h-48 overflow-y-auto">
-                        {subjects.map(s => (
+                        {subjects.map((s, idx) => (
                           <button
-                            key={s.id}
+                            key={`${s.id || idx}-${idx}`}
                             type="button"
                             onClick={() => {
                               const current = formData.subjectIds || [];

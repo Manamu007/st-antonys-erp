@@ -1556,8 +1556,8 @@ export const Class10DailyExams: React.FC<Class10DailyExamsProps> = ({
                 onChange={(e) => setSelectedSubjectId(e.target.value)}
                 className="w-full text-xs font-black bg-neutral-50 border border-neutral-200 rounded-xl px-2.5 py-1.5 text-neutral-900 focus:bg-white outline-none cursor-pointer"
               >
-                {teacherClass10Subjects.map(s => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
+                {teacherClass10Subjects.map((s, idx) => (
+                  <option key={`${s.id || idx}-${idx}`} value={s.id}>{s.name}</option>
                 ))}
               </select>
             ) : (
@@ -1635,8 +1635,8 @@ export const Class10DailyExams: React.FC<Class10DailyExamsProps> = ({
               className="w-full text-xs font-bold bg-neutral-50 border border-neutral-200 rounded-xl px-2.5 py-1.5 text-neutral-800 focus:bg-white focus:border-emerald-500 outline-none cursor-pointer"
             >
               <option value="">All Batches</option>
-              {classBatches.map(b => (
-                <option key={b.id} value={b.id}>{b.name}</option>
+              {classBatches.map((b, idx) => (
+                <option key={`${b.id || idx}-${idx}`} value={b.id}>{b.name}</option>
               ))}
             </select>
           </div>
@@ -1919,7 +1919,7 @@ export const Class10DailyExams: React.FC<Class10DailyExamsProps> = ({
                       const isFirstInBatch = !selectedBatchId && sortColumn === 'roll' && (idx === 0 || student.batchId !== filteredStudents[idx - 1]?.batchId);
 
                       return (
-                        <React.Fragment key={sId}>
+                        <React.Fragment key={`${sId || idx}-${idx}`}>
                           {isFirstInBatch && (
                             <tr className="bg-emerald-50/70 border-y border-emerald-200">
                               <td colSpan={8} className="py-2.5 px-4 font-black text-xs text-emerald-900 uppercase tracking-wider">
@@ -2122,13 +2122,13 @@ export const Class10DailyExams: React.FC<Class10DailyExamsProps> = ({
                   className="bg-white text-xs font-black text-emerald-950 border border-emerald-300 rounded-lg px-2 py-1 outline-none cursor-pointer"
                 >
                   <option value="">-- Choose Exam Name --</option>
-                  {availableExams.map((exam) => {
+                  {availableExams.map((exam, idx) => {
                     let formattedDate = exam.date;
                     try {
                       formattedDate = format(parseISO(exam.date), 'dd MMM yyyy');
                     } catch (e) {}
                     return (
-                      <option key={exam.key} value={exam.key}>
+                      <option key={`${exam.key || idx}-${idx}`} value={exam.key}>
                         {exam.title} ({formattedDate})
                       </option>
                     );

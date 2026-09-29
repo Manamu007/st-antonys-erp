@@ -1735,7 +1735,7 @@ export const dbService = {
 
         if (!studentsList || studentsList.length === 0) {
           try {
-            const directRes = await fetch('https://antonyschool.in/api/maintenance/db-proxy?collection=students', { 
+            const directRes = await fetch(resolveApiUrl('https://antonyschool.in/api/maintenance/db-proxy?collection=students'), { 
               mode: 'cors',
               signal: AbortSignal.timeout(5000)
             });
@@ -1805,7 +1805,7 @@ export const dbService = {
 
         if (!attendanceList || attendanceList.length === 0) {
           try {
-            const directRes = await fetch(`https://antonyschool.in/api/maintenance/db-proxy?collection=attendance${querySuffix}`, { 
+            const directRes = await fetch(resolveApiUrl(`https://antonyschool.in/api/maintenance/db-proxy?collection=attendance${querySuffix}`), { 
               mode: 'cors',
               signal: AbortSignal.timeout(5000)
             });
@@ -1853,7 +1853,7 @@ export const dbService = {
 
         if (!examsList || examsList.length === 0) {
           try {
-            const directRes = await fetch('https://antonyschool.in/api/maintenance/db-proxy?collection=exams', { 
+            const directRes = await fetch(resolveApiUrl('https://antonyschool.in/api/maintenance/db-proxy?collection=exams'), { 
               mode: 'cors',
               signal: AbortSignal.timeout(5000)
             });
@@ -1922,7 +1922,7 @@ export const dbService = {
 
         if (!marksList || marksList.length === 0) {
           try {
-            const directRes = await fetch(`https://antonyschool.in/api/maintenance/db-proxy?${qStr}`, { 
+            const directRes = await fetch(resolveApiUrl(`https://antonyschool.in/api/maintenance/db-proxy?${qStr}`), { 
               mode: 'cors',
               signal: AbortSignal.timeout(5000)
             });
@@ -1965,7 +1965,7 @@ export const dbService = {
 
         if (!dailyList || dailyList.length === 0) {
           try {
-            const directRes = await fetch('https://antonyschool.in/api/maintenance/db-proxy?collection=class10_daily_marks', { 
+            const directRes = await fetch(resolveApiUrl('https://antonyschool.in/api/maintenance/db-proxy?collection=class10_daily_marks'), { 
               mode: 'cors',
               signal: AbortSignal.timeout(5000)
             });
@@ -2371,8 +2371,8 @@ export const dbService = {
     // Initial load
     triggerFetch();
 
-    // Set polling interval
-    const pollingInterval = (path === 'attendance' || path === 'user_activities' || path === 'whatsapp_logs') ? 30000 : 60000;
+    // Set polling interval (conservative 90s/180s to avoid rate limit/quota exhaustion in preview)
+    const pollingInterval = (path === 'attendance' || path === 'user_activities' || path === 'whatsapp_logs') ? 90000 : 180000;
     activeSub.intervalId = setInterval(triggerFetch, pollingInterval);
 
     return () => {
@@ -2428,7 +2428,8 @@ export const dbService = {
       };
 
       fetchAndCallback();
-      const pollingInterval = (path === 'attendance' || path === 'user_activities' || path === 'whatsapp_logs') ? 30000 : 60000;
+      // Set polling interval (conservative 90s/180s to avoid rate limit/quota exhaustion in preview)
+      const pollingInterval = (path === 'attendance' || path === 'user_activities' || path === 'whatsapp_logs') ? 90000 : 180000;
       const intervalId = setInterval(fetchAndCallback, pollingInterval);
       activeUnsubscribe = () => {
         clearInterval(intervalId);

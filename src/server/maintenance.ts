@@ -334,6 +334,16 @@ const invalidateProxyCache = (colPath: string) => {
 
 
 async function forwardToLiveProxy(operation: string, colPath: string, id: any, data: any, constraints: any, body: any): Promise<{ status?: number; json: any }> {
+  const isProdVPS = (process.env.APP_URL || '').includes('antonyschool.in');
+  if (process.env.DISABLE_PROXY_FORWARD === 'true' && isProdVPS) {
+    if (operation === "list") {
+      return { status: 200, json: { success: true, data: [] } };
+    }
+    if (operation === "count") {
+      return { status: 200, json: { success: true, count: 0 } };
+    }
+    return { status: 200, json: { success: true, data: null } };
+  }
   try {
     const vpsRes = await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
       method: "POST",
@@ -370,7 +380,7 @@ async function forwardToLiveProxy(operation: string, colPath: string, id: any, d
   return { status: 503, json: { success: false, error: "Failed to communicate with live database proxy" } };
 }
 
-async function handleWithMongoOrLocal(operation: string, colPath: string, id: any, data: any, constraints: any, body: any): Promise<{ status?: number; json: any }> {
+export async function handleWithMongoOrLocal(operation: string, colPath: string, id: any, data: any, constraints: any, body: any): Promise<{ status?: number; json: any }> {
   const mongo = await getMongoDb().catch(() => null);
 
   if (mongo) {

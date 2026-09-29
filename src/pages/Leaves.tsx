@@ -533,8 +533,8 @@ const Leaves: React.FC = () => {
                     </td>
                   </tr>
                 ) : (
-                  finalFilteredLeaves.map((leave) => (
-                    <tr key={leave.id} className="hover:bg-neutral-50 transition-colors">
+                  finalFilteredLeaves.map((leave, idx) => (
+                    <tr key={`${leave.id || idx}-${idx}`} className="hover:bg-neutral-50 transition-colors">
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-3">
                           <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-xs">

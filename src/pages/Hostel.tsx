@@ -281,12 +281,12 @@ function HostelInactiveStudents({ students, classes, batches }: any) {
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-100">
-              {filteredStudents.map((student: any) => {
+              {filteredStudents.map((student: any, idx: number) => {
                 const cls = classes.find((c: any) => c.id === student.classId)?.name || 'N/A';
                 const batch = batches.find((b: any) => b.id === student.batchId)?.name || 'N/A';
                 const docId = student.id || student.uid;
                 return (
-                  <tr key={docId} className="hover:bg-neutral-50/50 transition-colors">
+                  <tr key={`${docId || idx}-${idx}`} className="hover:bg-neutral-50/50 transition-colors">
                     <td className="py-5 px-6 md:px-8">
                       <div>
                         <span className="font-bold text-neutral-900 text-2xl">{student.name}</span>
@@ -741,14 +741,14 @@ function HostelDashboard({ students, blocks, outings, classes = [], batches = []
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-100 bg-white">
-                    {sortedOccupiedList.map((student: any) => {
+                    {sortedOccupiedList.map((student: any, idx: number) => {
                       const id = student.uid || student.id;
                       const palette = blockColors.mapping[student.hostelName?.trim()] || blockColors.defaultPalette;
                       const cls = classes.find((c: any) => c.id === student.classId)?.name || student.className || 'N/A';
                       const batch = batches.find((b: any) => b.id === student.batchId)?.name || student.batchName || 'N/A';
                       
                       return (
-                        <tr key={id} className={`transition-all duration-150 border-b ${palette.border} ${palette.rowHover}`}>
+                        <tr key={`${id || idx}-${idx}`} className={`transition-all duration-150 border-b ${palette.border} ${palette.rowHover}`}>
                           <td className="py-4 px-5">
                             <div className={`text-base font-black ${palette.text}`}>{student.name}</div>
                             <div className={`text-xs mt-0.5 ${palette.subtext} font-bold`}>
@@ -805,11 +805,11 @@ function HostelDashboard({ students, blocks, outings, classes = [], batches = []
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-100 bg-white">
-                    {filteredLeave.map((student: any) => {
+                    {filteredLeave.map((student: any, idx: number) => {
                       const id = student.uid || student.id;
                       const o = student.activeOuting;
                       return (
-                        <tr key={id} className="hover:bg-neutral-50/40 transition-colors">
+                        <tr key={`${id || idx}-${idx}`} className="hover:bg-neutral-50/40 transition-colors">
                           <td className="py-4 px-5">
                             <div className="font-bold text-neutral-950 text-base">{student.name}</div>
                             <div className="text-xs text-neutral-400 mt-0.5">ID: {student.admissionNumber || 'N/A'} • <span className="capitalize">{student.gender || 'N/A'}</span></div>
@@ -1037,11 +1037,11 @@ function HostelStudents({ students, classes, batches, blocks, rooms = [] }: any)
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-100">
-              {filteredStudents.map((student: any) => {
+              {filteredStudents.map((student: any, idx: number) => {
                 const cls = classes.find((c: any) => c.id === student.classId)?.name || 'N/A';
                 const batch = batches.find((b: any) => b.id === student.batchId)?.name || 'N/A';
                 return (
-                  <tr key={student.uid} className="hover:bg-neutral-50/50 transition-colors">
+                  <tr key={`${student.uid || student.id || idx}-${idx}`} className="hover:bg-neutral-50/50 transition-colors">
                     <td className="py-5 px-6 md:px-8">
                       <div>
                         <span className="font-bold text-neutral-900 text-2xl">{student.name}</span>
@@ -1134,8 +1134,8 @@ function HostelStudents({ students, classes, batches, blocks, rooms = [] }: any)
                               }}
                           >
                               <option value="">Select Block</option>
-                              {blocks.map((block: any) => (
-                                  <option key={block.id} value={block.name}>{block.name} (Cap: {block.capacity})</option>
+                              {blocks.map((block: any, idx: number) => (
+                                  <option key={`${block.id || idx}-${idx}`} value={block.name}>{block.name} (Cap: {block.capacity})</option>
                               ))}
                           </select>
                       </div>
@@ -1704,10 +1704,10 @@ function HostelOutings({ students, buses, classes, batches, outings }: any) {
       </div>
 
       <div className="grid gap-4">
-        {filteredOutings.length > 0 ? filteredOutings.map((request: any) => {
+        {filteredOutings.length > 0 ? filteredOutings.map((request: any, idx: number) => {
           const isOverdue = request.status === 'approved' && request.endDate && request.endDate < today;
           return (
-            <div key={request.id} className={`bg-white p-6 rounded-2xl shadow-sm border ${isOverdue ? 'border-rose-300 bg-rose-50/30' : 'border-neutral-200'}`}>
+            <div key={`${request.id || idx}-${idx}`} className={`bg-white p-6 rounded-2xl shadow-sm border ${isOverdue ? 'border-rose-300 bg-rose-50/30' : 'border-neutral-200'}`}>
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
                 <div className="flex gap-4 items-start">
                   <div className={`w-12 h-12 rounded-full flex items-center justify-center shrink-0 ${isOverdue ? 'bg-rose-100' : 'bg-neutral-100'}`}>
@@ -1858,8 +1858,8 @@ function HostelOutings({ students, buses, classes, batches, outings }: any) {
                     }}
                   >
                     <option value="">Select Resident</option>
-                    {students.filter((s:any) => s.feeType?.toLowerCase() === 'hostel' && (s.status?.toLowerCase() === 'active' || !s.status)).map((s:any) => (
-                      <option key={s.uid} value={s.uid}>{s.name} ({classes.find((c:any) => c.id === s.classId)?.name || ''})</option>
+                    {students.filter((s:any) => s.feeType?.toLowerCase() === 'hostel' && (s.status?.toLowerCase() === 'active' || !s.status)).map((s:any, idx: number) => (
+                      <option key={`${s.uid || idx}-${idx}`} value={s.uid}>{s.name} ({classes.find((c:any) => c.id === s.classId)?.name || ''})</option>
                     ))}
                   </select>
                 )}
@@ -2721,8 +2721,8 @@ function HostelBlocks({ blocks, students }: any) {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {blocks.map((block: any) => (
-          <div key={block.id} className="bg-white p-6 rounded-2xl shadow-sm border border-neutral-200 hover:shadow-md transition-shadow">
+        {blocks.map((block: any, idx: number) => (
+          <div key={`${block.id || idx}-${idx}`} className="bg-white p-6 rounded-2xl shadow-sm border border-neutral-200 hover:shadow-md transition-shadow">
             <div className="flex justify-between items-start mb-4">
               <div className="p-3 bg-blue-50 rounded-xl">
                 <Building className="w-6 h-6 text-blue-600" />

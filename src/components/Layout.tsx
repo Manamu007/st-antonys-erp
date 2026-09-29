@@ -287,11 +287,11 @@ const Layout: React.FC = () => {
                   <Users className="w-3.5 h-3.5 text-rose-500 animate-pulse" /> Siblings:
                 </span>
                 <div className="flex items-center gap-1">
-                  {studentProfiles.map((sibling) => {
+                  {studentProfiles.map((sibling, idx) => {
                     const isActive = (sibling.uid || sibling.id) === profile?.uid;
                     return (
                       <button
-                        key={sibling.uid || sibling.id}
+                        key={`${sibling.uid || sibling.id || idx}-${idx}`}
                         onClick={() => {
                           if (!isActive) {
                             switchProfile(sibling.uid || sibling.id);
@@ -425,11 +425,11 @@ const Layout: React.FC = () => {
               </div>
 
               <div className="flex items-center gap-2.5 p-1.5 bg-white/5 rounded-[1.50rem] border border-white/10 flex-wrap relative z-10">
-                {studentProfiles.map((child) => {
+                {studentProfiles.map((child, idx) => {
                   const isActive = (profile?.uid || profile?.id) === (child.uid || child.id);
                   return (
                     <button
-                      key={child.uid || child.id}
+                      key={`${child.uid || child.id || idx}-${idx}`}
                       onClick={() => switchProfile(child.uid || child.id)}
                       className={`flex items-center gap-2 px-5 py-2.5 rounded-[1rem] text-[10px] font-black uppercase tracking-widest transition-all cursor-pointer ${
                         isActive

@@ -137,52 +137,116 @@ const Reports: React.FC = () => {
       }
     );
 
-    let unsubscribeLogs: () => void;
+    // Fast initial load via REST endpoint to ensure immediate data display
+    fetch('/api/whatsapp/logs')
+      .then(res => res.json())
+      .then(data => {
+        if (data?.logs && Array.isArray(data.logs) && data.logs.length > 0) {
+          setLogs(prev => {
+            const map = new Map<string, any>();
+            data.logs.forEach((item: any) => {
+              if (item.id) map.set(item.id, item);
+            });
+            prev.forEach(item => {
+              if (item.id && !map.has(item.id)) map.set(item.id, item);
+            });
+            const merged = Array.from(map.values()).sort((a, b) => {
+              const timeA = new Date(a.timestamp || a.createdAt || 0).getTime();
+              const timeB = new Date(b.timestamp || b.createdAt || 0).getTime();
+              return timeB - timeA;
+            });
+            return merged;
+          });
+          setLoading(false);
+        }
+      })
+      .catch(() => {});
 
-    if (filterStatus === 'processing') {
-      const q = query(
-        collection('whatsapp_queue'),
-        orderBy('createdAt', 'desc'),
-        limit(500)
-      );
-      
-      unsubscribeLogs = onSnapshot(q, (snapshot) => {
-        const items = snapshot.docs.map(doc => {
-          const data = doc.data();
-          return {
-            id: doc.id,
-            ...data,
-            recipient: data.to,
-            timestamp: data.createdAt,
-            status: data.status
-          };
-        });
-        
-        // Filter for exactly pending/processing
-        const filtered = items.filter(d => d.status === 'processing' || d.status === 'pending');
-        setLogs(filtered);
-        setLoading(false);
-      }, (error) => {
-        console.error("Queue Subscription Error:", error);
+    // Normalized record converter
+    const normalizeRecord = (docOrData: any) => {
+      const data = typeof docOrData?.data === 'function' ? docOrData.data() : docOrData;
+      const id = docOrData?.id || data?.id || data?.uid || data?._id;
+      const recipient = data?.recipient || data?.to || data?.phoneNumber || '';
+      const timestamp = data?.timestamp || data?.deliveredAt || data?.sentAt || data?.createdAt || data?.updatedAt || new Date().toISOString();
+      const status = (data?.status || 'sent').toLowerCase();
+      const text = data?.text || data?.message || '';
+      const type = data?.type || data?.options?.templateType || data?.options?.messageType || 'single';
+
+      return {
+        id,
+        ...data,
+        recipient,
+        to: recipient,
+        timestamp,
+        createdAt: data?.createdAt || timestamp,
+        status,
+        text,
+        message: text,
+        type,
+        options: data?.options || {}
+      };
+    };
+
+    let queueRecords: any[] = [];
+    let logRecords: any[] = [];
+
+    const syncCombinedLogs = () => {
+      const map = new Map<string, any>();
+      queueRecords.forEach(item => {
+        const norm = normalizeRecord(item);
+        if (norm.id) map.set(norm.id, norm);
       });
-    } else {
-      const q = query(
-        collection('whatsappLogs'),
-        orderBy('timestamp', 'desc'),
-        limit(1000)
-      );
-      
-      unsubscribeLogs = onSnapshot(q, (snapshot) => {
-        const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setLogs(items);
-        setLoading(false);
-      }, (error) => {
-        console.error("Logs Subscription Error:", error);
+      logRecords.forEach(item => {
+        const norm = normalizeRecord(item);
+        if (norm.id) {
+          map.set(norm.id, { ...(map.get(norm.id) || {}), ...norm });
+        }
       });
-    }
+
+      let combined = Array.from(map.values()).sort((a, b) => {
+        const timeA = new Date(a.timestamp || a.createdAt || 0).getTime();
+        const timeB = new Date(b.timestamp || b.createdAt || 0).getTime();
+        return timeB - timeA;
+      });
+
+      if (filterStatus === 'processing') {
+        combined = combined.filter(d => d.status === 'processing' || d.status === 'pending' || d.status === 'retrying');
+      }
+
+      setLogs(combined);
+      setLoading(false);
+    };
+
+    // Real-time subscriptions for both queue and logs collections
+    const qQueue = query(
+      collection('whatsapp_queue'),
+      orderBy('createdAt', 'desc'),
+      limit(1000)
+    );
+
+    const unsubscribeQueue = onSnapshot(qQueue, (snapshot) => {
+      queueRecords = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      syncCombinedLogs();
+    }, (error) => {
+      console.warn("Queue subscription note:", error);
+    });
+
+    const qLogs = query(
+      collection('whatsappLogs'),
+      orderBy('timestamp', 'desc'),
+      limit(1000)
+    );
+
+    const unsubscribeLogs = onSnapshot(qLogs, (snapshot) => {
+      logRecords = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      syncCombinedLogs();
+    }, (error) => {
+      console.warn("Logs subscription note:", error);
+    });
 
     return () => {
       unsubscribeStats();
+      unsubscribeQueue();
       unsubscribeLogs();
     };
   }, [filterStatus]);

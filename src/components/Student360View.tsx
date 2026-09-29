@@ -564,8 +564,8 @@ const Student360View: React.FC<Student360ViewProps> = ({ student, isOpen, onClos
                           >
                             <option value="none">None (No Concession)</option>
                             <option value="custom">Custom Concession Amount</option>
-                            {concessions.map(c => (
-                              <option key={c.id} value={c.id}>
+                            {concessions.map((c, idx) => (
+                              <option key={`${c.id || idx}-${idx}`} value={c.id}>
                                 {c.name} ({c.type === 'percentage' ? `${c.value}%` : `₹${c.value}`})
                               </option>
                             ))}

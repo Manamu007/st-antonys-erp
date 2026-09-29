@@ -547,10 +547,10 @@ export default function StaffAutoAttendanceConfig({ selectedDate, onRefresh }: S
                   </td>
                 </tr>
               ) : (
-                displayedLogs.map((log) => {
+                displayedLogs.map((log, idx) => {
                   const isExpanded = expandedLogId === log.id;
                   return (
-                    <React.Fragment key={log.id}>
+                    <React.Fragment key={`${log.id || idx}-${idx}`}>
                       <tr className="hover:bg-neutral-50/50 transition-colors">
                         <td 
                           onClick={() => toggleExpandLog(log)}
@@ -628,9 +628,9 @@ export default function StaffAutoAttendanceConfig({ selectedDate, onRefresh }: S
                                 </p>
                               ) : (
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                                  {expandedLogs[log.id].map((staff: any) => (
+                                  {expandedLogs[log.id].map((staff: any, sIdx: number) => (
                                     <div 
-                                      key={staff.userId} 
+                                      key={`${staff.userId || sIdx}-${sIdx}`} 
                                       className="flex items-center justify-between p-3 bg-neutral-50 rounded-xl border border-neutral-100 hover:border-neutral-200 transition-all"
                                     >
                                       <div>

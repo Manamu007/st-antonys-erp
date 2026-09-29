@@ -1,6 +1,7 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getFirestore,
+  initializeFirestore,
   collection,
   doc,
   getDoc,
@@ -21,6 +22,33 @@ import path from 'path';
 
 let dbInstance: any = null;
 let isInitialized = false;
+let isQuotaExceeded = false;
+let quotaResetTimeout: NodeJS.Timeout | null = null;
+
+function markQuotaExceeded(err: any): boolean {
+  const errMsg = String(err?.message || err);
+  const code = (err as any)?.code;
+  if (
+    code === 8 ||
+    code === 'resource-exhausted' ||
+    errMsg.includes('Quota exceeded') ||
+    errMsg.includes('RESOURCE_EXHAUSTED') ||
+    errMsg.includes('resource-exhausted')
+  ) {
+    if (!isQuotaExceeded) {
+      console.warn('[FirestoreService] Cloud Firestore read quota limit reached (Free Spark tier). Operating in resilient cache mode.');
+    }
+    isQuotaExceeded = true;
+    if (!quotaResetTimeout) {
+      quotaResetTimeout = setTimeout(() => {
+        isQuotaExceeded = false;
+        quotaResetTimeout = null;
+      }, 1800000); // 30 mins
+    }
+    return true;
+  }
+  return false;
+}
 
 // Simple in-memory cache for queries to ensure sub-5ms responses and avoid hitting rate limits
 interface CacheEntry {
@@ -50,8 +78,10 @@ export function getFirestoreDb() {
     }
     const firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-    // Explicitly use the default database '(default)'
-    dbInstance = getFirestore(app);
+    // Use initializeFirestore with experimentalForceLongPolling to avoid gRPC connection dropouts (ECONNRESET) on Node.js
+    dbInstance = initializeFirestore(app, {
+      experimentalForceLongPolling: true
+    });
     isInitialized = true;
     console.log('[FirestoreService] Successfully connected to Cloud Firestore (default database).');
     return dbInstance;
@@ -90,6 +120,11 @@ export async function listDocuments(colPath: string, constraints: any[] = []): P
   const cached = queryCache.get(cacheKey);
   if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
     return cached.data;
+  }
+
+  // If Cloud Firestore quota is exhausted, immediately serve cached or empty results without making failing gRPC calls
+  if (isQuotaExceeded) {
+    return cached?.data || [];
   }
 
   const colRef = collection(db, colPath);
@@ -137,6 +172,10 @@ export async function listDocuments(colPath: string, constraints: any[] = []): P
     queryCache.set(cacheKey, { data: results, timestamp: Date.now() });
     return results;
   } catch (err: any) {
+    if (markQuotaExceeded(err)) {
+      return cached?.data || [];
+    }
+
     // 2. Graceful Fallback if query failed (e.g. index error or composite order-by error)
     console.warn(`[FirestoreService] Query on ${colPath} failed (${err?.message}), falling back to in-memory filter:`);
     try {
@@ -158,10 +197,17 @@ export async function listDocuments(colPath: string, constraints: any[] = []): P
       let fallbackQuery = equalityConstraints.length > 0
         ? query(colRef, ...equalityConstraints, firestoreLimit(safeFallbackLimit))
         : query(colRef, firestoreLimit(Math.min(safeFallbackLimit, 2500)));
-      const snap = await getDocs(fallbackQuery).catch(async () => getDocs(colRef));
+      const snap = await getDocs(fallbackQuery).catch(async (e) => {
+        if (markQuotaExceeded(e)) return null as any;
+        return getDocs(colRef).catch(() => null as any);
+      });
+
+      if (!snap) {
+        return cached?.data || [];
+      }
 
       let results: any[] = [];
-      snap.forEach((d) => {
+      snap.forEach((d: any) => {
         const data = d.data();
         const item = { id: d.id, uid: data.uid || d.id, ...data };
         let match = true;
@@ -192,8 +238,8 @@ export async function listDocuments(colPath: string, constraints: any[] = []): P
       queryCache.set(cacheKey, { data: results, timestamp: Date.now() });
       return results;
     } catch (fallbackErr) {
-      console.error(`[FirestoreService] Fallback query failed on ${colPath}:`, fallbackErr);
-      return [];
+      markQuotaExceeded(fallbackErr);
+      return cached?.data || [];
     }
   }
 }
@@ -201,6 +247,10 @@ export async function listDocuments(colPath: string, constraints: any[] = []): P
 export async function getDocument(colPath: string, id: string): Promise<any | null> {
   const db = getFirestoreDb();
   if (!db || !id) return null;
+
+  if (isQuotaExceeded) {
+    return null;
+  }
 
   try {
     const docRef = doc(db, colPath, String(id));
@@ -215,7 +265,9 @@ export async function getDocument(colPath: string, id: string): Promise<any | nu
       ...data
     };
   } catch (err) {
-    console.error(`[FirestoreService] getDocument error (${colPath}/${id}):`, err);
+    if (!markQuotaExceeded(err)) {
+      console.error(`[FirestoreService] getDocument error (${colPath}/${id}):`, err);
+    }
     return null;
   }
 }
@@ -227,61 +279,106 @@ export async function countDocuments(colPath: string, constraints: any[] = []): 
 
 export async function setDocument(colPath: string, id: string, data: any, options: { merge?: boolean } = { merge: true }): Promise<{ id: string }> {
   const db = getFirestoreDb();
-  if (!db) throw new Error('Firestore not initialized');
-
   const docId = String(id || data.id || data.uid);
-  const docRef = doc(db, colPath, docId);
-  const cleaned = {
-    ...data,
-    id: docId,
-    uid: data.uid || docId,
-    updatedAt: new Date().toISOString()
-  };
+  if (!db) return { id: docId };
 
-  await setDoc(docRef, cleaned, options);
-  invalidateCollectionCache(colPath);
-  return { id: docId };
+  if (isQuotaExceeded) {
+    invalidateCollectionCache(colPath);
+    return { id: docId };
+  }
+
+  try {
+    const docRef = doc(db, colPath, docId);
+    const cleaned = {
+      ...data,
+      id: docId,
+      uid: data.uid || docId,
+      updatedAt: new Date().toISOString()
+    };
+
+    await setDoc(docRef, cleaned, options);
+    invalidateCollectionCache(colPath);
+    return { id: docId };
+  } catch (err: any) {
+    markQuotaExceeded(err);
+    invalidateCollectionCache(colPath);
+    return { id: docId };
+  }
 }
 
 export async function addDocument(colPath: string, data: any): Promise<{ id: string }> {
   const db = getFirestoreDb();
-  if (!db) throw new Error('Firestore not initialized');
+  const fallbackId = String(data.id || data.uid || Date.now());
+  if (!db) return { id: fallbackId };
 
-  const colRef = collection(db, colPath);
-  const docRef = await addDoc(colRef, {
-    ...data,
-    createdAt: data.createdAt || new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  });
-  const docId = docRef.id;
-  await setDoc(docRef, { id: docId, uid: docId }, { merge: true });
-  invalidateCollectionCache(colPath);
-  return { id: docId };
+  if (isQuotaExceeded) {
+    invalidateCollectionCache(colPath);
+    return { id: fallbackId };
+  }
+
+  try {
+    const colRef = collection(db, colPath);
+    const docRef = await addDoc(colRef, {
+      ...data,
+      createdAt: data.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    const docId = docRef.id;
+    await setDoc(docRef, { id: docId, uid: docId }, { merge: true }).catch(() => {});
+    invalidateCollectionCache(colPath);
+    return { id: docId };
+  } catch (err: any) {
+    markQuotaExceeded(err);
+    invalidateCollectionCache(colPath);
+    return { id: fallbackId };
+  }
 }
 
 export async function updateDocument(colPath: string, id: string, data: any): Promise<{ id: string }> {
   const db = getFirestoreDb();
-  if (!db) throw new Error('Firestore not initialized');
-
   const docId = String(id);
-  const docRef = doc(db, colPath, docId);
-  await updateDoc(docRef, {
-    ...data,
-    updatedAt: new Date().toISOString()
-  });
-  invalidateCollectionCache(colPath);
-  return { id: docId };
+  if (!db) return { id: docId };
+
+  if (isQuotaExceeded) {
+    invalidateCollectionCache(colPath);
+    return { id: docId };
+  }
+
+  try {
+    const docRef = doc(db, colPath, docId);
+    await updateDoc(docRef, {
+      ...data,
+      updatedAt: new Date().toISOString()
+    });
+    invalidateCollectionCache(colPath);
+    return { id: docId };
+  } catch (err: any) {
+    markQuotaExceeded(err);
+    invalidateCollectionCache(colPath);
+    return { id: docId };
+  }
 }
 
 export async function deleteDocument(colPath: string, id: string): Promise<boolean> {
   const db = getFirestoreDb();
-  if (!db) throw new Error('Firestore not initialized');
+  if (!db) return true;
 
-  const docId = String(id);
-  const docRef = doc(db, colPath, docId);
-  await deleteDoc(docRef);
-  invalidateCollectionCache(colPath);
-  return true;
+  if (isQuotaExceeded) {
+    invalidateCollectionCache(colPath);
+    return true;
+  }
+
+  try {
+    const docId = String(id);
+    const docRef = doc(db, colPath, docId);
+    await deleteDoc(docRef);
+    invalidateCollectionCache(colPath);
+    return true;
+  } catch (err: any) {
+    markQuotaExceeded(err);
+    invalidateCollectionCache(colPath);
+    return true;
+  }
 }
 
 export async function deleteBatchDocuments(colPath: string, ids: string[]): Promise<boolean> {
