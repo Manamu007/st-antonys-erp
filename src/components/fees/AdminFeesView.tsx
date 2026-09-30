@@ -138,7 +138,8 @@ interface AdminFeesViewProps {
   classes: any[];
   batches: any[];
   academicYear: string;
-  onRefresh: () => void;
+  onRefresh: (bypassCache?: boolean) => void;
+  onPaymentRecorded?: (newPayments: PaymentRecord[], updatedFee?: FeeRecord) => void;
 }
 
 export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
@@ -150,7 +151,8 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
   classes,
   batches,
   academicYear,
-  onRefresh
+  onRefresh,
+  onPaymentRecorded
 }) => {
   const { settings } = useSettings();
   const [selectedStructureYear, setSelectedStructureYear] = useState(academicYear || '2026-27');
@@ -821,14 +823,52 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
 
   // Base collection history payments list (non-expenditures, amount > 0)
   const baseTransPayments = useMemo(() => {
-    return (payments || [])
+    const fromPayments = (payments || [])
       .filter(p => !p.reference || !p.reference.startsWith('EXP'))
       .filter(p => Number(p.amount) > 0);
-  }, [payments]);
+    const seenKeys = new Set(fromPayments.map(p => p.id || p.reference));
+
+    const fromFees: PaymentRecord[] = [];
+    (fees || []).forEach(f => {
+      if (Array.isArray(f.paymentHistory)) {
+        f.paymentHistory.forEach((ph: any) => {
+          const key = ph.id || ph.reference;
+          if (key && !seenKeys.has(key) && Number(ph.amount) > 0) {
+            seenKeys.add(key);
+            fromFees.push({
+              id: ph.id || `fee_hist_${key}`,
+              uid: ph.id || `fee_hist_${key}`,
+              studentId: f.studentId,
+              studentUid: (f as any).studentUid || f.studentId,
+              amount: Number(ph.amount) || 0,
+              date: ph.date || '',
+              method: ph.method || 'cash',
+              reference: ph.reference || '',
+              academicYear: ph.academicYear || f.academicYear || '2026-27',
+              component: ph.component || 'term1',
+              serialNumber: ph.serialNumber || '',
+              recordedBy: ph.recordedBy || 'Administrator',
+              status: 'success'
+            } as any);
+          }
+        });
+      }
+    });
+
+    return [...fromPayments, ...fromFees];
+  }, [payments, fees]);
 
   // Filtered and sorted collection history transactions
   const filteredTransPayments = useMemo(() => {
     const q = transSearchQuery.trim().toLowerCase();
+
+    // O(1) student map to prevent millions of repeated loop iterations during search and sort
+    const studentMap = new Map<string, any>();
+    students.forEach(s => {
+      if (s.id) studentMap.set(s.id, s);
+      if (s.uid) studentMap.set(s.uid, s);
+      if (s.studentId) studentMap.set(s.studentId, s);
+    });
 
     const filtered = baseTransPayments.filter(p => {
       if (!q) return true;
@@ -836,9 +876,9 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
       const receiptNum = (p.serialNumber || '').toLowerCase();
       const compLabel = getComponentNameLabel(p.component || 'term1').toLowerCase();
       
-      const studObj = students.find(s => s.uid === p.studentId || s.id === p.studentId);
-      const studentName = (studObj?.name || '').toLowerCase();
-      const studentCode = (p.studentId || '').toLowerCase();
+      const studObj = studentMap.get(p.studentId) || (p.studentUid ? studentMap.get(p.studentUid) : null);
+      const studentName = (studObj?.name || p.studentName || '').toLowerCase();
+      const studentCode = (p.studentId || p.studentUid || '').toLowerCase();
 
       return (
         ref.includes(q) ||
@@ -860,10 +900,10 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
         valA = (a.serialNumber || '').toLowerCase();
         valB = (b.serialNumber || '').toLowerCase();
       } else if (transSortField === 'studentName') {
-        const studA = students.find(s => s.uid === a.studentId || s.id === a.studentId);
-        const studB = students.find(s => s.uid === b.studentId || s.id === b.studentId);
-        valA = (studA?.name || a.studentId || '').toLowerCase();
-        valB = (studB?.name || b.studentId || '').toLowerCase();
+        const studA = studentMap.get(a.studentId) || (a.studentUid ? studentMap.get(a.studentUid) : null);
+        const studB = studentMap.get(b.studentId) || (b.studentUid ? studentMap.get(b.studentUid) : null);
+        valA = (studA?.name || a.studentName || a.studentId || '').toLowerCase();
+        valB = (studB?.name || b.studentName || b.studentId || '').toLowerCase();
       } else if (transSortField === 'method') {
         valA = (a.method || '').toLowerCase();
         valB = (b.method || '').toLowerCase();
@@ -951,39 +991,136 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
       const commonSerialNum = `${serialPrefix}${sequentialStart}`;
       const serialsGenerated: string[] = [commonSerialNum];
 
-      // Save payment records for each component sequentially using a single common receipt number
+      const student = selectedStudentForPayment.student;
+      const canonicalStudentId = student.id || student.uid;
+      const canonicalStudentUid = student.uid || student.id;
+      const studentName = student.name || 'Student';
+      const className = classes.find(c => c.id === student?.classId)?.name || student?.class || 'N/A';
+      const batchName = batches.find(b => b.id === student?.batchId)?.name || student?.batch || 'N/A';
+      const rollNo = student.rollNo || student.rollNumber || '';
+
+      // 1. Build and save payment records for each component sequentially using a single common receipt number
+      const newPaymentRecords: PaymentRecord[] = selectedList.map((item, index) => {
+        const pId = `pay_${recordedTimestamp}_${item.id}`;
+        return {
+          id: pId,
+          uid: pId,
+          studentId: canonicalStudentId,
+          studentUid: canonicalStudentUid,
+          studentName,
+          className,
+          batchName,
+          rollNo,
+          amount: item.payAmount,
+          date: todayDateStr,
+          paymentTime: todayTimeStr,
+          method: paymentMethod,
+          reference: paymentRef || `manual_${recordedTimestamp}_${index}`,
+          academicYear: academicYear || '2026-27',
+          component: item.id,
+          recordedBy: profile?.name || 'Administrator',
+          receiptBookId: selectedReceiptBook || 'book_default',
+          receiptBookName: activeBook ? activeBook.name : 'Main Institutional Book',
+          serialNumber: commonSerialNum,
+          status: 'success',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        } as any;
+      });
+
       await Promise.all(
-        selectedList.map((item, index) => {
-          const payload = {
-            studentId,
-            amount: item.payAmount,
-            date: todayDateStr,
-            paymentTime: todayTimeStr,
-            method: paymentMethod,
-            reference: paymentRef || `manual_${recordedTimestamp}_${index}`,
-            academicYear,
-            component: item.id,
-            recordedBy: 'Administrator',
-            receiptBookId: selectedReceiptBook || 'book_default',
-            receiptBookName: activeBook ? activeBook.name : 'Main Institutional Book',
-            serialNumber: commonSerialNum
-          };
-          return dbService.create('payments', `pay_${recordedTimestamp}_${item.id}`, payload);
-        })
+        newPaymentRecords.map(p => dbService.set('payments', p.id, p))
       );
 
-      // Save active book new sequential number in firestore (increment by 1 since only one receipt number is used)
+      // 2. Dual-write and sync to 'fees' collection to guarantee persistence and instant history across modules
+      const candidateIds = [canonicalStudentId, canonicalStudentUid].filter(Boolean);
+      const existingFee = (fees || []).find((f: any) => 
+        candidateIds.includes(f.studentId) || candidateIds.includes((f as any).studentUid)
+      );
+
+      const updatedPaidComponents: Record<string, number> = { ...(existingFee?.paidComponents || {}) };
+      selectedList.forEach(item => {
+        updatedPaidComponents[item.id] = (updatedPaidComponents[item.id] || 0) + item.payAmount;
+      });
+
+      const newHistoryEntries = newPaymentRecords.map(p => ({
+        id: p.id,
+        reference: p.reference,
+        amount: p.amount,
+        component: p.component,
+        method: p.method,
+        date: p.date,
+        serialNumber: p.serialNumber,
+        academicYear: p.academicYear,
+        recordedBy: p.recordedBy
+      }));
+
+      const newPaidAmount = Object.values(updatedPaidComponents).reduce((sum, v) => sum + Number(v || 0), 0);
+      const feeDocId = existingFee?.id || `fee_${canonicalStudentId}_${(academicYear || '2026-27').replace(/[^a-zA-Z0-9]/g, '_')}`;
+
+      const updatedFeeRecord: FeeRecord = {
+        id: feeDocId,
+        studentId: canonicalStudentId,
+        studentUid: canonicalStudentUid,
+        academicYear: academicYear || '2026-27',
+        paidAmount: newPaidAmount,
+        paidComponents: updatedPaidComponents,
+        paymentHistory: [...(existingFee?.paymentHistory || []), ...newHistoryEntries],
+        updatedAt: new Date().toISOString()
+      } as any;
+
+      await dbService.set('fees', feeDocId, updatedFeeRecord).catch(err => console.warn("Fee record set warning:", err));
+
+      // 3. Save active book new sequential number (increment by 1 since only one receipt number is used)
       if (activeBook && activeBook.id) {
         const nextSerial = sequentialStart + 1;
         await dbService.update('receipt_books', activeBook.id, {
           currentSerial: nextSerial,
           updatedAt: new Date().toISOString()
-        });
+        }).catch(() => {});
         await fetchReceiptBooks(); // refresh local list
       }
 
       const totalPaidAmount = selectedList.reduce((sum, item) => sum + item.payAmount, 0);
       toast.success(`Check-Out Completed! Collected ₹${totalPaidAmount.toLocaleString()} successfully.`);
+
+      // 4. Update selectedStudentDetail in state if open so modal ledger reflects payment immediately
+      if (selectedStudentDetail) {
+        setSelectedStudentDetail((prev: any) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            paid: (prev.paid || 0) + totalPaidAmount,
+            pending: Math.max(0, (prev.pending || 0) - totalPaidAmount),
+            paidComponents: {
+              ...(prev.paidComponents || {}),
+              ...updatedPaidComponents
+            },
+            payments: [...newPaymentRecords, ...(prev.payments || [])]
+          };
+        });
+      }
+
+      // 5. Invalidate all storage caches so next read is 100% live
+      dbService.clearCollectionCache('payments');
+      dbService.clearCollectionCache('fees');
+      try {
+        sessionStorage.removeItem('fees_module_cache');
+        localStorage.removeItem('fees_module_cache');
+        for (let i = sessionStorage.length - 1; i >= 0; i--) {
+          const k = sessionStorage.key(i);
+          if (k && k.startsWith('fees_module_cache')) sessionStorage.removeItem(k);
+        }
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith('fees_module_cache')) localStorage.removeItem(k);
+        }
+      } catch (_) {}
+
+      // 6. Optimistic update to parent state for zero-latency UI update
+      if (onPaymentRecorded) {
+        onPaymentRecorded(newPaymentRecords, updatedFeeRecord);
+      }
 
       // Automatically send and queue via backend if checked
       if (shouldSendWhatsApp && parentWhatsApp) {
@@ -1060,7 +1197,7 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
       setSelectedReceipt(consolidatedReceipt);
       setShowReceiptModal(true);
 
-      onRefresh();
+      onRefresh(true);
     } catch (err: any) {
       console.error(err);
       toast.error('An error occurred during payment processing.');
@@ -1201,8 +1338,10 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
               console.log('[WhatsApp Dispatch] Razorpay frontend redirect suppressed. Dispatched via backend queue.');
             }
 
+            dbService.clearCollectionCache('payments');
+            dbService.clearCollectionCache('fees');
             setShowPaymentModal(false);
-            onRefresh();
+            onRefresh(true);
           } catch (err: any) {
             console.error(err);
             toast.error('Verification failed: ' + err.message, { id: 'verify-web' });
@@ -1301,9 +1440,11 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
         console.log('[WhatsApp Dispatch] Sandbox frontend redirect suppressed. Dispatched via backend queue.');
       }
 
+      dbService.clearCollectionCache('payments');
+      dbService.clearCollectionCache('fees');
       setShowSandboxGateway(false);
       setShowPaymentModal(false);
-      onRefresh();
+      onRefresh(true);
     } catch (err: any) {
       console.error(err);
       toast.error('Simulation check failed.', { id: 'sim-pay' });

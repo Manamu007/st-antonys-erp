@@ -812,7 +812,7 @@ export const computeStudentFeeMetrics = ({
   if (payments && payments.length > 0) {
     payments.forEach(p => {
       if (p.reference && typeof p.reference === 'string' && p.reference.startsWith('EXP')) return;
-      if (p.academicYear && normalizeYear(p.academicYear) !== targetYearNorm) return;
+      if (targetYearNorm && p.academicYear && normalizeYear(p.academicYear) !== targetYearNorm) return;
       const ids = new Set([p.studentId, (p as any).studentUid].filter(Boolean));
       ids.forEach(sId => {
         if (!paymentsByStudent.has(sId)) {
@@ -915,9 +915,26 @@ export const computeStudentFeeMetrics = ({
 
   return targetYearStudents.map(stud => {
     const calc = calculateStudentFee(stud, academicYear, feeStructures, concessions, classes, batches, true);
-    const candidateIds = [stud.id, stud.uid, stud.studentId].filter(Boolean);
+    const candidateIds = [stud.id, stud.uid, stud.studentId, stud.uniqueStudentId, stud.admissionNumber].filter(Boolean);
 
-    const rawStudPayments = candidateIds.flatMap(id => paymentsByStudent.get(id) || []);
+    // Find existing fee record in fees collection as secondary truth source
+    const feeRec = (fees || []).find(f =>
+      (candidateIds.includes(f.studentId) || candidateIds.includes((f as any).studentUid)) &&
+      (!f.academicYear || !targetYearNorm || normalizeYear(f.academicYear) === targetYearNorm)
+    );
+
+    const feeHistoryPayments = (feeRec?.paymentHistory || []).map((ph: any) => ({
+      ...ph,
+      id: ph.id || `fee_hist_${ph.reference || Math.random()}`,
+      studentId: stud.id || stud.uid,
+      amount: Number(ph.amount) || 0,
+      academicYear: ph.academicYear || feeRec?.academicYear || academicYear
+    }));
+
+    const rawStudPayments = [
+      ...candidateIds.flatMap(id => paymentsByStudent.get(id) || []),
+      ...feeHistoryPayments
+    ];
     const seenPaymentKeys = new Set<string>();
     const studPayments = rawStudPayments.filter(p => {
       const pKey = p.id || `${p.reference || ''}_${p.component || ''}_${p.amount}_${p.date || ''}`;
@@ -925,11 +942,6 @@ export const computeStudentFeeMetrics = ({
       seenPaymentKeys.add(pKey);
       return true;
     });
-
-    // Find existing fee record in fees collection as secondary truth source
-    const feeRec = (fees || []).find(f =>
-      candidateIds.includes(f.studentId) || candidateIds.includes((f as any).studentUid)
-    );
 
     // Breakdown of paid per component
     const sumPaymentsByComp: Record<string, number> = {};

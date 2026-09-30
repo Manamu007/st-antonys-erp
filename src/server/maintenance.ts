@@ -14,7 +14,8 @@ import {
   deleteDocument,
   deleteBatchDocuments,
   setBatchDocuments,
-  updateBatchDocuments
+  updateBatchDocuments,
+  invalidateCollectionCache
 } from "./firestoreService.js";
 import crypto from "crypto";
 
@@ -324,18 +325,22 @@ const PROXY_CACHE_TTL = 15000; // 15 seconds cache duration
 
 const invalidateProxyCache = (colPath: string) => {
   const colPrefix = `${colPath}:`;
+  const getPrefix = `get:${colPath}`;
   for (const key of dbProxyCache.keys()) {
-    if (key.startsWith(colPrefix)) {
+    if (key.startsWith(colPrefix) || key.startsWith(getPrefix)) {
       dbProxyCache.delete(key);
     }
   }
+  try {
+    invalidateCollectionCache(colPath);
+  } catch (_) {}
 };
 
 
 
 async function forwardToLiveProxy(operation: string, colPath: string, id: any, data: any, constraints: any, body: any): Promise<{ status?: number; json: any }> {
-  const isProdVPS = (process.env.APP_URL || '').includes('antonyschool.in');
-  if (process.env.DISABLE_PROXY_FORWARD === 'true' && isProdVPS) {
+  const isProdVPS = (process.env.APP_URL || '').includes('antonyschool.in') || process.env.DISABLE_PROXY_FORWARD === 'true';
+  if (isProdVPS) {
     if (operation === "list") {
       return { status: 200, json: { success: true, data: [] } };
     }
@@ -347,7 +352,10 @@ async function forwardToLiveProxy(operation: string, colPath: string, id: any, d
   try {
     const vpsRes = await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { 
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      },
       body: JSON.stringify({
         operation,
         path: colPath,
@@ -356,7 +364,7 @@ async function forwardToLiveProxy(operation: string, colPath: string, id: any, d
         constraints,
         ...body
       }),
-      signal: AbortSignal.timeout(5000)
+      signal: AbortSignal.timeout(1500)
     });
     if (vpsRes.ok) {
       const vpsData = await vpsRes.json();
@@ -473,6 +481,22 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
         }
       }
 
+      if (colPath === 'payments' || colPath === 'fees') {
+        try {
+          const firestoreDocs = await listDocuments(colPath, constraints);
+          if (firestoreDocs && firestoreDocs.length > 0) {
+            const seenIds = new Set(result.map((d: any) => d.id || d.uid));
+            for (const fd of firestoreDocs) {
+              const fid = fd.id || fd.uid;
+              if (fid && !seenIds.has(fid)) {
+                seenIds.add(fid);
+                result.push(fd);
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
       if (result.length > 0) {
         return { json: { success: true, data: result } };
       }
@@ -489,6 +513,14 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
       try {
         const firestoreDocs = await listDocuments(colPath, constraints);
         if (firestoreDocs && firestoreDocs.length > 0) {
+          // Asynchronously cache into Mongo so future queries resolve in milliseconds
+          try {
+            const docsToInsert = firestoreDocs.map((d: any) => ({
+              ...d,
+              _id: d.id || d.uid || d._id
+            }));
+            col.insertMany(docsToInsert, { ordered: false }).catch(() => {});
+          } catch (_) {}
           return { json: { success: true, data: firestoreDocs } };
         }
       } catch (_) {}
@@ -638,6 +670,7 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
       const docId = id || crypto.randomUUID();
       const newDoc = { ...data, id: docId, uid: docId, createdAt: new Date().toISOString() };
       await col.insertOne(newDoc);
+      setDocument(colPath, docId, newDoc, { merge: true }).catch(err => console.warn(`[Firestore Dual-Write Notice] ${colPath}/${docId}:`, err?.message || err));
       forwardToLiveProxy(operation, colPath, docId, data, constraints, body).catch(() => {});
       return { json: { success: true, id: docId } };
     }
@@ -651,6 +684,7 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
       } else {
         await col.insertOne(cleaned);
       }
+      setDocument(colPath, docId, cleaned, { merge: true }).catch(err => console.warn(`[Firestore Dual-Write Notice] ${colPath}/${docId}:`, err?.message || err));
       forwardToLiveProxy(operation, colPath, docId, cleaned, constraints, body).catch(() => {});
       return { json: { success: true, id: docId } };
     }
@@ -664,6 +698,7 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
       } else {
         await col.insertOne({ ...data, id: docId, uid: docId, updatedAt: new Date().toISOString() });
       }
+      updateDocument(colPath, docId, data).catch(err => console.warn(`[Firestore Dual-Write Notice] ${colPath}/${docId}:`, err?.message || err));
       forwardToLiveProxy(operation, colPath, docId, data, constraints, body).catch(() => {});
       return { json: { success: true, id: docId } };
     }
@@ -671,6 +706,7 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
     if (operation === "delete") {
       if (!id) return { status: 400, json: { error: "Missing document id" } };
       await col.deleteOne({ $or: [{ id: id }, { uid: id }] });
+      deleteDocument(colPath, id).catch(() => {});
       forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
       return { json: { success: true } };
     }
@@ -732,6 +768,21 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
           }
         } catch (_) {}
       }
+      if ((colPath === 'payments' || colPath === 'fees') && (!result || result.length === 0)) {
+        try {
+          const vpsRes = await forwardToLiveProxy(operation, colPath, id, data, constraints, body);
+          if (vpsRes.json && Array.isArray(vpsRes.json.data) && vpsRes.json.data.length > 0) {
+            const seenIds = new Set(result.map((d: any) => d.id || d.uid));
+            for (const vd of vpsRes.json.data) {
+              const vid = vd.id || vd.uid;
+              if (vid && !seenIds.has(vid)) {
+                seenIds.add(vid);
+                result.push(vd);
+              }
+            }
+          }
+        } catch (_) {}
+      }
       if (Array.isArray(result) && result.length > 0) {
         return { status: 200, json: { success: true, count: result.length, data: result } };
       }
@@ -759,40 +810,11 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
     } catch (_) {}
   }
 
-  // If local Cloud Firestore returned empty or null, try live antonyschool.in VPS db-proxy as secondary fallback
-  try {
-    const vpsRes = await forwardToLiveProxy(operation, colPath, id, data, constraints, body);
-    if (vpsRes.json && vpsRes.json.success) {
-      if (operation === "list" && Array.isArray(vpsRes.json.data) && vpsRes.json.data.length > 0) {
-        return { status: vpsRes.status || 200, json: vpsRes.json };
-      }
-      if (operation === "count" && typeof vpsRes.json.count === "number" && vpsRes.json.count > 0) {
-        return { status: vpsRes.status || 200, json: vpsRes.json };
-      }
-      if (operation === "get" && vpsRes.json.data) {
-        return { status: vpsRes.status || 200, json: vpsRes.json };
-      }
-      if (operation === "add" || operation === "set" || operation === "update" || operation === "delete" || operation === "deleteBatch" || operation === "setBatch" || operation === "updateBatch") {
-        return { status: vpsRes.status || 200, json: vpsRes.json };
-      }
-    }
-  } catch (_) {}
-
-  // If both local Firestore and live proxy returned empty/failed, return fallback empty responses
-  if (operation === "list") {
-    return { status: 200, json: { success: true, count: 0, data: [] } };
-  }
-  if (operation === "count") {
-    return { status: 200, json: { success: true, count: 0 } };
-  }
-  if (operation === "get") {
-    return { status: 200, json: { success: true, data: null } };
-  }
-
-  // Write operations write to Firestore
+  // Write operations write directly to Firestore (or local Mongo if connected)
   if (operation === "add") {
-    const res = await addDocument(colPath, data);
-    forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
+    const docId = id || data?.id || data?.uid;
+    const res = await addDocument(colPath, { ...data, id: docId, uid: docId });
+    forwardToLiveProxy(operation, colPath, res.id, data, constraints, body).catch(() => {});
     return { status: 200, json: { success: true, id: res.id } };
   }
 
@@ -831,6 +853,33 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
     await setBatchDocuments(colPath, items);
     forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
     return { status: 200, json: { success: true } };
+  }
+
+  // If local Cloud Firestore returned empty or null, try live antonyschool.in VPS db-proxy as secondary fallback
+  try {
+    const vpsRes = await forwardToLiveProxy(operation, colPath, id, data, constraints, body);
+    if (vpsRes.json && vpsRes.json.success) {
+      if (operation === "list" && Array.isArray(vpsRes.json.data) && vpsRes.json.data.length > 0) {
+        return { status: vpsRes.status || 200, json: vpsRes.json };
+      }
+      if (operation === "count" && typeof vpsRes.json.count === "number" && vpsRes.json.count > 0) {
+        return { status: vpsRes.status || 200, json: vpsRes.json };
+      }
+      if (operation === "get" && vpsRes.json.data) {
+        return { status: vpsRes.status || 200, json: vpsRes.json };
+      }
+    }
+  } catch (_) {}
+
+  // If both local Firestore and live proxy returned empty/failed, return fallback empty responses
+  if (operation === "list") {
+    return { status: 200, json: { success: true, count: 0, data: [] } };
+  }
+  if (operation === "count") {
+    return { status: 200, json: { success: true, count: 0 } };
+  }
+  if (operation === "get") {
+    return { status: 200, json: { success: true, data: null } };
   }
 
   return { status: 400, json: { error: "Unsupported operation: " + operation } };

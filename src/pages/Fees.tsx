@@ -147,21 +147,56 @@ const Fees: React.FC = () => {
     setPreviewPayment(mockPayment);
   };
 
-  // 1. డేటా లోడింగ్ పైప్‌లైన్
-  const fetchDuesData = async () => {
+  // 0. తక్షణ క్యాష్ హైడ్రేషన్ (Instant Cache Hydration) - పేజీ తెరవగానే క్షణంలో లోడ్ అయ్యేలా
+  useEffect(() => {
+    try {
+      const cacheKey = `fees_module_cache_${filterAcademicYear}`;
+      const raw = sessionStorage.getItem(cacheKey) || localStorage.getItem(cacheKey) || sessionStorage.getItem('fees_module_cache');
+      if (raw) {
+        const cached = JSON.parse(raw);
+        if (cached && Array.isArray(cached.students) && cached.students.length > 0) {
+          setStudents(cached.students);
+          if (Array.isArray(cached.fees)) setFees(cached.fees);
+          if (Array.isArray(cached.payments)) setPayments(cached.payments);
+          if (Array.isArray(cached.feeStructures)) setFeeStructures(cached.feeStructures);
+          if (Array.isArray(cached.concessions)) setConcessions(cached.concessions);
+          if (Array.isArray(cached.classes)) setClasses(cached.classes);
+          if (Array.isArray(cached.batches)) setBatches(cached.batches);
+          setInitialLoaded(true); // పూర్వ డేటా ఉన్నట్లయితే స్పిన్నర్ లేకుండా వెంటనే UI చూపిస్తుంది
+        }
+      }
+    } catch (_) {}
+  }, [filterAcademicYear]);
+
+  // 1. డేటా లోడింగ్ పైప్‌లైన్ - Fully Parallel Fetching for ultra-fast loading
+  const fetchDuesData = async (bypassCache = false) => {
     if (!initialLoaded) {
       setLoading(true);
     }
     try {
       const currentId = profile?.id || profile?.uid || '';
-      
-      const [structureRes, concessionRes, classesRes, batchesRes] = await Promise.all([
-        dbService.list('feeStructures', []),
-        dbService.list('concessions', []),
-        dbService.list('classes', []),
-        dbService.list('batches', [])
+      const isStaffOrAdmin = isAdmin || isAccountant || profile?.role === 'play_school_incharge';
+
+      // అన్ని కలెక్షన్లను ఒకేసారి కాన్‌కరెంట్‌గా ప్యారలల్‌గా రిక్వెస్ట్ చేయడం ద్వారా సమయం భారీగా ఆదా అవుతుంది
+      const [
+        structureRes, 
+        concessionRes, 
+        classesRes, 
+        batchesRes,
+        staffStudentsRes,
+        staffFeesRes,
+        staffPaymentsRes
+      ] = await Promise.all([
+        dbService.list('feeStructures', [], bypassCache).catch(() => []),
+        dbService.list('concessions', [], bypassCache).catch(() => []),
+        dbService.list('classes', [], bypassCache).catch(() => []),
+        dbService.list('batches', [], bypassCache).catch(() => []),
+        isStaffOrAdmin ? dbService.list('students', [], bypassCache).catch(() => []) : Promise.resolve([]),
+        isStaffOrAdmin ? dbService.list('fees', [], bypassCache).catch(() => []) : Promise.resolve([]),
+        isStaffOrAdmin ? dbService.list('payments', [], bypassCache).catch(() => []) : Promise.resolve([])
       ]);
-      let finalStructures = structureRes as FeeStructure[];
+
+      let finalStructures = (structureRes || []) as FeeStructure[];
       if (isAdmin || isAccountant) {
         const hasNonAttending = finalStructures.some(s => {
           const nameNorm = (s.name || '').toLowerCase().trim();
@@ -188,12 +223,9 @@ const Fees: React.FC = () => {
             total: 10000,
             createdAt: new Date().toISOString()
           };
-          try {
-            await dbService.create('feeStructures', newId, nonAttendingStruct);
-            finalStructures = [nonAttendingStruct, ...finalStructures];
-          } catch (err) {
-            console.error("Failed to automatically create Non-Attending Student fee structure:", err);
-          }
+          finalStructures = [nonAttendingStruct, ...finalStructures];
+          // Non-blocking background creation to never stall page load
+          dbService.create('feeStructures', newId, nonAttendingStruct).catch(() => {});
         }
       }
       const assignedClassIds = new Set<string>();
@@ -240,7 +272,6 @@ const Fees: React.FC = () => {
             .filter((b: any) => b.classId && assignedClassIds.has(b.classId))
             .forEach((b: any) => assignedBatchIds.add(b.id));
         } else {
-          // Ensure any batch's classId is also in assignedClassIds
           batchesRes.forEach((b: any) => {
             if (b.id && assignedBatchIds.has(b.id) && b.classId) {
               assignedClassIds.add(b.classId);
@@ -262,17 +293,22 @@ const Fees: React.FC = () => {
       setFeeStructures(finalStructures);
       setConcessions(concessionRes as FeeConcession[]);
 
+      let loadedStudents: any[] = [];
+      let loadedFees: FeeRecord[] = [];
+      let loadedPayments: PaymentRecord[] = [];
+
       if (isStudent || isParent) {
         const studentProfileData = await dbService.get('students', currentId);
         if (studentProfileData) {
           const formattedStudent = { ...studentProfileData, uid: currentId, id: currentId };
           setStudents([formattedStudent]);
+          loadedStudents = [formattedStudent];
           
           const studentEmail = (studentProfileData as any)?.email;
           const [allStudents, allFees, allPayments] = await Promise.all([
-            dbService.list('students'),
-            dbService.list('fees'),
-            dbService.list('payments')
+            dbService.list('students').catch(() => []),
+            dbService.list('fees').catch(() => []),
+            dbService.list('payments').catch(() => [])
           ]);
 
           const matchedStudents = allStudents.filter((s: any) => 
@@ -291,6 +327,7 @@ const Fees: React.FC = () => {
 
           const feesData = allFees.filter((f: any) => targetIds.includes(f.studentId) || targetIds.includes(f.studentUid));
           setFees(feesData as FeeRecord[]);
+          loadedFees = feesData as FeeRecord[];
           
           const paymentsData = allPayments.filter((p: any) => targetIds.includes(p.studentId) || targetIds.includes(p.studentUid));
 
@@ -317,13 +354,12 @@ const Fees: React.FC = () => {
           });
 
           setPayments(paymentsData as PaymentRecord[]);
+          loadedPayments = paymentsData as PaymentRecord[];
         }
-      } else if (isAdmin || isAccountant || profile?.role === 'play_school_incharge') {
-        const [studentsData, feesData, paymentsData] = await Promise.all([
-          dbService.list('students'),
-          dbService.list('fees'),
-          dbService.list('payments')
-        ]);
+      } else if (isStaffOrAdmin) {
+        const studentsData = staffStudentsRes || [];
+        const feesData = (staffFeesRes || []) as FeeRecord[];
+        const paymentsData = (staffPaymentsRes || []) as PaymentRecord[];
         
         if (profile?.role === 'play_school_incharge') {
           const filteredStudents = (studentsData || []).filter((s: any) => 
@@ -332,12 +368,38 @@ const Fees: React.FC = () => {
           const filteredStudentIds = filteredStudents.map((s: any) => s.id || s.uid);
 
           setStudents(filteredStudents);
-          setFees((feesData as FeeRecord[]).filter(f => filteredStudentIds.includes(f.studentId)));
-          setPayments((paymentsData as PaymentRecord[]).filter(p => filteredStudentIds.includes(p.studentId)));
+          setFees(feesData.filter(f => filteredStudentIds.includes(f.studentId)));
+          setPayments(paymentsData.filter(p => filteredStudentIds.includes(p.studentId)));
+          loadedStudents = filteredStudents;
+          loadedFees = feesData.filter(f => filteredStudentIds.includes(f.studentId));
+          loadedPayments = paymentsData.filter(p => filteredStudentIds.includes(p.studentId));
         } else {
           setStudents(studentsData);
-          setFees(feesData as FeeRecord[]);
-          setPayments(paymentsData as PaymentRecord[]);
+          setFees(feesData);
+          setPayments(paymentsData);
+          loadedStudents = studentsData;
+          loadedFees = feesData;
+          loadedPayments = paymentsData;
+        }
+
+        // Cache loaded data to prevent future loading stalls
+        if (loadedStudents.length > 0) {
+          try {
+            const cacheKey = `fees_module_cache_${filterAcademicYear}`;
+            const toCache = JSON.stringify({
+              students: loadedStudents,
+              fees: loadedFees,
+              payments: loadedPayments,
+              feeStructures: finalStructures,
+              concessions: concessionRes,
+              classes: classesRes,
+              batches: batchesRes,
+              timestamp: Date.now()
+            });
+            sessionStorage.setItem(cacheKey, toCache);
+            sessionStorage.setItem('fees_module_cache', toCache);
+            localStorage.setItem(cacheKey, toCache);
+          } catch (_) {}
         }
       }
     } catch (error) {
@@ -476,22 +538,102 @@ const Fees: React.FC = () => {
     return components;
   }, [feeStructures, concessions, fees, filterAcademicYear, settings.currentAcademicYear]);
 
+  const handlePaymentRecorded = (newPayments: PaymentRecord[], updatedFee?: FeeRecord) => {
+    if (newPayments && newPayments.length > 0) {
+      setPayments(prev => {
+        const existingIds = new Set(prev.map(p => p.id));
+        const toAdd = newPayments.filter(p => !existingIds.has(p.id));
+        return [...toAdd, ...prev];
+      });
+    }
+    if (updatedFee) {
+      setFees(prev => {
+        const idx = prev.findIndex(f => f.studentId === updatedFee.studentId || (f.id && f.id === updatedFee.id));
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = updatedFee;
+          return next;
+        }
+        return [updatedFee, ...prev];
+      });
+    }
+    try {
+      const cacheKey = `fees_module_cache_${filterAcademicYear}`;
+      sessionStorage.removeItem(cacheKey);
+      sessionStorage.removeItem('fees_module_cache');
+      localStorage.removeItem(cacheKey);
+      localStorage.removeItem('fees_module_cache');
+    } catch (_) {}
+    fetchDuesData(true);
+  };
+
   const handleTakePayment = async (amount: number, component: string, method: string, reference?: string) => {
     try {
       // Check if reference already exists in payments (e.g. created by backend verification)
       if (reference) {
-        const existing = payments.find(p => p.reference === reference && p.component === component);
+        const existing = payments.find(p => (p.reference === reference || p.id === reference) && p.component === component);
         if (existing) {
-          fetchDuesData();
+          fetchDuesData(true);
           return;
         }
       }
 
       const studentId = activeStudentData?.id || activeStudentData?.uid || profile?.id || profile?.uid;
-      const payload = { studentId, amount, date: new Date().toISOString(), method, reference, academicYear: filterAcademicYear, component };
-      await dbService.create('payments', `pay_${Date.now()}_${component}`, payload);
+      const studentUid = activeStudentData?.uid || activeStudentData?.id || profile?.uid || profile?.id;
+      const pId = `pay_${Date.now()}_${component}`;
+      const payload: PaymentRecord = {
+        id: pId,
+        uid: pId,
+        studentId,
+        studentUid,
+        studentName: activeStudentData?.name || profile?.name || '',
+        className: classes.find(c => c.id === activeStudentData?.classId)?.name || activeStudentData?.class || '',
+        batchName: batches.find(b => b.id === activeStudentData?.batchId)?.name || activeStudentData?.batch || '',
+        amount,
+        date: new Date().toISOString().split('T')[0],
+        paymentTime: new Date().toLocaleTimeString('en-US', { hour12: true }),
+        method,
+        reference: reference || `portal_${Date.now()}`,
+        academicYear: filterAcademicYear,
+        component,
+        status: 'success',
+        recordedBy: profile?.name || 'Portal Self Checkout',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      } as any;
+
+      await dbService.set('payments', pId, payload);
+
+      // Also dual-write / update fee record in fees collection
+      const existingFee = fees.find(f => f.studentId === studentId || (f as any).studentUid === studentUid);
+      const updatedPaidComponents = { ...(existingFee?.paidComponents || {}) };
+      updatedPaidComponents[component] = (updatedPaidComponents[component] || 0) + amount;
+      const feeDocId = existingFee?.id || `fee_${studentId}_${(filterAcademicYear || '2026-27').replace(/[^a-zA-Z0-9]/g, '_')}`;
+      const updatedFee: FeeRecord = {
+        id: feeDocId,
+        studentId,
+        studentUid,
+        academicYear: filterAcademicYear,
+        paidAmount: Object.values(updatedPaidComponents).reduce((s, v) => s + Number(v || 0), 0),
+        paidComponents: updatedPaidComponents,
+        paymentHistory: [
+          ...(existingFee?.paymentHistory || []),
+          {
+            id: pId,
+            reference: payload.reference,
+            amount,
+            component,
+            method,
+            date: payload.date,
+            academicYear: filterAcademicYear
+          }
+        ],
+        updatedAt: new Date().toISOString()
+      } as any;
+      await dbService.set('fees', feeDocId, updatedFee).catch(() => {});
+
+      handlePaymentRecorded([payload], updatedFee);
       toast.success("Payment registered successfully!");
-      fetchDuesData();
     } catch (e) {
       toast.error("Failed to register payment");
     }
@@ -1558,7 +1700,8 @@ const Fees: React.FC = () => {
               classes={classes}
               batches={batches}
               academicYear={filterAcademicYear}
-              onRefresh={fetchDuesData}
+              onRefresh={() => fetchDuesData(true)}
+              onPaymentRecorded={handlePaymentRecorded}
             />
 
             {/* Periperi Thermal Printer Quick Setup & Configuration banner */}

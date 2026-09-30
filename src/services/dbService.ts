@@ -411,6 +411,10 @@ const PERSISTENT_COLLECTIONS纯 = [
   'holidays',
   'concessions',
   'rules',
+  'receipt_books',
+  'extendedDueDates',
+  'fees',
+  'payments',
   'message_templates',
   'messageTemplates',
   'hostel_blocks',
@@ -754,6 +758,23 @@ const clearCollectionCache = (path: string) => {
           localStorage.removeItem(key);
         }
       }
+
+      if (path === 'payments' || path === 'fees') {
+        sessionStorage.removeItem('fees_module_cache');
+        localStorage.removeItem('fees_module_cache');
+        for (let i = sessionStorage.length - 1; i >= 0; i--) {
+          const key = sessionStorage.key(i);
+          if (key && key.startsWith('fees_module_cache')) {
+            sessionStorage.removeItem(key);
+          }
+        }
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith('fees_module_cache')) {
+            localStorage.removeItem(key);
+          }
+        }
+      }
     } catch (e) {}
   }
 };
@@ -910,8 +931,10 @@ async function logAudit(
 
 export async function resilientFetch(input: RequestInfo | URL, init?: RequestInit, retries = 3, delay = 600): Promise<Response> {
   const targetUrl = typeof input === 'string' ? resolveApiUrl(input) : input;
+  const method = (init?.method || 'GET').toUpperCase();
+  const isWriteMethod = method === 'POST' || method === 'PUT' || method === 'DELETE' || method === 'PATCH';
   const isAuditOrLog = typeof input === 'string' && (input.includes('audit-log') || input.includes('log') || input.includes('telemetry'));
-  const isReadOp = typeof input === 'string' && (input.includes('list') || input.includes('get') || input.includes('count') || input.includes('receipt-books') || input.includes('extended-due-dates') || input.includes('stop-backups') || input.includes('db-proxy'));
+  const isReadOp = !isWriteMethod && typeof input === 'string' && (input.includes('list') || input.includes('get') || input.includes('count') || input.includes('receipt-books') || input.includes('extended-due-dates') || input.includes('stop-backups'));
 
   // If caller already aborted the request, do not begin or retry
   if (init?.signal?.aborted) {
@@ -1091,8 +1114,8 @@ const serializeConstraints = (constraints: any[]): any[] => {
 // In-flight request deduplication map
 const inFlightProxyRequests = new Map<string, Promise<any>>();
 
-// Queue to limit active concurrent proxy HTTP requests to max 2 with smooth pacing
-const MAX_CONCURRENT_PROXY_REQUESTS = 2;
+// Queue to limit active concurrent proxy HTTP requests
+const MAX_CONCURRENT_PROXY_REQUESTS = 25;
 let activeProxyRequests = 0;
 const proxyTaskQueue: Array<() => void> = [];
 
@@ -1110,7 +1133,7 @@ const enqueueProxyTask = <T>(task: () => Promise<T>): Promise<T> => {
         if (proxyTaskQueue.length > 0) {
           const next = proxyTaskQueue.shift();
           if (next) {
-            setTimeout(next, 50); // Pacing delay to prevent rate limit spikes
+            next();
           }
         }
       }

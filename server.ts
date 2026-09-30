@@ -266,23 +266,30 @@ async function startServer() {
 
   app.get("/api/whatsapp/status", async (req, res) => {
     try {
-      const { getWAStatus } = await import("./src/server/whatsapp.js");
+      const { getWAStatus, getWASocket } = await import("./src/server/whatsapp.js");
       const local = getWAStatus();
+      const localSock = getWASocket();
+      const localActuallyOpen = local && local.status === 'open' && localSock && localSock.ws && (localSock.ws as any).isOpen;
       
-      // If local WhatsApp engine is active or has an available QR code, return immediately
-      if (local && (local.status === 'open' || local.status === 'qr' || local.qr)) {
+      // If local WhatsApp engine is active and has an open socket, return immediately
+      if (localActuallyOpen) {
         return res.json(local);
       }
 
-      // Fast fallback to live production status only if local is closed and remote is online
+      // If local has generated a live QR code, return it
+      if (local && local.status === 'qr' && local.qr) {
+        return res.json(local);
+      }
+
+      // Fallback to live production status (handles both open and qr code for scanning)
       try {
         const vpsRes = await fetch("https://antonyschool.in/api/whatsapp/status", {
           headers: { 'Accept': 'application/json' },
-          signal: AbortSignal.timeout(1200)
+          signal: AbortSignal.timeout(2000)
         });
         if (vpsRes.ok) {
           const liveStatus = await vpsRes.json();
-          if (liveStatus && liveStatus.status === 'open') {
+          if (liveStatus && (liveStatus.status === 'open' || liveStatus.status === 'qr' || liveStatus.qr)) {
             return res.json(liveStatus);
           }
         }
@@ -661,14 +668,18 @@ async function startServer() {
 
   app.post("/api/whatsapp/restart", async (req, res) => {
     try {
-      const { getWAStatus, getRemoteWAStatus, connectToWhatsApp } = await import("./src/server/whatsapp.js");
+      const { getWAStatus, getRemoteWAStatus, getWASocket, connectToWhatsApp } = await import("./src/server/whatsapp.js");
       const status = getWAStatus();
-      if (status.status === 'open') {
+      const localSock = getWASocket();
+      const isActuallyOpen = status?.status === 'open' && localSock && localSock.ws && (localSock.ws as any).isOpen;
+      const isForce = req.query.force === 'true' || req.body?.force === true;
+
+      if (isActuallyOpen && !isForce) {
         res.json({ success: true, message: "WhatsApp is already connected." });
         return;
       }
       const remote = await getRemoteWAStatus();
-      if (remote?.status === 'open') {
+      if (remote?.status === 'open' && !isForce) {
         res.json({ success: true, message: "WhatsApp is already connected on the active engine." });
         return;
       }
