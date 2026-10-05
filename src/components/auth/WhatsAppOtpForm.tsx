@@ -721,8 +721,12 @@ export const WhatsAppOtpForm: React.FC<WhatsAppOtpFormProps> = ({
                           setShowQrModal(false);
                           toast.success('WhatsApp connected successfully!');
                         }
+                      }).catch((err) => {
+                        console.warn("Status fetch error:", err);
                       });
                     }, 2500);
+                  }).catch((err) => {
+                    console.warn("Restart fetch error:", err);
                   });
                 }}
                 className="w-full py-2.5 px-4 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-bold text-xs rounded-xl transition-colors cursor-pointer"

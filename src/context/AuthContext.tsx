@@ -321,7 +321,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const q4 = dbService.list('students', [where('email', '==', email)]);
       const q5 = dbService.list('staff', [where('email', '==', email)]);
 
-      const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('firestore_timeout')), 2500));
+      const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('auth_timeout')), 2500));
       Promise.race([Promise.all([q1, q2, q3, q4, q5]), timeoutPromise]).then(async (results: any) => {
         const usersAll = [...results[0], ...results[1]] as any[];
         const studentsAll = [...results[2], ...results[3]] as any[];

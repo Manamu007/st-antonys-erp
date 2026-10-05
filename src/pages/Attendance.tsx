@@ -3935,19 +3935,21 @@ const Attendance: React.FC = () => {
               </button>
               
               <div className="flex gap-1">
-                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                  // Show pages around current page
-                  let pageNum = i + 1;
-                  if (totalPages > 5) {
-                    if (currentPage > 3) {
-                      pageNum = currentPage - 3 + i + 1;
-                      if (pageNum > totalPages) pageNum = totalPages - (4 - i);
-                    }
+                {(() => {
+                  const maxVisible = 5;
+                  let start = Math.max(1, currentPage - Math.floor(maxVisible / 2));
+                  let end = start + maxVisible - 1;
+                  if (end > totalPages) {
+                    end = totalPages;
+                    start = Math.max(1, end - maxVisible + 1);
                   }
-                  
-                  return (
+                  const pages: number[] = [];
+                  for (let p = start; p <= end; p++) {
+                    pages.push(p);
+                  }
+                  return pages.map((pageNum) => (
                     <button
-                      key={pageNum}
+                      key={`att-page-${pageNum}`}
                       onClick={() => {
                         setCurrentPage(pageNum);
                         window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -3960,8 +3962,8 @@ const Attendance: React.FC = () => {
                     >
                       {pageNum}
                     </button>
-                  );
-                })}
+                  ));
+                })()}
               </div>
 
               <button 

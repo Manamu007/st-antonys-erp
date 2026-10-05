@@ -262,16 +262,18 @@ export const isMarkForSubject = (mark: any, targetSubj: any): boolean => {
  * Match an examMarks document to an exam
  */
 export const isMarkForExam = (mark: any, exam: any): boolean => {
-  if (!exam) return true;
-  const exId = String(exam.id || exam._id || exam.uid || '').trim();
-  const exTitle = String(exam.title || '').trim().toLowerCase();
+  if (!exam || !mark) return false;
+  const exId = String(typeof exam === 'string' ? exam : (exam.id || exam._id || exam.uid || '')).trim();
+  const exTitle = String(typeof exam === 'object' && exam ? (exam.title || exam.name || '') : (typeof exam === 'string' ? (exam.includes('_') ? exam.split('_')[0] : exam) : '')).trim().toLowerCase();
   const mExId = String(mark.examId || mark._examId || mark.exam || '').trim();
+  const mExTitle = String(mark.examTitle || mark.examName || '').trim().toLowerCase();
 
-  if (!mExId) return true;
-  if (exId && (mExId === exId || mExId.toLowerCase() === exId.toLowerCase())) return true;
+  if (!mExId && !mExTitle) return false;
+  if (exId && mExId && (mExId === exId || mExId.toLowerCase() === exId.toLowerCase())) return true;
+  if (exTitle && mExTitle && (mExTitle === exTitle || mExTitle.replace(/[^a-z0-9]/g, '') === exTitle.replace(/[^a-z0-9]/g, ''))) return true;
 
   const exClean = (exId + ' ' + exTitle).toLowerCase().replace(/[^a-z0-9]/g, '');
-  const mExClean = mExId.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const mExClean = (mExId + ' ' + mExTitle).toLowerCase().replace(/[^a-z0-9]/g, '');
 
   const isFa1Target = exClean.includes('fa1') || exClean.includes('formative1') || exClean.includes('ogbtxoj');
   const isFa1Doc = mExClean.includes('fa1') || mExClean === '0qdcty1rrnqrrcavpk5v' || mExClean === 'ogbtxojta6coskpbaf7b' || mExClean === 'wvy1u6wwttuqdertoh5w' || mExClean === 'donlrxyccsql4eexhuoi' || mExClean === 'wkpec0xmov3cddyosw2b';
@@ -411,12 +413,61 @@ export const compareSubjectsStandard = (a: any, b: any) => {
 };
 
 /**
- * Universal helper: Extracts strictly scheduled and configured subjects for an exam, class, and batch.
- * Ensures that ONLY subjects configured in examSchedules appear across:
+ * Returns standard curriculum subjects for a given class/batch if no timetable was created
+ */
+export const getStandardSubjectsForClass = (
+  targetClassIdOrName?: string,
+  subjects: any[] = [],
+  isClass10?: boolean,
+  isPrimary?: boolean
+): any[] => {
+  const norm = String(targetClassIdOrName || '').toLowerCase().trim();
+  const isC10 = isClass10 || norm.includes('10') || norm.includes('tenth') || norm.includes('x');
+  const isC6to9 = !isC10 && (norm.includes('6') || norm.includes('7') || norm.includes('8') || norm.includes('9') || norm.includes('vi') || norm.includes('vii') || norm.includes('viii') || norm.includes('ix'));
+  const isPrePrimary = norm.includes('nursery') || norm.includes('lkg') || norm.includes('ukg') || norm.includes('play');
+  const isPrim = !isC10 && !isC6to9 && !isPrePrimary && (isPrimary || norm.includes('1') || norm.includes('2') || norm.includes('3') || norm.includes('4') || norm.includes('5') || norm.includes('primary'));
+
+  let targetNames: string[] = [];
+  if (isC10) {
+    targetNames = ['Telugu', 'Hindi', 'English', 'Mathematics', 'Physics', 'Biology', 'Social Studies'];
+  } else if (isC6to9) {
+    targetNames = ['Telugu', 'Hindi', 'English', 'Mathematics', 'General Science', 'Social Studies'];
+  } else if (isPrePrimary) {
+    targetNames = ['English', 'Mathematics', 'Environmental Studies', 'Rhymes & Activities'];
+  } else if (isPrim) {
+    targetNames = ['Telugu', 'Hindi', 'English', 'Mathematics', 'Environmental Studies'];
+  } else {
+    targetNames = ['Telugu', 'Hindi', 'English', 'Mathematics', 'General Science', 'Social Studies'];
+  }
+
+  const result: any[] = [];
+  for (const tName of targetNames) {
+    const tKey = normalizeSubjectKey(tName);
+    const existing = (subjects || []).find((s: any) => {
+      const sKey = normalizeSubjectKey(s.name || s.id);
+      return sKey && (sKey === tKey || s.name?.toLowerCase().trim() === tName.toLowerCase().trim());
+    });
+    if (existing) {
+      result.push(existing);
+    } else {
+      result.push({
+        id: `subj_${tKey.toLowerCase().replace(/[^a-z0-9]/g, '')}`,
+        name: tName,
+        code: tName.substring(0, 4).toUpperCase()
+      });
+    }
+  }
+
+  return [...result].sort(compareSubjectsStandard);
+};
+
+/**
+ * Ensures that subjects configured in examSchedules appear across:
  * - Subject Teacher Marks Entry
  * - Class Teacher View
  * - Central Marks Register
  * - Abstract Summary
+ * (with automatic fallback to curriculum subjects when schedule records are not yet generated)
  */
 export const getScheduledConfiguredSubjects = ({
   selectedExam,
@@ -437,10 +488,6 @@ export const getScheduledConfiguredSubjects = ({
   batches?: any[];
   exams?: any[];
 }): any[] => {
-  if (!examSchedules || !Array.isArray(examSchedules) || examSchedules.length === 0) {
-    return [];
-  }
-
   // 1. Resolve Target Exam
   const examObj = (exams || []).find((e: any) => 
     (selectedExam && (e.id === selectedExam || e.title === selectedExam || (selectedExam.id && e.id === selectedExam.id)))
@@ -474,6 +521,12 @@ export const getScheduledConfiguredSubjects = ({
   const targetClassId = activeClassObj?.id || effectiveClassId || '';
   const targetClassName = (activeClassObj?.name || effectiveClassId || '').toLowerCase().trim();
 
+  if (!examSchedules || !Array.isArray(examSchedules) || examSchedules.length === 0) {
+    const isC10 = isClass10NameOrId(targetClassId) || isClass10NameOrId(targetClassName) || isClass10NameOrId(targetBatchName);
+    const isPrim = isPrimaryClass(targetClassName || targetClassId);
+    return getStandardSubjectsForClass(targetClassId || targetClassName, subjects, isC10, isPrim);
+  }
+
   // 3. Filter schedules matching Exam
   const examMatchingSchedules = examSchedules.filter((sch: any) => {
     if (!sch) return false;
@@ -500,7 +553,9 @@ export const getScheduledConfiguredSubjects = ({
   });
 
   if (examMatchingSchedules.length === 0) {
-    return [];
+    const isC10 = isClass10NameOrId(targetClassId) || isClass10NameOrId(targetClassName) || isClass10NameOrId(targetBatchName);
+    const isPrim = isPrimaryClass(targetClassName || targetClassId);
+    return getStandardSubjectsForClass(targetClassId || targetClassName, subjects, isC10, isPrim);
   }
 
   // 4. Filter schedules matching Class & Batch
@@ -573,7 +628,9 @@ export const getScheduledConfiguredSubjects = ({
   });
 
   if (matchingSchedules.length === 0) {
-    return [];
+    const isC10 = isClass10NameOrId(targetClassId) || isClass10NameOrId(targetClassName) || isClass10NameOrId(targetBatchName);
+    const isPrim = isPrimaryClass(targetClassName || targetClassId);
+    return getStandardSubjectsForClass(targetClassId || targetClassName, subjects, isC10, isPrim);
   }
 
   // 5. Extract Unique Scheduled Subjects
@@ -1248,6 +1305,16 @@ const Exams: React.FC = () => {
     }
   }, [selectedClass, availableBatches, selectedBatch, activeTab]);
 
+  // Auto-select exam if not selected (prefer FA-1)
+  useEffect(() => {
+    if (exams.length > 0) {
+      if (!selectedExam || !exams.some(e => e.id === selectedExam)) {
+        const fa1Exam = exams.find(e => e.title === 'FA-1' || e.title?.toLowerCase().includes('fa-1') || e.title?.toLowerCase().includes('fa 1'));
+        setSelectedExam(fa1Exam ? fa1Exam.id : exams[0].id);
+      }
+    }
+  }, [exams, selectedExam]);
+
   // Reset or auto-select selected subject when available subjects change
   useEffect(() => {
     if (activeTab === 'subject-entry') {
@@ -1627,26 +1694,19 @@ const Exams: React.FC = () => {
         }
 
         const studentIds = sorted.map((s: any) => s.id || s.uid).filter(Boolean);
-        
-        let studentSpecificMarks: any[] = [];
-        if (studentIds.length > 0) {
-          // Chunk requests of 30 due to Firestore 'in' query limitations
-          for (let i = 0; i < studentIds.length; i += 30) {
-            const chunk = studentIds.slice(i, i + 30);
-            try {
-              const chunkMarks = await dbService.list('examMarks', [where('studentId', 'in', chunk)]);
-              if (Array.isArray(chunkMarks)) {
-                studentSpecificMarks.push(...chunkMarks);
-              }
-            } catch (err) {
-              console.warn('Error fetching student specific marks:', err);
-            }
-          }
-        }
+        const studentIdSet = new Set(studentIds);
 
-        studentSpecificMarks.forEach((m: any) => {
-          if (m.id) marksMap.set(m.id, m);
-        });
+        // If batchMarks didn't find all marks, check by classId
+        if (selectedClass) {
+          try {
+            const classMarks = await dbService.list('examMarks', [where('classId', '==', selectedClass)]);
+            (classMarks || []).forEach((m: any) => {
+              if (m.id && studentIdSet.has(m.studentId)) {
+                marksMap.set(m.id, m);
+              }
+            });
+          } catch (e) {}
+        }
 
         // 4. Also fetch live MongoDB exam marks from proxy
         try {
@@ -1663,6 +1723,19 @@ const Exams: React.FC = () => {
                 }
               }
             });
+          }
+
+          // Fallback: If no marks loaded yet for these students, query exam marks for class and match students
+          if (marksMap.size === 0 && selectedClass) {
+            const classProxyMarks = await fetchExamMarksFromLiveProxy(selectedClass, selectedExam);
+            if (Array.isArray(classProxyMarks) && classProxyMarks.length > 0) {
+              classProxyMarks.forEach((m: any) => {
+                if (m.studentId && studentIdSet.has(m.studentId)) {
+                  const markId = m.id || m._id || m.uid || `${m.studentId}_${m.examId}_${m.subjectId}`;
+                  marksMap.set(markId, { ...m, id: markId });
+                }
+              });
+            }
           }
         } catch (err) {
           console.warn('Error fetching live proxy marks in loadBatchData:', err);
@@ -2292,7 +2365,16 @@ const Exams: React.FC = () => {
             return true;
           }
           if (isTeacherRole || hasPermission('exams_view_my_strict')) {
-            const isAssignedClassTeacher = profile?.role === 'teacher_class' || (batches || []).some((b: any) => b.classTeacherId === profile?.uid);
+            const isAssignedClassTeacher = 
+              profile?.role === 'teacher_class' || 
+              profile?.role === 'class_teacher' ||
+              (profile as any)?.isClassTeacher ||
+              (batches || []).some((b: any) => 
+                (b.classTeacherId && teacherIdentifiers.ids.has(String(b.classTeacherId))) ||
+                (b.classTeacher && teacherIdentifiers.names.has(String(b.classTeacher).toLowerCase().trim())) ||
+                (b.classTeacherName && teacherIdentifiers.names.has(String(b.classTeacherName).toLowerCase().trim())) ||
+                (b.id === (profile as any)?.classTeacherBatchId)
+              );
             if (!isAssignedClassTeacher && tab.id === 'class-view') {
               return false;
             }
@@ -2853,7 +2935,7 @@ const ExamSchedule = ({ exams, hasPermission, selectedBatch, selectedExams, onSe
                     <div className="flex justify-between"><span>ST-1 + ST-2</span> <span>{(exam?.st1Max || 10) + (exam?.st2Max || 10)} Marks</span></div>
                     <div className="flex justify-between"><span>ST-3 (Homework)</span> <span>{exam?.homeworkMax || 5} Marks</span></div>
                     <div className="flex justify-between font-bold text-sidebar pt-1 border-t border-neutral-200">
-                      <span>Written Test (FA-1)</span> <span>{exam?.writtenMax || 25} Marks</span>
+                      <span>Written Test ({title})</span> <span>{exam?.writtenMax || 25} Marks</span>
                     </div>
                   </>
                 ) : (
@@ -2861,7 +2943,7 @@ const ExamSchedule = ({ exams, hasPermission, selectedBatch, selectedExams, onSe
                     <div className="flex justify-between"><span>ST-1 Marks</span> <span>{exam?.st1Max || 10} Marks</span></div>
                     <div className="flex justify-between"><span>ST-2 Marks</span> <span>{exam?.st2Max || 5} Marks</span></div>
                     <div className="flex justify-between font-bold text-sidebar pt-1 border-t border-neutral-200">
-                      <span>Written Test (FA-1)</span> <span>{exam?.writtenMax || 35} Marks</span>
+                      <span>Written Test ({title})</span> <span>{exam?.writtenMax || 35} Marks</span>
                     </div>
                   </>
                 )
@@ -3925,6 +4007,10 @@ const SubjectEntry = ({ students, marks, subjects, selectedSubject, selectedExam
     return t === 'FA' || t.includes('FA') || t.includes('FORMATIVE') || title.includes('FA') || title.includes('FORMATIVE') || title.startsWith('FA-');
   }, [selectedExam]);
 
+  const examTitle = useMemo(() => {
+    return selectedExam?.title || selectedExam?.name || (isFA ? 'FA' : 'SA');
+  }, [selectedExam, isFA]);
+
   const isClass10Effective = useMemo(() => {
     if (isClass10) return true;
     if (selectedClass) {
@@ -4082,14 +4168,14 @@ const SubjectEntry = ({ students, marks, subjects, selectedSubject, selectedExam
     const headers = ['Roll Number', 'Student Name'];
     if (isFA) {
       if (isClass10Effective) {
-        headers.push('FA Written (Max 50)');
+        headers.push(`${examTitle} Written (Max 50)`);
       } else if (isPrimary) {
-        headers.push('ST-1 (Max 10)', 'ST-2 (Max 10)', 'ST-3 / HW (Max 5)', 'FA Written (Max 25)');
+        headers.push('ST-1 (Max 10)', 'ST-2 (Max 10)', 'ST-3 / HW (Max 5)', `${examTitle} Written (Max 25)`);
       } else {
-        headers.push('ST-1 (Max 10)', 'ST-2 (Max 5)', 'FA Written (Max 35)');
+        headers.push('ST-1 (Max 10)', 'ST-2 (Max 5)', `${examTitle} Written (Max 35)`);
       }
     } else {
-      headers.push('SA Written (Max 100)');
+      headers.push(`${examTitle} Written (Max 100)`);
     }
 
     // Prepopulate students - sorted roll number wise
@@ -4229,7 +4315,18 @@ const SubjectEntry = ({ students, marks, subjects, selectedSubject, selectedExam
 
         if (isFA) {
           if (isClass10Effective) {
-            const faWrittenVal = getVal(sourceData.faWritten ?? sourceData['FA Written'] ?? sourceData['FA Written (Max 50)'] ?? sourceData['FA Written (50)'] ?? sourceData['Written'] ?? sourceData['Total'], 'faWritten');
+            const faWrittenVal = getVal(
+              sourceData.faWritten ?? 
+              sourceData[`${examTitle} Written`] ??
+              sourceData[`${examTitle} Written (Max 50)`] ??
+              sourceData[`${examTitle} Written (50)`] ??
+              sourceData['FA Written'] ?? 
+              sourceData['FA Written (Max 50)'] ?? 
+              sourceData['FA Written (50)'] ?? 
+              sourceData['Written'] ?? 
+              sourceData['Total'], 
+              'faWritten'
+            );
             if (faWrittenVal !== null) extracted.faWritten = faWrittenVal;
           } else {
             const st1Val = getVal(sourceData.st1 ?? sourceData['ST-1'] ?? sourceData['ST-1 (Max 10)'], 'st1');
@@ -4242,15 +4339,51 @@ const SubjectEntry = ({ students, marks, subjects, selectedSubject, selectedExam
               const hwVal = getVal(sourceData.hw ?? sourceData['ST-3'] ?? sourceData['ST-3 / HW (Max 5)'] ?? sourceData['ST-3 / HW'] ?? sourceData['hw'], 'hw');
               if (hwVal !== null) extracted.hw = hwVal;
 
-              const faWrittenVal = getVal(sourceData.faWritten ?? sourceData['FA Written'] ?? sourceData['FA-1 Written (25)'] ?? sourceData['FA Written (Max 25)'] ?? sourceData['faWritten'], 'faWritten');
+              const faWrittenVal = getVal(
+                sourceData.faWritten ?? 
+                sourceData[`${examTitle} Written`] ?? 
+                sourceData[`${examTitle} Written (25)`] ?? 
+                sourceData[`${examTitle} Written (Max 25)`] ?? 
+                sourceData['FA Written'] ?? 
+                sourceData['FA-1 Written (25)'] ?? 
+                sourceData['FA-2 Written (25)'] ?? 
+                sourceData['FA-3 Written (25)'] ?? 
+                sourceData['FA-4 Written (25)'] ?? 
+                sourceData['FA Written (Max 25)'] ?? 
+                sourceData['faWritten'], 
+                'faWritten'
+              );
               if (faWrittenVal !== null) extracted.faWritten = faWrittenVal;
             } else {
-              const faWrittenVal = getVal(sourceData.faWritten ?? sourceData['FA Written'] ?? sourceData['FA-1 Written (35)'] ?? sourceData['FA Written (Max 35)'] ?? sourceData['faWritten'], 'faWritten');
+              const faWrittenVal = getVal(
+                sourceData.faWritten ?? 
+                sourceData[`${examTitle} Written`] ?? 
+                sourceData[`${examTitle} Written (35)`] ?? 
+                sourceData[`${examTitle} Written (Max 35)`] ?? 
+                sourceData['FA Written'] ?? 
+                sourceData['FA-1 Written (35)'] ?? 
+                sourceData['FA-2 Written (35)'] ?? 
+                sourceData['FA-3 Written (35)'] ?? 
+                sourceData['FA-4 Written (35)'] ?? 
+                sourceData['FA Written (Max 35)'] ?? 
+                sourceData['faWritten'], 
+                'faWritten'
+              );
               if (faWrittenVal !== null) extracted.faWritten = faWrittenVal;
             }
           }
         } else {
-          const saWrittenVal = getVal(sourceData.saWritten ?? sourceData['SA Written'] ?? sourceData['Written (100)'] ?? sourceData['SA Written (Max 100)'] ?? sourceData['saWritten'], 'saWritten');
+          const saWrittenVal = getVal(
+            sourceData.saWritten ?? 
+            sourceData[`${examTitle} Written`] ?? 
+            sourceData[`${examTitle} Written (100)`] ?? 
+            sourceData[`${examTitle} Written (Max 100)`] ?? 
+            sourceData['SA Written'] ?? 
+            sourceData['Written (100)'] ?? 
+            sourceData['SA Written (Max 100)'] ?? 
+            sourceData['saWritten'], 
+            'saWritten'
+          );
           if (saWrittenVal !== null) extracted.saWritten = saWrittenVal;
         }
 
@@ -4505,7 +4638,7 @@ const SubjectEntry = ({ students, marks, subjects, selectedSubject, selectedExam
               {isFA ? (
                 isClass10Effective ? (
                   <>
-                    <th className="p-4 text-center">FA Written (50)</th>
+                    <th className="p-4 text-center">{examTitle} Written (50)</th>
                     <th className="p-4 text-center text-emerald-600 bg-emerald-50/20">Total (50)</th>
                   </>
                 ) : isPrimary ? (
@@ -4514,20 +4647,20 @@ const SubjectEntry = ({ students, marks, subjects, selectedSubject, selectedExam
                     <th className="p-4 text-center">ST-2 (10)</th>
                     <th className="p-4 text-center">ST-3 (5)</th>
                     <th className="p-4 text-center text-indigo-600 bg-indigo-50/20">Total ST's (25)</th>
-                    <th className="p-4 text-center">FA-1 Written (25)</th>
-                    <th className="p-4 text-center text-emerald-600 bg-emerald-50/20">Total (ST's + FA) (50)</th>
+                    <th className="p-4 text-center">{examTitle} Written (25)</th>
+                    <th className="p-4 text-center text-emerald-600 bg-emerald-50/20">Total (ST's + {examTitle}) (50)</th>
                   </>
                 ) : (
                   <>
                     <th className="p-4 text-center">ST-1 (10)</th>
                     <th className="p-4 text-center">ST-2 (5)</th>
                     <th className="p-4 text-center text-indigo-600 bg-indigo-50/20">Total ST's (15)</th>
-                    <th className="p-4 text-center">FA-1 Written (35)</th>
-                    <th className="p-4 text-center text-emerald-600 bg-emerald-50/20">Total (ST's + FA) (50)</th>
+                    <th className="p-4 text-center">{examTitle} Written (35)</th>
+                    <th className="p-4 text-center text-emerald-600 bg-emerald-50/20">Total (ST's + {examTitle}) (50)</th>
                   </>
                 )
               ) : (
-                <th className="p-4 text-center">Written (100)</th>
+                <th className="p-4 text-center">{examTitle} Written (100)</th>
               )}
             </tr>
           </thead>
@@ -5033,10 +5166,14 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
     if (!m) return null;
     if (isFA) {
       const written = isMarkAbsent(m.faWritten) ? 0 : (parseFloat(m.faWritten) || 0);
-      if (isClass10Effective) return Math.round((written + Number.EPSILON) * 100) / 100;
       const st1 = isMarkAbsent(m.st1) ? 0 : (parseFloat(m.st1) || 0);
       const st2 = isMarkAbsent(m.st2) ? 0 : (parseFloat(m.st2) || 0);
       const hw = isMarkAbsent(m.hw) ? 0 : (parseFloat(m.hw) || 0);
+      const internalVal = isPrimary ? (st1 + st2 + hw) : (st1 + st2);
+      if (isClass10Effective) {
+        const subTot = internalVal > 0 ? (internalVal + written) : written;
+        return Math.round((subTot + Number.EPSILON) * 100) / 100;
+      }
       const subTot = isPrimary ? (st1 + st2 + hw + written) : (st1 + st2 + written);
       return Math.round((subTot + Number.EPSILON) * 100) / 100;
     } else {
@@ -5057,16 +5194,48 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
   const displaySubjects = useMemo(() => {
     if (!selectedExam) return [];
 
-    return getScheduledConfiguredSubjects({
+    let scheduled = getScheduledConfiguredSubjects({
       selectedExam,
       selectedClass,
       selectedBatch,
       examSchedules: allExamSchedules,
       subjects,
       classes,
-      batches
+      batches,
+      exams: [selectedExam]
     });
-  }, [allExamSchedules, selectedExam, selectedBatch, selectedClass, batches, classes, subjects]);
+
+    const markSubjectKeys = new Set<string>();
+    if (Array.isArray(marks) && marks.length > 0) {
+      marks.forEach((m: any) => {
+        if (isMarkForExam(m, selectedExam)) {
+          const sKey = normalizeSubjectKey(m.subjectId || m.subjectName || m.subject);
+          if (sKey) markSubjectKeys.add(sKey);
+        }
+      });
+    }
+
+    if (scheduled && scheduled.length > 0) {
+      const scheduledKeys = new Set(scheduled.map(s => normalizeSubjectKey(s.name || s.id)));
+      const extraSubjects = (subjects || []).filter((s: any) => {
+        const key = normalizeSubjectKey(s.name || s.id);
+        return markSubjectKeys.has(key) && !scheduledKeys.has(key);
+      });
+      return [...scheduled, ...extraSubjects].sort(compareSubjectsStandard);
+    }
+
+    if (markSubjectKeys.size > 0) {
+      const fromMarks = (subjects || []).filter((s: any) => {
+        const key = normalizeSubjectKey(s.name || s.id);
+        return markSubjectKeys.has(key);
+      });
+      if (fromMarks.length > 0) {
+        return [...fromMarks].sort(compareSubjectsStandard);
+      }
+    }
+
+    return getStandardSubjectsForClass(selectedClass, subjects, isClass10Effective, isPrimary);
+  }, [allExamSchedules, selectedExam, selectedBatch, selectedClass, batches, classes, subjects, marks, isClass10Effective, isPrimary]);
 
   // Group attendance by month (with robust string-based matching to avoid timezone parsing bugs)
   const ACADEMIC_MONTHS = useMemo(() => [
@@ -5207,7 +5376,7 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
               const st2Val = isMarkAbsent(m.st2) ? 0 : (parseFloat(m.st2) || 0);
               const hwVal = isMarkAbsent(m.hw) ? 0 : (parseFloat(m.hw) || 0);
               const faVal = faWrittenAbsent ? 0 : (parseFloat(m.faWritten) || 0);
-              const numSubjectTotal = isClass10Effective ? faVal : (isPrimary ? (st1Val + st2Val + hwVal + faVal) : (st1Val + st2Val + faVal));
+              const numSubjectTotal = isClass10Effective ? ((st1Val + st2Val + hwVal > 0) ? (st1Val + st2Val + hwVal + faVal) : faVal) : (isPrimary ? (st1Val + st2Val + hwVal + faVal) : (st1Val + st2Val + faVal));
               grandTotal += numSubjectTotal;
               const maxMarks = getSubjectMaxMarks(subj, true);
               if (!faWrittenAbsent && numSubjectTotal < maxMarks * 0.35) {
@@ -5313,7 +5482,7 @@ const ClassTeacherView = ({ students, marks, subjects, selectedExam, isPrimary, 
           const internalVal = isPrimary ? (st1Val + st2Val + hwVal) : (st1Val + st2Val);
           const examVal = faWrittenAbsent ? 0 : (parseFloat(m.faWritten) || 0);
 
-          const numSubjectTotal = isClass10Effective ? examVal : (internalVal + examVal);
+          const numSubjectTotal = isClass10Effective ? ((internalVal > 0) ? (internalVal + examVal) : examVal) : (internalVal + examVal);
           grandTotal += numSubjectTotal;
 
           const isSubPass = typeof numSubjectTotal === 'number' ? numSubjectTotal >= 50 * 0.35 : false;

@@ -18,6 +18,7 @@ import { isSystemAccount, isTeacherAccountOrEmail } from './constants/systemAcco
 import { isTeacherRole } from './utils/teacherFilter';
 import { isStaffRole, isStaffAccountOrEmail } from './lib/profileUtils';
 import { safeStorage as localStorage } from './lib/safeStorage';
+import { syncLocalStudentsToLive } from './services/dbService';
 
 // Monkey-patch Sonner toast.error to intercept Firebase index errors and display them as beautiful, clickable blue links
 const originalToastError = toast.error;
@@ -47,8 +48,7 @@ const patchedToastError = (message: any, options?: any) => {
 
   if (
     msgStr.includes('FAILED_PRECONDITION') || 
-    msgStr.includes('requires an index') || 
-    msgStr.includes('console.firebase.google.com')
+    msgStr.includes('requires an index')
   ) {
     return originalToastError(
       <div className="flex flex-col gap-2 p-1 text-left">
@@ -75,8 +75,8 @@ const patchedToastError = (message: any, options?: any) => {
       </div>,
       { 
         ...options, 
-        duration: 12000,
-        dismissible: true
+        duration: 8000, 
+        dismissible: true 
       }
     );
   }
@@ -276,30 +276,7 @@ const AutoUpdateNotifier: React.FC = () => {
 };
 
 export default function App() {
-  const [isPoisoned, setIsPoisoned] = React.useState(false);
-
   React.useEffect(() => {
-    const handlePoison = () => setIsPoisoned(true);
-    window.addEventListener('firestore-poisoned', handlePoison);
-    
-    const logIndexErrorToFirestore = async (message: string, url: string) => {
-      try {
-        const { dbService } = await import('./services/dbService');
-        const cleanUrl = url.trim();
-        const docId = cleanUrl.split('create_composite=')[1]?.slice(0, 100).replace(/[^a-zA-Z0-9_-]/g, '_') || String(Date.now());
-        await dbService.set('index_errors', docId, {
-          message,
-          url,
-          timestamp: new Date().toISOString(),
-          userAgent: navigator.userAgent,
-          location: window.location.href,
-        });
-        console.log('[IndexErrorLogger] Logged to Firestore successfully:', cleanUrl);
-      } catch (err) {
-        console.error('[IndexErrorLogger] Failed to log index error to Firestore:', err);
-      }
-    };
-
     // Global error handlers to display to the user via toast
     const handleRejection = (event: PromiseRejectionEvent) => {
       const message = event.reason?.message || '';
@@ -312,32 +289,6 @@ export default function App() {
         event.preventDefault();
         event.stopImmediatePropagation();
         return;
-      }
-      if (message.includes('requires an index') || message.includes('console.firebase.google.com')) {
-        const match = message.match(/https:\/\/console\.firebase\.google\.com[^\s']+/);
-        const url = match ? match[0] : '';
-        if (url) {
-          logIndexErrorToFirestore(message, url);
-          // High-contrast, beautiful prompt with CTA
-          toast.error(
-            <div className="flex flex-col gap-2 p-1 text-left">
-              <span className="font-bold text-rose-600 block">⚠️ Missing Firestore Index Detector!</span>
-              <span className="text-xs text-neutral-600 block leading-tight">
-                This academic database view needs a composite query index. You can create it in one click:
-              </span>
-              <a 
-                href={url} 
-                target="_blank" 
-                rel="noreferrer noopener"
-                className="inline-flex items-center justify-center bg-primary hover:bg-slate-900 text-white text-[11px] font-black uppercase tracking-wider py-2 px-3 rounded-xl transition-all shadow-md self-start mt-1 border border-primary/20"
-              >
-                Create Composite Index
-              </a>
-            </div>,
-            { duration: 30000, dismissible: true }
-          );
-          return;
-        }
       }
       toast.error(`Action Failed: ${event.reason?.message || "An unexpected error occurred"}`);
     };
@@ -353,32 +304,6 @@ export default function App() {
         event.preventDefault();
         event.stopImmediatePropagation();
         return;
-      }
-      if (message.includes('requires an index') || message.includes('console.firebase.google.com')) {
-        const match = message.match(/https:\/\/console\.firebase\.google\.com[^\s']+/);
-        const url = match ? match[0] : '';
-        if (url) {
-          logIndexErrorToFirestore(message, url);
-          // High-contrast, beautiful prompt with CTA
-          toast.error(
-            <div className="flex flex-col gap-2 p-1 text-left">
-              <span className="font-bold text-rose-600 block">⚠️ Missing Firestore Index Detector!</span>
-              <span className="text-xs text-neutral-600 block leading-tight">
-                This academic database view needs a composite query index. You can create it in one click:
-              </span>
-              <a 
-                href={url} 
-                target="_blank" 
-                rel="noreferrer noopener"
-                className="inline-flex items-center justify-center bg-primary hover:bg-slate-900 text-white text-[11px] font-black uppercase tracking-wider py-2 px-3 rounded-xl transition-all shadow-md self-start mt-1 border border-primary/20"
-              >
-                Create Composite Index
-              </a>
-            </div>,
-            { duration: 30000, dismissible: true }
-          );
-          return;
-        }
       }
       console.warn(`Window error captured: ${event.message || "An unexpected error occurred"}`);
     };
@@ -411,8 +336,10 @@ export default function App() {
       console.warn("Could not clear localStorage keys:", cleanErr);
     }
 
+    // Run one-time sync-up routine for student records between sandbox and live MongoDB
+    syncLocalStudentsToLive().catch(() => {});
+
     return () => {
-      window.removeEventListener('firestore-poisoned', handlePoison);
       window.removeEventListener('unhandledrejection', handleRejection);
       window.removeEventListener('error', handleError);
     };

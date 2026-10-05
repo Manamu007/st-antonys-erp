@@ -84,8 +84,8 @@ const Communication: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [channels, setChannels] = useState<any[]>([]);
   
-  // Alternative linking via 8-digit pairing code & linking progress state (Default to 'code' for Meta Anti-Ban protection)
-  const [pairingMode, setPairingMode] = useState<'qr' | 'code'>('code');
+  // QR Code pairing by default for instant QR scan experience
+  const [pairingMode, setPairingMode] = useState<'qr' | 'code'>('qr');
   const [countryCode, setCountryCode] = useState('91');
   const [pairingPhone, setPairingPhone] = useState('');
   const [pairingCode, setPairingCode] = useState<string | null>(null);
@@ -1701,7 +1701,7 @@ This is an automated message.`
                     <div className="space-y-3">
                       <div className="p-3 bg-white border-2 border-primary/25 rounded-2xl shadow-lg flex flex-col items-center justify-center">
                         <QRCodeSVG 
-                          value={qr} 
+                          value={(qr || '').replace(/^https:\/\/wa\.me\/settings\/linked_devices#/, '')} 
                           size={220} 
                           level="M" 
                           includeMargin={true}

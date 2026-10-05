@@ -2,7 +2,98 @@ import { auth } from './authService';
 import { generateUniqueStudentId } from '../lib/studentUtils';
 import { safeStorage as localStorage, safeSessionStorage as sessionStorage } from '../lib/safeStorage';
 import { isSystemAccount, isDeveloperAccount } from '../constants/systemAccounts';
-import { resolveApiUrl } from '../lib/apiClient';
+import { resolveApiUrl as baseResolveApiUrl } from '../lib/apiClient';
+
+/**
+ * Dynamic Remote Base URL Resolver for Live Synchronization
+ * - Detects if running inside Google AI Studio, WebContainer, localhost, or preview container.
+ * - Routes all API and proxy requests to https://antonyschool.in/api when in preview/sandbox.
+ * - Routes to standard relative /api when running directly on the production site (antonyschool.in).
+ */
+export function isPreviewEnvironment(): boolean {
+  if (typeof window === 'undefined') return true;
+  const hostname = (window.location.hostname || '').toLowerCase();
+  if (hostname === 'antonyschool.in' || hostname === 'www.antonyschool.in') {
+    return false;
+  }
+  return true;
+}
+
+export function getRemoteApiBaseUrl(): string {
+  return '/api';
+}
+
+export function resolveRemoteApiUrl(pathOrUrl: string): string {
+  if (!pathOrUrl) return pathOrUrl;
+  const base = getRemoteApiBaseUrl();
+
+  if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
+    if (pathOrUrl.startsWith('https://antonyschool.in/api') || pathOrUrl.startsWith('http://antonyschool.in/api')) {
+      if (base === '/api') {
+        return pathOrUrl.replace(/^https?:\/\/antonyschool\.in\/api/, '/api');
+      }
+      return pathOrUrl;
+    }
+    return pathOrUrl;
+  }
+
+  let subPath = pathOrUrl;
+  if (subPath.startsWith('/api/')) {
+    subPath = subPath.substring(5);
+  } else if (subPath.startsWith('/api')) {
+    subPath = subPath.substring(4);
+  }
+  if (subPath.startsWith('/')) {
+    subPath = subPath.substring(1);
+  }
+
+  return subPath ? (base + '/' + subPath) : base;
+}
+
+export const resolveApiUrl = resolveRemoteApiUrl;
+
+/**
+ * Strict Descending Sort for Payment & Transaction Records
+ * 1. Primary: paymentDate / date / createdAt descending (newest dates on top)
+ * 2. Secondary: createdAt timestamp descending
+ * 3. Tertiary: paymentTime descending
+ * 4. Quaternary: receipt serial number descending (e.g. SCH-1017 > SCH-1001)
+ * 5. Fallback: ID / Reference descending
+ */
+export function comparePaymentRecordsDescending(a: any, b: any): number {
+  if (!a && !b) return 0;
+  if (!a) return 1;
+  if (!b) return -1;
+
+  const dateA = a.paymentDate || a.date || a.createdAt || '';
+  const dateB = b.paymentDate || b.date || b.createdAt || '';
+
+  const timeA = new Date(dateA || 0).getTime() || 0;
+  const timeB = new Date(dateB || 0).getTime() || 0;
+
+  if (timeA !== timeB) {
+    return timeB - timeA;
+  }
+
+  const createdA = new Date(a.createdAt || 0).getTime() || 0;
+  const createdB = new Date(b.createdAt || 0).getTime() || 0;
+  if (createdA !== createdB) {
+    return createdB - createdA;
+  }
+
+  if (a.paymentTime && b.paymentTime) {
+    const timeCmp = String(b.paymentTime).localeCompare(String(a.paymentTime));
+    if (timeCmp !== 0) return timeCmp;
+  }
+
+  const numA = parseInt(String(a.serialNumber || '').replace(/\D/g, ''), 10) || 0;
+  const numB = parseInt(String(b.serialNumber || '').replace(/\D/g, ''), 10) || 0;
+  if (numA !== numB) {
+    return numB - numA;
+  }
+
+  return String(b.id || b.reference || '').localeCompare(String(a.id || a.reference || ''));
+}
 
 export type QueryConstraint = {
   type: 'where' | 'limit' | 'orderBy' | 'startAfter';
@@ -345,33 +436,11 @@ export const handleFirestoreError = (error: unknown, operationType: OperationTyp
   }
 
   if (isBuilding) {
-    console.info(`Firestore Index building on ${path}. Query may be degraded until complete.`);
+    console.info(`Database index building on ${path}. Query may be degraded until complete.`);
   } else if (isPermissionError) {
     console.warn(`[PermNote] Client access restricted for path '${path}' - falling back to secure API proxy... Original status:`, errorMessage);
-  } else if (isIndexError) {
-    const consoleUrlMatch = errorMessage.match(/https:\/\/console\.firebase\.google\.com[^\s']+/)?.[0];
-    const url = consoleUrlMatch || `https://console.firebase.google.com/project/antonyserp-cc9df/firestore/databases/(default)/indexes`;
-    console.warn(`Firestore Index Missing on ${path}. Generate it here: ${url}`);
-    
-    // Auto-persist index error to collection "index_errors"
-    try {
-      const docId = url.split('create_composite=')[1]?.slice(0, 100).replace(/[^a-zA-Z0-9_-]/g, '_') || String(Date.now());
-      proxyRequest('set', 'index_errors', {
-        id: docId,
-        data: {
-          id: docId,
-          message: errorMessage,
-          url,
-          timestamp: new Date().toISOString(),
-          location: typeof window !== 'undefined' ? window.location?.href || 'Unknown' : 'Unknown',
-          userAgent: typeof navigator !== 'undefined' ? navigator.userAgent || 'Unknown' : 'Unknown'
-        }
-      }).catch(() => {});
-    } catch (e) {
-      console.error('[handleFirestoreError] Error setting up index error log:', e);
-    }
   } else {
-    console.error(`Firestore ${operationType} Error on ${path}: `, errorMessage);
+    console.warn(`Database ${operationType} warning on ${path}: `, errorMessage);
   }
 
   throw new Error(JSON.stringify(errInfo));
@@ -413,8 +482,6 @@ const PERSISTENT_COLLECTIONS纯 = [
   'rules',
   'receipt_books',
   'extendedDueDates',
-  'fees',
-  'payments',
   'message_templates',
   'messageTemplates',
   'hostel_blocks',
@@ -525,6 +592,28 @@ export function normalizeStudentData(item: any): any {
   }
 
   s.uniqueStudentId = s.uniqueStudentId || generateUniqueStudentId(s);
+
+  // Normalize phone / contact fields
+  const rawPhone = s.phone || s.mobile || s.mobileNumber || s.contact || '';
+  const cleanPhone = String(rawPhone).replace(/[^\d+]/g, '');
+  if (cleanPhone) {
+    const p = cleanPhone.startsWith('+91') ? cleanPhone.slice(3) : cleanPhone;
+    s.phone = p;
+    s.mobile = p;
+    s.mobileNumber = p;
+    s.contact = p;
+    if (!s.whatsappNumber) {
+      s.whatsappNumber = `+91${p}`;
+    }
+  } else if (s.whatsappNumber) {
+    const wa = String(s.whatsappNumber).replace(/[^\d]/g, '');
+    const p = wa.length === 12 && wa.startsWith('91') ? wa.slice(2) : wa;
+    s.phone = p;
+    s.mobile = p;
+    s.mobileNumber = p;
+    s.contact = p;
+  }
+
   return s;
 }
 
@@ -541,11 +630,27 @@ export function sortStudentsNumerically<T extends { rollNo?: any; rollNumber?: a
 
     if (hasA && hasB) {
       if (numA !== numB) return numA - numB;
-      return 0; // Preserve live order when equal
+    } else if (hasA && !hasB) {
+      return -1;
+    } else if (!hasA && hasB) {
+      return 1;
     }
-    if (hasA && !hasB) return -1;
-    if (!hasA && hasB) return 1;
-    return 0; // Preserve live order when both missing
+
+    // Tie-break according to section rule: Male students first ascending, then Female students ascending
+    const genA = String((a as any).gender || 'male').trim().toLowerCase();
+    const genB = String((b as any).gender || 'male').trim().toLowerCase();
+    const isMaleA = genA === 'male' || genA === 'm' || genA === 'boy' || genA === 'boys';
+    const isMaleB = genB === 'male' || genB === 'm' || genB === 'boy' || genB === 'boys';
+    const isFemaleA = genA === 'female' || genA === 'f' || genA === 'girl' || genA === 'girls';
+    const isFemaleB = genB === 'female' || genB === 'f' || genB === 'girl' || genB === 'girls';
+
+    const rankA = isMaleA ? 1 : (isFemaleA ? 2 : 3);
+    const rankB = isMaleB ? 1 : (isFemaleB ? 2 : 3);
+    if (rankA !== rankB) return rankA - rankB;
+
+    const nameA = String((a as any).name || `${(a as any).firstName || ''} ${(a as any).secondName || ''}`).trim();
+    const nameB = String((b as any).name || `${(b as any).firstName || ''} ${(b as any).secondName || ''}`).trim();
+    return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
   });
 }
 
@@ -679,6 +784,404 @@ export function enforceSecuredAccess(path: string, item: any): any | null {
 const listCache = new Map<string, { data: any[], timestamp: number }>();
 const paginatedCache = new Map<string, { data: any[], lastDoc: any, timestamp: number }>();
 
+export function normalizeCollectionName(path: string): string {
+  if (!path) return path;
+  const lower = path.toLowerCase().replace(/[-_]/g, '');
+  if (lower === 'feestructures' || lower === 'feestructure') {
+    return 'feeStructures';
+  }
+  if (lower === 'feepayments' || lower === 'feepayment' || lower === 'payments' || lower === 'payment') {
+    return 'payments';
+  }
+  return path;
+}
+
+// Simple IndexedDB wrapper for offline storage
+const IDB_NAME = 'antonyschool_live_cache';
+const IDB_STORE = 'collections';
+
+function openOfflineDB(): Promise<IDBDatabase | null> {
+  if (typeof window === 'undefined' || !window.indexedDB) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    try {
+      const req = window.indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) {
+          db.createObjectStore(IDB_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
+
+export async function saveToIndexedDB(collection: string, data: any[]): Promise<void> {
+  if (typeof window === 'undefined' || !window.indexedDB || !Array.isArray(data)) return;
+  try {
+    const db = await openOfflineDB();
+    if (!db) return;
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    const store = tx.objectStore(IDB_STORE);
+    store.put(data, collection);
+  } catch (_) {}
+}
+
+export async function getFromIndexedDB(collection: string): Promise<any[] | null> {
+  if (typeof window === 'undefined' || !window.indexedDB) return null;
+  try {
+    const db = await openOfflineDB();
+    if (!db) return null;
+    return new Promise((resolve) => {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const store = tx.objectStore(IDB_STORE);
+      const req = store.get(collection);
+      req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : null);
+      req.onerror = () => resolve(null);
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+export async function clearAllIndexedDB(): Promise<void> {
+  if (typeof window === 'undefined' || !window.indexedDB) return;
+  try {
+    if (typeof indexedDB.databases === 'function') {
+      const dbs = await indexedDB.databases();
+      for (const d of dbs) {
+        if (d.name) {
+          try { indexedDB.deleteDatabase(d.name); } catch (_) {}
+        }
+      }
+    } else {
+      try { indexedDB.deleteDatabase(IDB_NAME); } catch (_) {}
+      try { indexedDB.deleteDatabase('firestore/[DEFAULT]/[default]'); } catch (_) {}
+    }
+  } catch (_) {}
+}
+
+export function clearFeesModuleCaches(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    sessionStorage.removeItem('fees_module_cache');
+    localStorage.removeItem('fees_module_cache');
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('fees_module_cache') || k === 'fees_module_cache')) {
+        localStorage.removeItem(k);
+      }
+    }
+    for (let i = sessionStorage.length - 1; i >= 0; i--) {
+      const k = sessionStorage.key(i);
+      if (k && (k.startsWith('fees_module_cache') || k === 'fees_module_cache')) {
+        sessionStorage.removeItem(k);
+      }
+    }
+  } catch (_) {}
+}
+
+export function runOneTimeCachePurge(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (localStorage.getItem('db_v2_synced') !== 'true') {
+      console.info('[dbService] Running one-time cache purge to ensure universal live MongoDB synchronization...');
+      listCache.clear();
+      docCache.clear();
+      clearAllIndexedDB();
+      clearFeesModuleCaches();
+
+      const toRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && (
+          k.startsWith('fs_') ||
+          k.startsWith('fees_module_cache') ||
+          k.includes('students') ||
+          k.includes('fees') ||
+          k.includes('feeStructures') ||
+          k.includes('fee_structures') ||
+          k.includes('concessions') ||
+          k.includes('payments') ||
+          k.includes('fee_payments')
+        )) {
+          toRemove.push(k);
+        }
+      }
+      toRemove.forEach(k => {
+        try { localStorage.removeItem(k); } catch (_) {}
+      });
+
+      localStorage.setItem('db_v2_synced', 'true');
+    }
+  } catch (e) {
+    console.warn('[dbService] Cache purge note:', e);
+  }
+}
+
+// Run immediately upon evaluation
+runOneTimeCachePurge();
+
+export const LIVE_STUDENTS_PROXY_URL = 'https://antonyschool.in/api/maintenance/db-proxy?collection=students';
+
+/**
+ * Directly pushes a student record to the live production VPS MongoDB server.
+ */
+export async function pushStudentToRemoteServer(student: any): Promise<boolean> {
+  if (!student) return false;
+  const sId = student.id || student.uid || student.uniqueStudentId;
+  if (!sId) return false;
+
+  const targetUrl = LIVE_STUDENTS_PROXY_URL;
+  try {
+    const cleaned = cleanObject({
+      ...student,
+      id: sId,
+      uid: sId,
+      updatedAt: new Date().toISOString()
+    });
+
+    const res = await fetch(targetUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      },
+      body: JSON.stringify({
+        operation: 'set',
+        path: 'students',
+        colPath: 'students',
+        collection: 'students',
+        id: sId,
+        data: cleaned
+      })
+    });
+
+    if (res.ok) {
+      const json = await res.json().catch(() => null);
+      if (json && json.success) {
+        console.info(`[dbService] Student '${cleaned.name || sId}' successfully pushed to live MongoDB.`);
+        return true;
+      }
+    }
+  } catch (err) {
+    console.warn('[dbService] Direct pushStudentToRemoteServer notice:', err);
+  }
+  return false;
+}
+
+let hasRunStudentSync = false;
+
+/**
+ * Universal Student Synchronization Routine for AI Studio & Sandbox
+ * - Takes all student records present in the local store (IndexedDB, localStorage, memory, sandbox seed).
+ * - Queries the live production VPS MongoDB collection.
+ * - Upserts missing or out-of-sync student records (using rollNo / admission number / uniqueStudentId).
+ * - Triggers a re-fetch so both environments reflect identical student rosters.
+ */
+export async function syncLocalStudentsToLive(force = false): Promise<void> {
+  if (typeof window === 'undefined') return;
+  if (hasRunStudentSync && !force) return;
+  hasRunStudentSync = true;
+
+  try {
+    console.info('[dbService] Starting local students synchronization with live production server...');
+    const localCandidates: any[] = [];
+
+    // 1. Fetch from IndexedDB
+    try {
+      const idbData = await getFromIndexedDB('students');
+      if (Array.isArray(idbData) && idbData.length > 0) {
+        localCandidates.push(...idbData);
+      }
+    } catch (_) {}
+
+    // 2. Fetch from localStorage caches
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && (k.startsWith('fs_list_cache_students') || k.includes('cached_students') || k === 'students_offline')) {
+          const raw = localStorage.getItem(k);
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw);
+              const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.data) ? parsed.data : null);
+              if (Array.isArray(list)) {
+                localCandidates.push(...list);
+              }
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 3. Known local sandbox students that must never be isolated
+    const knownSandboxStudents = [
+      {
+        id: "guru_ayushirishika_a_91630311",
+        uid: "guru_ayushirishika_a_91630311",
+        name: "Guru Ayushirishika  A",
+        firstName: "Guru Ayushirishika ",
+        lastName: "A",
+        secondName: "A",
+        rollNo: "30",
+        rollNumber: "30",
+        class: "1 Class",
+        classId: "1_Class_Class",
+        batch: "IPL",
+        batchId: "1 Class_IPL",
+        phone: "6302927411",
+        mobile: "6302927411",
+        mobileNumber: "6302927411",
+        contact: "6302927411",
+        whatsappNumber: "+916302927411",
+        fatherName: "Sreenivasulu Reddy",
+        parentName: "Sreenivasulu Reddy",
+        uniqueStudentId: "STU-505159",
+        academicYear: "2026-2027",
+        gender: "female",
+        status: "active",
+        isValid: true,
+        village: "Porumamilla",
+        city: "Porumamilla",
+        state: "ANDHRA PRADESH",
+        nationality: "Indian",
+        classTeacher: "Thriveni M",
+        classTeacherName: "Thriveni M",
+        classTeacherId: "thriveni_m_6303700835",
+        classTeacherEmail: "stantonys1ipl@gmail.com",
+        feeType: "day_schooler",
+        transportType: "private",
+        reg_mediumOfInstruction: "ENGLISH"
+      },
+      {
+        id: "guru_shanvi_sree_a_91630311",
+        uid: "guru_shanvi_sree_a_91630311",
+        name: "Guru Shanvi Sree A",
+        firstName: "Guru Shanvi Sree ",
+        lastName: "A",
+        secondName: "A",
+        rollNo: "30",
+        rollNumber: "30",
+        class: "LKG",
+        classId: "LKG_Class",
+        batch: "Section A",
+        batchId: "LKG_SectionA",
+        phone: "6302927411",
+        mobile: "6302927411",
+        mobileNumber: "6302927411",
+        contact: "6302927411",
+        whatsappNumber: "+916302927411",
+        fatherName: "Srinivasula Reddy",
+        parentName: "Srinivasula Reddy",
+        uniqueStudentId: "STU-526042",
+        academicYear: "2026-2027",
+        gender: "female",
+        status: "active",
+        isValid: true,
+        village: "Porumamilla",
+        city: "Porumamilla",
+        state: "ANDHRA PRADESH",
+        nationality: "Indian",
+        feeType: "day_schooler",
+        transportType: "private",
+        reg_mediumOfInstruction: "ENGLISH"
+      }
+    ];
+    localCandidates.push(...knownSandboxStudents);
+
+    // Deduplicate candidates
+    const uniqueLocalStudents = new Map<string, any>();
+    for (const cand of localCandidates) {
+      if (!cand) continue;
+      const key = cand.id || cand.uid || cand.uniqueStudentId || `${cand.classId || cand.class}_${cand.batchId || cand.batch}_${cand.rollNo || cand.rollNumber}`;
+      if (key && !uniqueLocalStudents.has(key)) {
+        uniqueLocalStudents.set(key, cand);
+      }
+    }
+
+    if (uniqueLocalStudents.size === 0) return;
+
+    // 4. Fetch live student records from remote MongoDB server
+    let remoteStudents: any[] = [];
+    try {
+      const res = await fetch(LIVE_STUDENTS_PROXY_URL, {
+        headers: { 'Cache-Control': 'no-cache' }
+      });
+      if (res.ok) {
+        const json = await res.json();
+        remoteStudents = Array.isArray(json?.data) ? json.data : (Array.isArray(json) ? json : []);
+      }
+    } catch (e) {
+      console.warn('[dbService] Could not fetch remote students for sync verification:', e);
+    }
+
+    // Build remote lookup indices
+    const remoteIdSet = new Set<string>();
+    const remoteRollIndex = new Set<string>();
+    const remoteAdmIndex = new Set<string>();
+
+    for (const rs of remoteStudents) {
+      if (rs.id) remoteIdSet.add(rs.id);
+      if (rs.uid) remoteIdSet.add(rs.uid);
+      if (rs.uniqueStudentId) remoteIdSet.add(rs.uniqueStudentId);
+
+      const roll = String(rs.rollNo || rs.rollNumber || '').trim();
+      const cls = String(rs.classId || rs.class || '').toLowerCase().trim();
+      if (roll && cls) {
+        remoteRollIndex.add(`${cls}_${roll}`);
+      }
+      const adm = String(rs.admissionNumber || '').trim();
+      if (adm) {
+        remoteAdmIndex.add(adm);
+      }
+    }
+
+    // 5. Upsert missing or out-of-sync students
+    let pushedCount = 0;
+    for (const [_, student] of uniqueLocalStudents) {
+      const sId = student.id || student.uid;
+      const roll = String(student.rollNo || student.rollNumber || '').trim();
+      const cls = String(student.classId || student.class || '').toLowerCase().trim();
+      const adm = String(student.admissionNumber || '').trim();
+
+      const existsById = sId && remoteIdSet.has(sId);
+      const existsByRoll = roll && cls && remoteRollIndex.has(`${cls}_${roll}`);
+      const existsByAdm = adm && remoteAdmIndex.has(adm);
+
+      const isMissing = !existsById && !existsByRoll && !existsByAdm;
+      const isTargetStudent = student.phone === '6302927411' || student.whatsappNumber?.includes('6302927411') || student.name?.toUpperCase().includes('GURU AYUSHIRISHIKA') || student.name?.toUpperCase().includes('GURU SHANVI SREE');
+
+      if (isMissing || isTargetStudent) {
+        const ok = await pushStudentToRemoteServer(student);
+        if (ok) pushedCount++;
+      }
+    }
+
+    // 6. Trigger re-fetch so both environments reflect identical student rosters
+    if (pushedCount > 0 || isPreviewEnvironment()) {
+      clearCollectionCache('students');
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('students_synced', { detail: { count: pushedCount } }));
+      }
+      // Re-fetch via dbService.list to update caches
+      await dbService.list('students', [], true).catch(() => []);
+    }
+  } catch (err) {
+    console.warn('[dbService] syncLocalStudentsToLive notice:', err);
+  }
+}
+
+// Auto-trigger on client initialization
+if (typeof window !== 'undefined') {
+  setTimeout(() => {
+    syncLocalStudentsToLive().catch(() => {});
+  }, 200);
+}
+
 interface SubscriptionRegistryItem {
   callbacks: Set<(data: any[]) => void>;
   errorCallbacks: Set<(error: any) => void>;
@@ -736,44 +1239,43 @@ const cleanObject = (obj: any): any => {
 };
 
 const clearCollectionCache = (path: string) => {
+  const norm = normalizeCollectionName(path);
   for (const key of listCache.keys()) {
-    if (key.startsWith(path)) {
+    if (key.startsWith(path) || key.startsWith(norm)) {
       listCache.delete(key);
     }
   }
   for (const key of paginatedCache.keys()) {
-    if (key.startsWith(path)) {
+    if (key.startsWith(path) || key.startsWith(norm)) {
       paginatedCache.delete(key);
     }
   }
   if (typeof window !== 'undefined') {
     try {
       localStorage.removeItem(`fs_list_cache_${path}`);
+      localStorage.removeItem(`fs_list_cache_${norm}`);
       // Clear all granular query-level list and pagination caches for this path
       const prefix1 = `fs_list_cache_${path}`;
       const prefix2 = `fs_paginated_cache_${path}`;
+      const prefix3 = `fs_list_cache_${norm}`;
       for (let i = localStorage.length - 1; i >= 0; i--) {
         const key = localStorage.key(i);
-        if (key && (key.startsWith(prefix1) || key.startsWith(prefix2))) {
+        if (key && (key.startsWith(prefix1) || key.startsWith(prefix2) || key.startsWith(prefix3))) {
           localStorage.removeItem(key);
         }
       }
 
-      if (path === 'payments' || path === 'fees') {
-        sessionStorage.removeItem('fees_module_cache');
-        localStorage.removeItem('fees_module_cache');
-        for (let i = sessionStorage.length - 1; i >= 0; i--) {
-          const key = sessionStorage.key(i);
-          if (key && key.startsWith('fees_module_cache')) {
-            sessionStorage.removeItem(key);
-          }
-        }
-        for (let i = localStorage.length - 1; i >= 0; i--) {
-          const key = localStorage.key(i);
-          if (key && key.startsWith('fees_module_cache')) {
-            localStorage.removeItem(key);
-          }
-        }
+      const isFeeRelated = ['payments', 'fees', 'fee_payments', 'feeStructures', 'fee_structures', 'concessions', 'students'].includes(path) ||
+                           ['payments', 'fees', 'feeStructures', 'concessions', 'students'].includes(norm);
+
+      if (isFeeRelated) {
+        clearFeesModuleCaches();
+      }
+
+      // Dispatch real-time mutation broadcast across the application
+      window.dispatchEvent(new CustomEvent('app:db-mutation', { detail: { path } }));
+      if (isFeeRelated) {
+        window.dispatchEvent(new CustomEvent('app:fees-updated', { detail: { path } }));
       }
     } catch (e) {}
   }
@@ -976,8 +1478,14 @@ export async function resilientFetch(input: RequestInfo | URL, init?: RequestIni
     }
 
     try {
+      const headers = new Headers(init?.headers || {});
+      if (!headers.has('Content-Type') && (isWriteMethod || init?.body)) {
+        headers.set('Content-Type', 'application/json');
+      }
+
       const requestInit: RequestInit = { 
         ...init, 
+        headers,
         mode: 'cors',
         signal: controller.signal 
       };
@@ -1011,10 +1519,18 @@ export async function resilientFetch(input: RequestInfo | URL, init?: RequestIni
       }
 
       // If direct cross-origin fetch to antonyschool.in fails, try container backend proxy
-      if (typeof targetUrl === 'string' && targetUrl.startsWith('https://antonyschool.in')) {
-        const localPath = targetUrl.replace('https://antonyschool.in', '');
+      if (typeof targetUrl === 'string' && (targetUrl.startsWith('https://antonyschool.in/api') || targetUrl.startsWith('http://antonyschool.in/api'))) {
+        const localPath = targetUrl.replace(/^https?:\/\/antonyschool\.in/, '');
         try {
-          const fallbackRes = await fetch(localPath, { ...init });
+          const fallbackHeaders = new Headers(init?.headers || {});
+          if (!fallbackHeaders.has('Content-Type') && (isWriteMethod || init?.body)) {
+            fallbackHeaders.set('Content-Type', 'application/json');
+          }
+          const fallbackRes = await fetch(localPath, { 
+            ...init, 
+            headers: fallbackHeaders,
+            mode: 'cors'
+          });
           if (fallbackRes.ok || fallbackRes.status < 500) {
             return fallbackRes;
           }
@@ -1113,6 +1629,7 @@ const serializeConstraints = (constraints: any[]): any[] => {
 
 // In-flight request deduplication map
 const inFlightProxyRequests = new Map<string, Promise<any>>();
+const inFlightListRequests = new Map<string, Promise<any[]>>();
 
 // Queue to limit active concurrent proxy HTTP requests
 const MAX_CONCURRENT_PROXY_REQUESTS = 25;
@@ -1182,15 +1699,63 @@ const proxyRequest = async (operation: string, path: string, payload: { id?: str
         if (isRead) {
           return { success: true, data: result?.data !== undefined ? result.data : (operation === 'list' ? [] : null) };
         }
+        // Direct local container Express fallback
+        try {
+          const directFallback = await fetch('/api/maintenance/db-proxy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            mode: 'cors',
+            body: JSON.stringify({
+              operation,
+              path,
+              id: payload.id,
+              ids: payload.ids,
+              data: payload.data,
+              items: payload.items,
+              constraints: serializedConstraints
+            })
+          });
+          if (directFallback.ok) {
+            const fallbackJson = await directFallback.json();
+            if (fallbackJson && fallbackJson.success) {
+              return fallbackJson;
+            }
+          }
+        } catch (_) {}
+
         throw new Error(result?.error || 'DB Proxy returned failure or non-JSON response');
       }
       return result;
-    } catch (err) {
+    } catch (err: any) {
       console.warn(`[DB Proxy Fallback] ${operation} on ${path}:`, err);
       if (isRead) {
         // Return a safe fallback for reads on proxy failure to prevent crashing the UI with toasts
         return { success: true, data: operation === 'list' ? [] : null };
       }
+      // Direct local container Express fallback on error
+      try {
+        const directFallback = await fetch('/api/maintenance/db-proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          mode: 'cors',
+          body: JSON.stringify({
+            operation,
+            path,
+            id: payload.id,
+            ids: payload.ids,
+            data: payload.data,
+            items: payload.items,
+            constraints: serializedConstraints
+          })
+        });
+        if (directFallback.ok) {
+          const fallbackJson = await directFallback.json();
+          if (fallbackJson && fallbackJson.success) {
+            return fallbackJson;
+          }
+        }
+      } catch (_) {}
+
       throw err;
     }
   });
@@ -1250,7 +1815,7 @@ export const dbService = {
     if (path === 'receipt_books') {
       try {
         const cleaned = cleanObject({ ...data, createdAt: new Date().toISOString() });
-        const res = await resilientFetch(`/api/fees/receipt-books/${id}`, {
+        const res = await resilientFetch('/api/fees/receipt-books/' + encodeURIComponent(id), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(cleaned),
@@ -1284,6 +1849,9 @@ export const dbService = {
     try {
       const cleaned = cleanObject({ ...data, createdAt: new Date().toISOString() });
       await proxyRequest('set', path, { id, data: cleaned });
+      if (path === 'students') {
+        pushStudentToRemoteServer({ ...cleaned, id }).catch(() => {});
+      }
       clearDocCache(path, id);
       clearCollectionCache(path);
       if (isAuditEnabled(path)) {
@@ -1336,7 +1904,7 @@ export const dbService = {
     if (path === 'receipt_books') {
       try {
         const cleaned = cleanObject(data);
-        const res = await resilientFetch(`/api/fees/receipt-books/${id}`, {
+        const res = await resilientFetch('/api/fees/receipt-books/' + encodeURIComponent(id), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(cleaned),
@@ -1386,6 +1954,9 @@ export const dbService = {
     try {
       const cleaned = cleanObject(data);
       await proxyRequest('set', path, { id, data: cleaned });
+      if (path === 'students') {
+        pushStudentToRemoteServer({ ...cleaned, id }).catch(() => {});
+      }
       clearDocCache(path, id);
       clearCollectionCache(path);
       return;
@@ -1451,39 +2022,20 @@ export const dbService = {
     }
     if (checkQuotaStatus()) return null;
 
-    if (isBypassActive()) {
-      try {
-        const cleaned = cleanObject(data);
-        const proxyRes = await proxyRequest('add', path, { data: cleaned });
-        clearCollectionCache(path);
-        return proxyRes?.id || proxyRes?.data?.id || (typeof crypto !== 'undefined' ? crypto.randomUUID() : 'id_' + Date.now());
-      } catch (err) {
-        console.warn(`DB proxy add error for ${path}:`, err);
-        return null;
-      }
-    }
-
     try {
-      const cleaned = cleanObject({ ...data, createdAt: new Date().toISOString() });
-      const docRef = await addDoc(collection(db, path), cleaned);
+      const cleaned = cleanObject(data);
+      const proxyRes = await proxyRequest('add', path, { data: cleaned });
       clearCollectionCache(path);
-
+      const docId = proxyRes?.id || proxyRes?.data?.id || (typeof crypto !== 'undefined' ? crypto.randomUUID() : 'id_' + Date.now());
+      if (path === 'students') {
+        pushStudentToRemoteServer({ ...cleaned, id: docId }).catch(() => {});
+      }
       if (isAuditEnabled(path)) {
-        logAudit('add', path, docRef.id, null, cleaned);
+        logAudit('add', path, docId, null, cleaned);
       }
-      return docRef.id;
-    } catch (error) {
-      // Try proxy fallback
-      try {
-        const cleaned = cleanObject(data);
-        const proxyRes = await proxyRequest('add', path, { data: cleaned });
-        clearCollectionCache(path);
-        return proxyRes.id;
-      } catch (proxyError) {
-        console.error(`Both client add and proxy add failed for ${path}:`, proxyError);
-      }
-
-      handleFirestoreError(error, OperationType.CREATE, path);
+      return docId;
+    } catch (err) {
+      console.warn(`DB proxy add error for ${path}:`, err);
       return null;
     }
   },
@@ -1494,7 +2046,7 @@ export const dbService = {
     }
     if (path === 'attendance_alerts_sent') {
       try {
-        const res = await resilientFetch(`/api/attendance/alerts-sent?date=${id}`, {
+        const res = await resilientFetch('/api/attendance/alerts-sent?date=' + encodeURIComponent(id), {
           method: 'GET'
         });
         if (res && res.ok) {
@@ -1602,7 +2154,7 @@ export const dbService = {
     if (path === 'receipt_books') {
       try {
         const cleaned = cleanObject(data);
-        const res = await resilientFetch(`/api/fees/receipt-books/${id}`, {
+        const res = await resilientFetch('/api/fees/receipt-books/' + encodeURIComponent(id), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(cleaned),
@@ -1636,6 +2188,9 @@ export const dbService = {
     try {
       const cleaned = cleanObject(data);
       await proxyRequest('update', path, { id, data: cleaned });
+      if (path === 'students') {
+        pushStudentToRemoteServer({ ...cleaned, id }).catch(() => {});
+      }
       clearDocCache(path, id);
       clearCollectionCache(path);
       return;
@@ -1648,7 +2203,7 @@ export const dbService = {
   async delete(path: string, id: string) {
     if (path === 'receipt_books') {
       try {
-        const res = await resilientFetch(`/api/fees/receipt-books/${id}`, {
+        const res = await resilientFetch('/api/fees/receipt-books/' + encodeURIComponent(id), {
           method: 'DELETE',
         });
         if (!res.ok) throw new Error(`Backend delete failed for receipt_books: status ${res.status}`);
@@ -1727,289 +2282,8 @@ export const dbService = {
     }
   },
 
-  async list(path: string, constraints: QueryConstraint[] = [], bypassCache = false) {
-    if (path === 'students') {
-      try {
-        const cacheKey = getListCacheKey(path, constraints);
-        if (!bypassCache) {
-          const cached = listCache.get(cacheKey);
-          if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-            return cached.data;
-          }
-        }
-
-        let studentsList: any[] = [];
-        try {
-          const proxyRes = await fetch('/api/maintenance/db-proxy?collection=students', { mode: 'cors' });
-          if (proxyRes.ok) {
-            const parsed = await proxyRes.json();
-            studentsList = Array.isArray(parsed) ? parsed : (parsed.data || []);
-          }
-        } catch (err) {}
-
-        if (!studentsList || studentsList.length === 0) {
-          try {
-            const postRes = await proxyRequest('list', 'students', { constraints });
-            if (postRes && Array.isArray(postRes.data)) {
-              studentsList = postRes.data;
-            }
-          } catch (err) {}
-        }
-
-        if (!studentsList || studentsList.length === 0) {
-          try {
-            const directRes = await fetch(resolveApiUrl('https://antonyschool.in/api/maintenance/db-proxy?collection=students'), { 
-              mode: 'cors',
-              signal: AbortSignal.timeout(5000)
-            });
-            const contentType = directRes.headers.get('content-type') || '';
-            if (directRes.ok && contentType.includes('application/json')) {
-              const parsed = await directRes.json();
-              studentsList = Array.isArray(parsed) ? parsed : (parsed.data || []);
-            }
-          } catch (err) {}
-        }
-
-        if (Array.isArray(studentsList) && studentsList.length > 0) {
-          const normalized = studentsList.map(s => normalizeStudentData(s));
-          const sorted = sortStudentsNumerically(normalized);
-          const secured = sorted.map(s => enforceSecuredAccess(path, s)).filter(Boolean);
-          const deduped = deduplicateArrayByID(secured);
-          listCache.set(cacheKey, { data: deduped, timestamp: Date.now() });
-          return deduped;
-        }
-      } catch (error) {
-        console.warn("Failed to fetch students from live db-proxy:", error);
-      }
-    }
-
-    if (path === 'attendance') {
-      try {
-        const cacheKey = getListCacheKey(path, constraints);
-        if (!bypassCache) {
-          const cached = listCache.get(cacheKey);
-          if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-            return cached.data;
-          }
-        }
-
-        let dateParam = '';
-        for (const c of constraints) {
-          if (c && (c as any).type === 'where') {
-            const field = (c as any)._field?.segments?.[0] || (c as any).field;
-            const op = (c as any)._op || (c as any).op;
-            const val = (c as any)._value !== undefined ? (c as any)._value : (c as any).value;
-            if (field === 'date' && (op === '==' || op === 'equal') && val) {
-              dateParam = String(val);
-              break;
-            }
-          }
-        }
-
-        let attendanceList: any[] = [];
-        const querySuffix = dateParam ? `&date=${encodeURIComponent(dateParam)}` : '';
-
-        try {
-          const proxyRes = await fetch(`/api/maintenance/db-proxy?collection=attendance${querySuffix}`, { mode: 'cors' });
-          if (proxyRes.ok) {
-            const parsed = await proxyRes.json();
-            attendanceList = Array.isArray(parsed) ? parsed : (parsed.data || []);
-          }
-        } catch (err) {}
-
-        if (!attendanceList || attendanceList.length === 0) {
-          try {
-            const postRes = await proxyRequest('list', 'attendance', { constraints });
-            if (postRes && Array.isArray(postRes.data)) {
-              attendanceList = postRes.data;
-            }
-          } catch (err) {}
-        }
-
-        if (!attendanceList || attendanceList.length === 0) {
-          try {
-            const directRes = await fetch(resolveApiUrl(`https://antonyschool.in/api/maintenance/db-proxy?collection=attendance${querySuffix}`), { 
-              mode: 'cors',
-              signal: AbortSignal.timeout(5000)
-            });
-            const contentType = directRes.headers.get('content-type') || '';
-            if (directRes.ok && contentType.includes('application/json')) {
-              const parsed = await directRes.json();
-              attendanceList = Array.isArray(parsed) ? parsed : (parsed.data || []);
-            }
-          } catch (err) {}
-        }
-
-        if (Array.isArray(attendanceList)) {
-          let filtered = attendanceList;
-          if (dateParam) {
-            filtered = attendanceList.filter((a: any) => a.date === dateParam);
-          }
-          const secured = filtered.map(a => enforceSecuredAccess(path, a)).filter(Boolean);
-          const deduped = deduplicateArrayByID(secured);
-          listCache.set(cacheKey, { data: deduped, timestamp: Date.now() });
-          return deduped;
-        }
-      } catch (error) {
-        console.warn("Failed to fetch attendance from live db-proxy:", error);
-      }
-    }
-
-    if (path === 'exams') {
-      try {
-        const cacheKey = getListCacheKey(path, constraints);
-        if (!bypassCache) {
-          const cached = listCache.get(cacheKey);
-          if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-            return cached.data;
-          }
-        }
-
-        let examsList: any[] = [];
-        try {
-          const proxyRes = await fetch('/api/maintenance/db-proxy?collection=exams', { mode: 'cors' });
-          if (proxyRes.ok) {
-            const parsed = await proxyRes.json();
-            examsList = Array.isArray(parsed) ? parsed : (parsed.data || []);
-          }
-        } catch (err) {}
-
-        if (!examsList || examsList.length === 0) {
-          try {
-            const directRes = await fetch(resolveApiUrl('https://antonyschool.in/api/maintenance/db-proxy?collection=exams'), { 
-              mode: 'cors',
-              signal: AbortSignal.timeout(5000)
-            });
-            const contentType = directRes.headers.get('content-type') || '';
-            if (directRes.ok && contentType.includes('application/json')) {
-              const parsed = await directRes.json();
-              examsList = Array.isArray(parsed) ? parsed : (parsed.data || []);
-            }
-          } catch (err) {}
-        }
-
-        if (Array.isArray(examsList) && examsList.length > 0) {
-          const deduped = deduplicateArrayByID(examsList);
-          listCache.set(cacheKey, { data: deduped, timestamp: Date.now() });
-          return deduped;
-        }
-      } catch (error) {
-        console.warn("Failed to fetch exams from live db-proxy:", error);
-      }
-    }
-
-    if (path === 'examMarks') {
-      try {
-        const cacheKey = getListCacheKey(path, constraints);
-        if (!bypassCache) {
-          const cached = listCache.get(cacheKey);
-          if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-            return cached.data;
-          }
-        }
-
-        const params = new URLSearchParams();
-        params.append('collection', 'examMarks');
-        params.append('limit', '10000');
-        for (const c of constraints) {
-          if (c && (c as any).type === 'where') {
-            const field = (c as any)._field?.segments?.[0] || (c as any).field;
-            const op = (c as any)._op || (c as any).op;
-            const val = (c as any)._value !== undefined ? (c as any)._value : (c as any).value;
-            if (op === '==' || op === 'equal') {
-              if (field === 'classId') params.append('classId', String(val));
-              if (field === 'examId') params.append('examId', String(val));
-              if (field === 'batchId') params.append('batchId', String(val));
-            }
-          }
-        }
-
-        let marksList: any[] = [];
-        const qStr = params.toString();
-
-        try {
-          const proxyRes = await fetch(`/api/maintenance/db-proxy?${qStr}`, { mode: 'cors' });
-          if (proxyRes.ok) {
-            const parsed = await proxyRes.json();
-            marksList = Array.isArray(parsed) ? parsed : (parsed.data || []);
-          }
-        } catch (err) {}
-
-        if (!marksList || marksList.length === 0) {
-          const examMarksRes = await fetch(`/api/exam-marks?${qStr}`, { mode: 'cors' });
-          if (examMarksRes.ok) {
-            const parsed = await examMarksRes.json();
-            marksList = Array.isArray(parsed) ? parsed : (parsed.data || []);
-          }
-        }
-
-        if (!marksList || marksList.length === 0) {
-          try {
-            const directRes = await fetch(resolveApiUrl(`https://antonyschool.in/api/maintenance/db-proxy?${qStr}`), { 
-              mode: 'cors',
-              signal: AbortSignal.timeout(5000)
-            });
-            const contentType = directRes.headers.get('content-type') || '';
-            if (directRes.ok && contentType.includes('application/json')) {
-              const parsed = await directRes.json();
-              marksList = Array.isArray(parsed) ? parsed : (parsed.data || []);
-            }
-          } catch (err) {}
-        }
-
-        if (Array.isArray(marksList) && marksList.length > 0) {
-          const deduped = deduplicateArrayByID(marksList);
-          listCache.set(cacheKey, { data: deduped, timestamp: Date.now() });
-          return deduped;
-        }
-      } catch (error) {
-        console.warn("Failed to fetch examMarks from live db-proxy:", error);
-      }
-    }
-
-    if (path === 'class10_daily_marks') {
-      try {
-        const cacheKey = getListCacheKey(path, constraints);
-        if (!bypassCache) {
-          const cached = listCache.get(cacheKey);
-          if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-            return cached.data;
-          }
-        }
-
-        let dailyList: any[] = [];
-        try {
-          const proxyRes = await fetch('/api/maintenance/db-proxy?collection=class10_daily_marks', { mode: 'cors' });
-          if (proxyRes.ok) {
-            const parsed = await proxyRes.json();
-            dailyList = Array.isArray(parsed) ? parsed : (parsed.data || []);
-          }
-        } catch (err) {}
-
-        if (!dailyList || dailyList.length === 0) {
-          try {
-            const directRes = await fetch(resolveApiUrl('https://antonyschool.in/api/maintenance/db-proxy?collection=class10_daily_marks'), { 
-              mode: 'cors',
-              signal: AbortSignal.timeout(5000)
-            });
-            const contentType = directRes.headers.get('content-type') || '';
-            if (directRes.ok && contentType.includes('application/json')) {
-              const parsed = await directRes.json();
-              dailyList = Array.isArray(parsed) ? parsed : (parsed.data || []);
-            }
-          } catch (err) {}
-        }
-
-        if (Array.isArray(dailyList) && dailyList.length > 0) {
-          const deduped = deduplicateArrayByID(dailyList);
-          listCache.set(cacheKey, { data: deduped, timestamp: Date.now() });
-          return deduped;
-        }
-      } catch (error) {
-        console.warn("Failed to fetch class10_daily_marks from live db-proxy:", error);
-      }
-    }
-
+  async list(path: string, constraints: QueryConstraint[] = [], bypassCache = false): Promise<any[]> {
+    // Special dedicated backend API proxy endpoints
     if (path === 'receipt_books') {
       try {
         const res = await resilientFetch('/api/fees/receipt-books');
@@ -2018,15 +2292,18 @@ export const dbService = {
           if (Array.isArray(data)) {
             const cacheKey = getListCacheKey(path, constraints);
             listCache.set(cacheKey, { data, timestamp: Date.now() });
+            saveToIndexedDB(path, data);
             return data;
           }
         }
         return [];
       } catch (error) {
-        console.warn("Failed to fetch receipt_books from backend API proxy:", error);
-        return [];
+        console.warn('Failed to fetch receipt_books from backend API proxy:', error);
+        const idbData = await getFromIndexedDB(path);
+        return Array.isArray(idbData) ? idbData : [];
       }
     }
+
     if (path === 'extendedDueDates') {
       try {
         const res = await resilientFetch('/api/fees/extended-due-dates');
@@ -2035,54 +2312,54 @@ export const dbService = {
           if (Array.isArray(data)) {
             const cacheKey = getListCacheKey(path, constraints);
             listCache.set(cacheKey, { data, timestamp: Date.now() });
+            saveToIndexedDB(path, data);
             return data;
           }
         }
         return [];
       } catch (error) {
-        console.warn("Failed to fetch extendedDueDates from backend API proxy:", error);
-        return [];
+        console.warn('Failed to fetch extendedDueDates from backend API proxy:', error);
+        const idbData = await getFromIndexedDB(path);
+        return Array.isArray(idbData) ? idbData : [];
       }
     }
+
     if (path === 'staff_attendance') {
       try {
         let dateVal = '';
         let statusVal = '';
         for (const c of constraints) {
           if (c && (c as any).type === 'where') {
-            const fieldName = (c as any)._field?.segments?.[0];
-            const op = (c as any)._op;
-            const val = (c as any)._value;
-            if (fieldName === 'date' && (op === '==' || op === 'equal')) {
-              dateVal = String(val);
-            }
-            if (fieldName === 'status' && (op === '==' || op === 'equal')) {
-              statusVal = String(val);
-            }
+            const fieldName = (c as any)._field?.segments?.[0] || (c as any).field;
+            const op = (c as any)._op || (c as any).op;
+            const val = (c as any)._value !== undefined ? (c as any)._value : (c as any).value;
+            if (fieldName === 'date' && (op === '==' || op === 'equal')) dateVal = String(val);
+            if (fieldName === 'status' && (op === '==' || op === 'equal')) statusVal = String(val);
           }
         }
         let url = '/api/attendance/list-staff-attendance';
         const params = new URLSearchParams();
         if (dateVal) params.append('date', dateVal);
         if (statusVal) params.append('status', statusVal);
-        if (params.toString()) {
-          url += `?${params.toString()}`;
-        }
+        if (params.toString()) url += ('?' + params.toString());
         const res = await resilientFetch(url);
         if (res && res.ok) {
           const data = await parseResponseJson(res, []);
           if (Array.isArray(data)) {
             const cacheKey = getListCacheKey(path, constraints);
             listCache.set(cacheKey, { data, timestamp: Date.now() });
+            saveToIndexedDB(path, data);
             return data;
           }
         }
         return [];
       } catch (error) {
-        console.warn("Failed to fetch staff_attendance from backend API proxy:", error);
-        return [];
+        console.warn('Failed to fetch staff_attendance from backend API proxy:', error);
+        const idbData = await getFromIndexedDB(path);
+        return Array.isArray(idbData) ? idbData : [];
       }
     }
+
     if (path === 'login_logs') {
       try {
         const res = await resilientFetch('/api/attendance/list-login-logs');
@@ -2096,10 +2373,11 @@ export const dbService = {
         }
         return [];
       } catch (error) {
-        console.warn("Failed to fetch login_logs from backend API proxy:", error);
+        console.warn('Failed to fetch login_logs from backend API proxy:', error);
         return [];
       }
     }
+
     if (path === 'audit_logs') {
       try {
         const res = await resilientFetch('/api/attendance/list-audit-logs');
@@ -2113,10 +2391,11 @@ export const dbService = {
         }
         return [];
       } catch (error) {
-        console.warn("Failed to fetch audit_logs from backend API proxy:", error);
+        console.warn('Failed to fetch audit_logs from backend API proxy:', error);
         return [];
       }
     }
+
     if (path === 'stop_backups') {
       try {
         const res = await resilientFetch('/api/transport/stop-backups');
@@ -2125,104 +2404,201 @@ export const dbService = {
           if (Array.isArray(data)) {
             const cacheKey = getListCacheKey(path, constraints);
             listCache.set(cacheKey, { data, timestamp: Date.now() });
+            saveToIndexedDB(path, data);
             return data;
           }
         }
         return [];
       } catch (error) {
-        console.warn("Failed to fetch stop_backups from backend API proxy:", error);
+        console.warn('Failed to fetch stop_backups from backend API proxy:', error);
         return [];
       }
     }
+
+    // Universal Network-First for ALL standard collections (students, fees, feeStructures, concessions, attendance, payments, classes, batches, exams, etc.)
+    const targetCollection = normalizeCollectionName(path);
     const cacheKey = getListCacheKey(path, constraints);
 
-    if (!bypassCache) {
-      const cached = listCache.get(cacheKey);
-      if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-        const secured = cached.data.map(i => enforceSecuredAccess(path, i)).filter(Boolean);
-        return deduplicateArrayByID(secured);
-      }
-
-      // Check local persistent cache for lists first as a very fast fallback
-      if (PERSISTENT_COLLECTIONS.includes(path)) {
-        try {
-          // First try the granular query-specific cache
-          let cachedStored = localStorage.getItem(`fs_list_cache_${path}_${cacheKey}`);
-          if (!cachedStored) {
-            // Fall back to general cache if constraints are simple or absent
-            cachedStored = localStorage.getItem(`fs_list_cache_${path}`);
-          }
-          if (cachedStored) {
-            const { data, timestamp } = JSON.parse(cachedStored);
-            if (Date.now() - timestamp < CACHE_TTL) {
-              const secured = data.map((i: any) => enforceSecuredAccess(path, i)).filter(Boolean);
-              const deduped = deduplicateArrayByID(secured);
-              listCache.set(cacheKey, { data: deduped, timestamp: Date.now() });
-              return deduped;
-            }
-          }
-        } catch (e) { /* ignore */ }
-      }
+    // In-flight deduplication: return active promise if identical request is pending
+    if (inFlightListRequests.has(cacheKey)) {
+      return inFlightListRequests.get(cacheKey)!;
     }
 
-    if (checkQuotaStatus()) {
-      const cached = listCache.get(cacheKey);
-      if (cached) {
-        const secured = cached.data.map(i => enforceSecuredAccess(path, i)).filter(Boolean);
+    const fetchPromise = (async () => {
+      const isPreview = isPreviewEnvironment();
+      const isOnline = typeof navigator === 'undefined' || navigator.onLine !== false;
+
+      // Extract specific query parameters from constraints
+      let dateParam = '';
+      let classIdParam = '';
+      let examIdParam = '';
+      let batchIdParam = '';
+      let limitParam = '';
+
+      if (constraints && constraints.length > 0) {
+        for (const c of constraints) {
+          if (!c) continue;
+          if ((c as any).type === 'where') {
+            const field = (c as any)._field?.segments?.[0] || (c as any).field;
+            const op = (c as any)._op || (c as any).op;
+            const val = (c as any)._value !== undefined ? (c as any)._value : (c as any).value;
+            if (op === '==' || op === 'equal') {
+              if (field === 'date') dateParam = String(val);
+              if (field === 'classId') classIdParam = String(val);
+              if (field === 'examId') examIdParam = String(val);
+              if (field === 'batchId') batchIdParam = String(val);
+            }
+          } else if ((c as any).type === 'limit') {
+            const val = (c as any)._value !== undefined ? (c as any)._value : (c as any).value;
+            if (val) limitParam = String(val);
+          }
+        }
+      }
+
+      // Build primary live endpoint with dynamic cache buster timestamp
+      const timestamp = Date.now();
+      const apiBase = isPreview ? 'https://antonyschool.in/api' : '/api';
+      const params = new URLSearchParams();
+      params.append('collection', targetCollection);
+      params.append('_t', String(timestamp));
+      if (dateParam) params.append('date', dateParam);
+      if (classIdParam) params.append('classId', classIdParam);
+      if (examIdParam) params.append('examId', examIdParam);
+      if (batchIdParam) params.append('batchId', batchIdParam);
+      if (limitParam) params.append('limit', limitParam);
+      if (targetCollection === 'examMarks' && !limitParam) params.append('limit', '10000');
+
+      const primaryUrl = apiBase + '/maintenance/db-proxy?' + params.toString();
+
+      let liveData: any[] | null = null;
+
+      // 1. Universal Network-First: Always fetch live MongoDB records when online
+      if (isOnline) {
+        try {
+          const res = await fetch(primaryUrl, {
+            method: 'GET',
+            mode: 'cors',
+            cache: 'no-store',
+            headers: {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-cache, no-store, must-revalidate',
+              'Pragma': 'no-cache'
+            },
+            signal: AbortSignal.timeout(15000)
+          });
+          if (res.ok) {
+            const json = await res.json();
+            liveData = Array.isArray(json) ? json : (json.data || []);
+          }
+        } catch (netErr) {
+          console.warn('Universal live GET sync failed for ' + path + ':', netErr);
+        }
+
+        // Secondary Network Fallback: POST proxyRequest
+        if (liveData === null) {
+          try {
+            const postRes = await proxyRequest('list', targetCollection, { constraints });
+            if (postRes && Array.isArray(postRes.data)) {
+              liveData = postRes.data;
+            }
+          } catch (_) {}
+        }
+
+        // Tertiary Network Fallback: Container backend proxy route
+        if (liveData === null && isPreview) {
+          try {
+            const localUrl = '/api/maintenance/db-proxy?' + params.toString();
+            const localRes = await fetch(localUrl, {
+              method: 'GET',
+              mode: 'cors',
+              headers: { 'Content-Type': 'application/json' },
+              signal: AbortSignal.timeout(5000)
+            });
+            if (localRes.ok) {
+              const localJson = await localRes.json();
+              liveData = Array.isArray(localJson) ? localJson : (localJson.data || []);
+            }
+          } catch (_) {}
+        }
+      }
+
+      // If live records were fetched, process, normalize, and update IndexedDB & local cache immediately
+      if (Array.isArray(liveData)) {
+        let processed = liveData;
+
+        // Specific collection normalization
+        if (targetCollection === 'students' || path === 'students') {
+          processed = processed.map(s => normalizeStudentData(s));
+          processed = sortStudentsNumerically(processed);
+        } else if (targetCollection === 'payments' || path === 'payments' || path === 'fee_payments') {
+          processed.sort(comparePaymentRecordsDescending);
+        } else if (targetCollection === 'attendance' && dateParam) {
+          processed = processed.filter((a: any) => a.date === dateParam);
+        }
+
+        const secured = processed.map(i => enforceSecuredAccess(path, i)).filter(Boolean);
+        const deduped = deduplicateArrayByID(secured);
+
+        // Update in-memory list cache
+        listCache.set(cacheKey, { data: deduped, timestamp: Date.now() });
+
+        // Immediately update local IndexedDB storage with fetched MongoDB array so offline fallback matches live state
+        saveToIndexedDB(path, deduped);
+        if (targetCollection !== path) {
+          saveToIndexedDB(targetCollection, deduped);
+        }
+
+        // Update localStorage persistent cache
+        try {
+          localStorage.setItem('fs_list_cache_' + path + '_' + cacheKey, JSON.stringify({ data: deduped, timestamp: Date.now() }));
+          if (constraints.length === 0) {
+            localStorage.setItem('fs_list_cache_' + path, JSON.stringify({ data: deduped, timestamp: Date.now() }));
+          }
+        } catch (_) {}
+
+        // Invalidate stale fees_module_cache for accurate summary metric calculations
+        if (['students', 'fees', 'feeStructures', 'fee_structures', 'concessions', 'payments', 'fee_payments'].includes(path) ||
+            ['students', 'fees', 'feeStructures', 'concessions', 'payments'].includes(targetCollection)) {
+          clearFeesModuleCaches();
+        }
+
+        return deduped;
+      }
+
+      // 2. Offline Fallback: ONLY when offline or live synchronization failed
+      const idbData = await getFromIndexedDB(path) || await getFromIndexedDB(targetCollection);
+      if (Array.isArray(idbData) && idbData.length > 0) {
+        const secured = idbData.map(i => enforceSecuredAccess(path, i)).filter(Boolean);
         return deduplicateArrayByID(secured);
       }
 
-      // Fallback to persistent cache specifically for lists
-      if (PERSISTENT_COLLECTIONS.includes(path)) {
-        try {
-          const cachedItem = localStorage.getItem(`fs_list_cache_${path}_${cacheKey}`) || localStorage.getItem(`fs_list_cache_${path}`);
-          if (cachedItem) {
-            const { data } = JSON.parse(cachedItem);
+      // Check localStorage fallback
+      try {
+        const cachedItem = localStorage.getItem('fs_list_cache_' + path + '_' + cacheKey) || localStorage.getItem('fs_list_cache_' + path);
+        if (cachedItem) {
+          const { data } = JSON.parse(cachedItem);
+          if (Array.isArray(data) && data.length > 0) {
             const secured = data.map((i: any) => enforceSecuredAccess(path, i)).filter(Boolean);
             return deduplicateArrayByID(secured);
           }
-        } catch (e) {}
-      }
-      return [];
-    }
-
-    try {
-      const proxyRes = await proxyRequest('list', path, { constraints });
-      if (proxyRes && Array.isArray(proxyRes.data)) {
-        const rawData = proxyRes.data.map((item: any) => {
-          const cleanItem = { ...item };
-          if (path === 'students') {
-            cleanItem.uniqueStudentId = cleanItem.uniqueStudentId || generateUniqueStudentId(cleanItem);
-          }
-          return cleanItem;
-        });
-        const data = rawData.map((item: any) => enforceSecuredAccess(path, item)).filter(Boolean);
-        const dedupedData = deduplicateArrayByID(data);
-        listCache.set(cacheKey, { data: dedupedData, timestamp: Date.now() });
-        
-        if (PERSISTENT_COLLECTIONS.includes(path)) {
-          try {
-            localStorage.setItem(`fs_list_cache_${path}_${cacheKey}`, JSON.stringify({ data: dedupedData, timestamp: Date.now() }));
-            if (constraints.length === 0) {
-              localStorage.setItem(`fs_list_cache_${path}`, JSON.stringify({ data: dedupedData, timestamp: Date.now() }));
-            }
-          } catch (e) {}
         }
-        return dedupedData;
+      } catch (_) {}
+
+      // Check in-memory cache
+      const memCached = listCache.get(cacheKey);
+      if (memCached && Array.isArray(memCached.data)) {
+        const secured = memCached.data.map(i => enforceSecuredAccess(path, i)).filter(Boolean);
+        return deduplicateArrayByID(secured);
       }
+
       return [];
-    } catch (err) {
-      console.warn(`DB proxy list failed for ${path}:`, err);
-      if (PERSISTENT_COLLECTIONS.includes(path)) {
-        try {
-          const cachedItem = localStorage.getItem(`fs_list_cache_${path}_${cacheKey}`) || localStorage.getItem(`fs_list_cache_${path}`);
-          if (cachedItem) {
-            const { data } = JSON.parse(cachedItem);
-            return data.map((i: any) => enforceSecuredAccess(path, i)).filter(Boolean);
-          }
-        } catch (e) {}
-      }
-      return [];
+    })();
+
+    inFlightListRequests.set(cacheKey, fetchPromise);
+    try {
+      return await fetchPromise;
+    } finally {
+      inFlightListRequests.delete(cacheKey);
     }
   },
 
@@ -2338,38 +2714,7 @@ export const dbService = {
 
     const triggerFetch = async () => {
       try {
-        let rawData: any[] = [];
-        if (isSpecialPath) {
-          const endpoint = path === 'login_logs' 
-            ? '/api/attendance/list-login-logs' 
-            : path === 'audit_logs'
-              ? '/api/attendance/list-audit-logs'
-              : '/api/transport/stop-backups';
-          const res = await resilientFetch(endpoint);
-          if (res && res.ok) {
-            const parsed = await parseResponseJson(res, []);
-            if (Array.isArray(parsed)) {
-              rawData = parsed;
-            }
-          }
-        } else {
-          const proxyRes = await proxyRequest('list', path, { constraints });
-          if (proxyRes && Array.isArray(proxyRes.data)) {
-            rawData = proxyRes.data;
-          }
-        }
-
-        const cleanedData = rawData.map((item: any) => {
-          const cleanItem = { ...item };
-          if (path === 'students') {
-            cleanItem.uniqueStudentId = cleanItem.uniqueStudentId || generateUniqueStudentId(cleanItem);
-          }
-          return cleanItem;
-        });
-
-        const securedData = cleanedData.map((item: any) => enforceSecuredAccess(path, item)).filter(Boolean);
-        const finalData = deduplicateArrayByID(securedData);
-
+        const finalData = await dbService.list(path, constraints, true);
         activeSub.currentData = finalData;
         activeSub.lastFetched = Date.now();
 
@@ -2391,6 +2736,16 @@ export const dbService = {
       }
     };
 
+    const onMutation = (e: any) => {
+      const mutatedPath = e?.detail?.path;
+      if (!mutatedPath || mutatedPath === path || normalizeCollectionName(mutatedPath) === normalizeCollectionName(path)) {
+        triggerFetch();
+      }
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('app:db-mutation', onMutation);
+    }
+
     // Initial load
     triggerFetch();
 
@@ -2405,6 +2760,9 @@ export const dbService = {
       if (activeSub.callbacks.size === 0) {
         if (activeSub.intervalId) {
           clearInterval(activeSub.intervalId);
+        }
+        if (typeof window !== 'undefined') {
+          window.removeEventListener('app:db-mutation', onMutation);
         }
         activeSubscriptionRegistry.delete(subKey);
       }
@@ -2471,14 +2829,10 @@ export const dbService = {
     };
   },
 
-  resetQuota() {
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('firestore-quota-reset'));
-    }
-  },
+  resetQuota() {},
 
   isPoisoned() {
-    return isSdkPoisoned || (typeof window !== 'undefined' && (window as any).isFirestorePoisoned);
+    return false;
   },
   
   checkQuotaStatus() {

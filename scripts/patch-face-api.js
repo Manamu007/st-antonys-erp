@@ -21,26 +21,6 @@ const patches = [
     file: 'node_modules/face-api.js/dist/face-api.min.js',
     target: 'if(!o&&!r)throw new Error("Box.constructor - expected box to be IBoundingBox | IRect, instead have "+JSON.stringify(n));',
     replacement: 'if(!o&&!r){console.warn("[face-api.js] Box.constructor - invalid box coordinates, falling back to default dimensions:",JSON.stringify(n));n={left:0,top:0,right:100,bottom:100,x:0,y:0,width:100,height:100};r=!0;o=!0}'
-  },
-  {
-    file: 'node_modules/@firebase/firestore/dist/index.node.cjs.js',
-    target: '    recordTargetResponse() {\n        this.pendingResponses -= 1;\n        hardAssert(this.pendingResponses >= 0, 0x0ca9, { pendingResponses: this.pendingResponses });\n    }',
-    replacement: '    recordTargetResponse() {\n        this.pendingResponses = Math.max(0, this.pendingResponses - 1);\n        hardAssert(this.pendingResponses >= 0, 0x0ca9, { pendingResponses: this.pendingResponses });\n    }'
-  },
-  {
-    file: 'node_modules/@firebase/firestore/dist/index.esm2017.js',
-    target: 'this.ve -= 1, __PRIVATE_hardAssert(this.ve >= 0, 3241, {',
-    replacement: 'this.ve = Math.max(0, this.ve - 1), __PRIVATE_hardAssert(this.ve >= 0, 3241, {'
-  },
-  {
-    file: 'node_modules/@firebase/firestore/dist/index.cjs.js',
-    target: 'this.ve -= 1, __PRIVATE_hardAssert(this.ve >= 0, 3241, {',
-    replacement: 'this.ve = Math.max(0, this.ve - 1), __PRIVATE_hardAssert(this.ve >= 0, 3241, {'
-  },
-  {
-    file: 'node_modules/@firebase/firestore/dist/index.rn.js',
-    target: 'this.ve -= 1, __PRIVATE_hardAssert(this.ve >= 0, 3241, {',
-    replacement: 'this.ve = Math.max(0, this.ve - 1), __PRIVATE_hardAssert(this.ve >= 0, 3241, {'
   }
 ];
 
@@ -78,6 +58,30 @@ patches.forEach((patch) => {
     }
   }
 });
+
+// Ensure whatsapp-rust-bridge exports include require and main for Node/tsx CJS compatibility
+const rustBridgePkg = path.resolve(process.cwd(), 'node_modules/whatsapp-rust-bridge/package.json');
+if (fs.existsSync(rustBridgePkg)) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(rustBridgePkg, 'utf8'));
+    let changed = false;
+    if (!pkg.main) {
+      pkg.main = './dist/index.js';
+      changed = true;
+    }
+    if (pkg.exports && pkg.exports['.'] && !pkg.exports['.'].require) {
+      pkg.exports['.'].require = './dist/index.js';
+      pkg.exports['.'].default = './dist/index.js';
+      changed = true;
+    }
+    if (changed) {
+      fs.writeFileSync(rustBridgePkg, JSON.stringify(pkg, null, 2), 'utf8');
+      console.log('[Patch System] Successfully patched whatsapp-rust-bridge exports.');
+    }
+  } catch (err) {
+    console.warn('[Patch System] Could not patch whatsapp-rust-bridge:', err.message);
+  }
+}
 
 // Cleanup any corrupted or nested node_modules under @whiskeysockets/baileys to prevent ESM resolution breakage
 const baileysNestedModules = path.resolve(process.cwd(), 'node_modules/@whiskeysockets/baileys/node_modules');

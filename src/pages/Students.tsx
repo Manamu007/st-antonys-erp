@@ -25,14 +25,15 @@ import {
   Download,
   Calendar,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Hash
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { getTeacherAssignments, filterClassesForTeacher, filterBatchesForTeacher, filterStudentsForTeacher, checkIsTeacherAccount } from '../utils/teacherFilter';
 import { uploadService } from '../services/uploadService';
 import Papa from 'papaparse';
 import { ClassRecord, BatchRecord, FeeConcession } from '../types';
-import { normalizeUrl, getGravatarUrl, sortAlphabetically, resolveStudentClassAndBatch } from '../lib/utils';
+import { normalizeUrl, getGravatarUrl, sortAlphabetically, resolveStudentClassAndBatch, normalizeStudentGender, sortStudentsBySectionRules, calculateSectionRollNumbers } from '../lib/utils';
 import { isDemoStudentRecord, isKnownDemoName, DEVELOPER_ACCOUNTS } from '../constants/systemAccounts';
 import { purgeAllDemoDataFromDatabase } from '../services/demoDataPurgeService';
 import { calculateStudentFee, normalizeYear } from '../lib/feeUtils';
@@ -1147,8 +1148,11 @@ const Students: FC = () => {
         successCount++;
       }
 
-      toast.success(`${successCount} student profiles imported successfully!`);
+      toast.success(`${successCount} student profiles imported successfully! Auto-assigning roll numbers for affected sections...`);
       setShowImportPreview(false);
+      
+      // Automatically calculate and assign roll numbers based on school rules (Boys first ascending, Girls second ascending)
+      await autoAssignRollNumbersForClassBatch().catch(() => {});
       
       const freshStudents = await dbService.list('students');
       if (freshStudents) {
@@ -2229,81 +2233,122 @@ const Students: FC = () => {
     }
   };
  
+  const [isAssigningRolls, setIsAssigningRolls] = useState(false);
+
   const autoAssignRollNumbersForClassBatch = async (
-    classId: string,
-    batchId: string,
-    academicYear: string
+    classId?: string,
+    batchId?: string,
+    academicYear?: string
   ) => {
-    if (!classId || !batchId || !academicYear) return;
     try {
-      // Safely fetch all students in this class using simple single-property querying to prevent any compound index errors
-      const classStudents = await dbService.list('students', [
-        where('classId', '==', classId)
-      ]);
- 
-      if (!classStudents || classStudents.length === 0) return;
- 
-      // Filter in memory for batch, academic year, and active status
-      const targetStudents = classStudents.filter((s: any) => 
-        s.batchId === batchId && 
-        s.academicYear === academicYear && 
-        s.status === 'active'
-      );
- 
-      if (targetStudents.length === 0) return;
- 
-      // Separate into males and females
-      const males = targetStudents.filter((s: any) => (s.gender || 'male').toLowerCase() === 'male');
-      const females = targetStudents.filter((s: any) => (s.gender || 'male').toLowerCase() === 'female');
-      const others = targetStudents.filter((s: any) => {
-        const g = (s.gender || 'male').toLowerCase();
-        return g !== 'male' && g !== 'female';
+      // 1. Try server-side atomic auto-assignment
+      const res = await fetch('/api/students/auto-assign-roll-numbers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ classId, batchId, academicYear })
       });
- 
-      // Sort each group alphabetically by name
-      const sortByNameLocal = (list: any[]) => {
-        return [...list].sort((a, b) => {
-          const nameA = (a.name || `${a.firstName || ''} ${a.secondName || ''}`).trim();
-          const nameB = (b.name || `${b.firstName || ''} ${b.secondName || ''}`).trim();
-          return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
-        });
-      };
- 
-      const sortedMales = sortByNameLocal(males);
-      const sortedFemales = sortByNameLocal(females);
-      const sortedOthers = sortByNameLocal(others);
- 
-      // Males alphabetically first, then females alphabetically, then others alphabetically
-      const resolvedOrder = [...sortedMales, ...sortedFemales, ...sortedOthers];
- 
-      const updates: Promise<any>[] = [];
-      resolvedOrder.forEach((student: any, idx: number) => {
-        const expectedRollNo = String(idx + 1);
-        const sId = student.id || student.uid;
-        if (String(student.rollNumber) !== expectedRollNo || String(student.rollNo) !== expectedRollNo) {
-          student.rollNumber = expectedRollNo;
-          student.rollNo = expectedRollNo;
-          updates.push(
-            dbService.update('students', sId, {
-              rollNumber: expectedRollNo,
-              rollNo: expectedRollNo,
-              updatedAt: new Date().toISOString()
-            })
-          );
-          // Sync immediately to safety ref for instant local update consistency
-          recentlyUpdatedStudents.current[sId] = {
-            ...recentlyUpdatedStudents.current[sId],
-            rollNumber: expectedRollNo,
-            rollNo: expectedRollNo
-          };
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          globalCachedStudentsForSiblings = null;
+          await fetchStudents(true);
+          return data;
         }
-      });
- 
+      }
+    } catch (apiErr) {
+      console.warn("API auto-assign roll numbers failed, running client-side assignment:", apiErr);
+    }
+
+    try {
+      // 2. Client-side fallback assignment using sortStudentsBySectionRules
+      let targetStudents = [...students];
+      if (classId) {
+        targetStudents = targetStudents.filter(s => {
+          const res = resolveStudentClassAndBatch(s, classes, batches);
+          return res.classId === classId || s.classId === classId || s.class === classId;
+        });
+      }
+      if (batchId) {
+        targetStudents = targetStudents.filter(s => {
+          const res = resolveStudentClassAndBatch(s, classes, batches);
+          return res.batchId === batchId || s.batchId === batchId || s.batch === batchId;
+        });
+      }
+
+      const sectionMap = new Map<string, any[]>();
+      for (const s of targetStudents) {
+        if (!s || s.status === 'deleted') continue;
+        const res = resolveStudentClassAndBatch(s, classes, batches);
+        const secKey = `${res.classId || s.classId || s.class}:::${res.batchId || s.batchId || s.batch}`;
+        if (!sectionMap.has(secKey)) sectionMap.set(secKey, []);
+        sectionMap.get(secKey)!.push(s);
+      }
+
+      const updates: Array<{ id: string; data: any }> = [];
+      for (const [, list] of sectionMap.entries()) {
+        const ordered = sortStudentsBySectionRules(list);
+        ordered.forEach((student: any, idx: number) => {
+          const expectedRollNo = String(idx + 1);
+          const sId = student.id || student.uid;
+          if (!sId) return;
+          if (String(student.rollNumber || student.rollNo || '').trim() !== expectedRollNo) {
+            student.rollNumber = expectedRollNo;
+            student.rollNo = expectedRollNo;
+            updates.push({
+              id: sId,
+              data: {
+                rollNumber: expectedRollNo,
+                rollNo: expectedRollNo,
+                updatedAt: new Date().toISOString()
+              }
+            });
+            recentlyUpdatedStudents.current[sId] = {
+              ...recentlyUpdatedStudents.current[sId],
+              rollNumber: expectedRollNo,
+              rollNo: expectedRollNo
+            };
+          }
+        });
+      }
+
       if (updates.length > 0) {
-        await Promise.all(updates);
+        await dbService.updateBatch('students', updates);
+        setStudents(prev => {
+          const map = new Map(updates.map(u => [u.id, u.data]));
+          return prev.map(s => {
+            const upd = map.get(s.id || s.uid);
+            return upd ? { ...s, ...upd } : s;
+          });
+        });
       }
     } catch (err) {
       console.error("Error auto-assigning roll numbers: ", err);
+    }
+  };
+
+  const handleTriggerAutoAssignRollNumbers = async () => {
+    const isSectionFiltered = !!(filterClass && filterBatch);
+    const targetLabel = isSectionFiltered
+      ? `this section (${classes.find(c => c.id === filterClass)?.name || filterClass} - ${batches.find(b => b.id === filterBatch)?.name || filterBatch})`
+      : 'all sections across the school';
+
+    setIsAssigningRolls(true);
+    const toastId = toast.loading(`Auto-assigning roll numbers for ${targetLabel} (Boys 1st ascending, Girls 2nd ascending)...`);
+    try {
+      const result = await autoAssignRollNumbersForClassBatch(
+        isSectionFiltered ? filterClass : undefined,
+        isSectionFiltered ? filterBatch : undefined,
+        filterAcademicYear || undefined
+      );
+      toast.dismiss(toastId);
+      toast.success(
+        result?.message || `Successfully assigned roll numbers for ${targetLabel}! (Boys first ascending, Girls second ascending)`
+      );
+    } catch (err: any) {
+      toast.dismiss(toastId);
+      toast.error(`Roll number assignment error: ${err?.message || 'Please try again'}`);
+    } finally {
+      setIsAssigningRolls(false);
     }
   };
  
@@ -2823,7 +2868,7 @@ const Students: FC = () => {
     const hasFilters = !!(filterClass || filterBatch);
     console.log("[Students] fetchStudents called. filterClass:", filterClass, "filterBatch:", filterBatch, "filterAcademicYear:", filterAcademicYear, "isTeacherPortal:", isTeacherPortal);
     let showedCache = false;
-    if (!isSearching && !hasFilters && !isTeacherPortal && globalCachedStudentsForSiblings && globalCachedStudentsForSiblings.length > 0) {
+    if (!isSearching && !isTeacherPortal && globalCachedStudentsForSiblings && globalCachedStudentsForSiblings.length > 0) {
       setStudents(globalCachedStudentsForSiblings);
       showedCache = true;
     }
@@ -2874,22 +2919,26 @@ const Students: FC = () => {
           }
         }
       } else {
-        // If we are searching, we only apply class/batch filters if some search filter is explicitly selected.
-        const hasFiltersSet = !!(filterClass || filterBatch || filterAcademicYear);
-        if (!isSearching || hasFiltersSet) {
-          if (filterClass) constraints.push(where('classId', '==', filterClass));
-          if (filterBatch) constraints.push(where('batchId', '==', filterBatch));
-        }
+        // For admin / loose access:
+        // Do NOT add narrow where('classId', '==', filterClass) constraint here!
+        // Fetching the full student collection (up to 5000) guarantees every student is loaded in memory
+        // and instantly filtered client-side by isClassBatchMatch without dropping records due to DB mismatches.
       }
 
       // Status and sorting are handled smoothly without causing Firestore composite index requirements.
-      constraints.push(limit(5000)); // Raised to 5000 so we fetch all students matching the criteria for exact counts and pagination
+      constraints.push(limit(5000)); // Fetch all students matching criteria for exact counts and pagination
 
       let result;
       const updateStudentListState = async (res: any) => {
         if (!res) return;
         const fetched = res.data || [];
         
+        // Safety guard: if server returned 0 records but we already have students in state or cache, never wipe out the UI
+        if (fetched.length === 0 && ((students && students.length > 0) || (globalCachedStudentsForSiblings && globalCachedStudentsForSiblings.length > 0))) {
+          console.warn("[Students] Server returned 0 records, preserving existing loaded students");
+          return;
+        }
+
         // Resolve modified/updated values from the safety edits map
         const resolvedFetched = fetched.map((s: any) => {
           const id = s.id || s.uid;
@@ -2906,7 +2955,7 @@ const Students: FC = () => {
           const matchesClass = !shouldEnforceFilters || (!filterClass || s.classId === filterClass);
           const matchesBatch = !shouldEnforceFilters || (!filterBatch || s.batchId === filterBatch);
           const matchesAcademicYear = !shouldEnforceFilters || (!filterAcademicYear || s.academicYear === filterAcademicYear);
-          const matchesStatus = !shouldEnforceFilters || (normalizeStudentStatus(s.status) === activeTab);
+          const matchesStatus = !shouldEnforceFilters || (normalizeStudentStatus(s) === activeTab);
           const alreadyFetched = resolvedFetched.some((f: any) => f.id === s.id || f.uid === s.uid);
           
           const matchesSearch = !isSearching || 
@@ -2937,7 +2986,7 @@ const Students: FC = () => {
         }
         setStudents(finalStudentList);
 
-        if (!isSearching && !filterClass && !filterBatch && !isTeacherPortal) {
+        if (!isSearching && !isTeacherPortal) {
           globalCachedStudentsForSiblings = finalStudentList;
           setAllStudentsForSiblings(finalStudentList);
         }
@@ -2955,6 +3004,19 @@ const Students: FC = () => {
         if (result && result.data) {
           result.data.sort((a: any, b: any) => String(a.name || '').localeCompare(String(b.name || '')));
         }
+      }
+
+      // Robust fallback to direct /api/students route if proxy returned empty or null
+      if (!result || !result.data || result.data.length === 0) {
+        try {
+          const directRes = await fetch('/api/students');
+          if (directRes.ok) {
+            const directData = await directRes.json();
+            if (Array.isArray(directData) && directData.length > 0) {
+              result = { data: directData };
+            }
+          }
+        } catch (_) {}
       }
 
       if (result) {
@@ -3057,12 +3119,40 @@ const Students: FC = () => {
     const resolved = resolveStudentClassAndBatch(s, classes, batches);
 
     if (filterClass) {
-      const classMatches = resolved.classId === filterClass;
+      const selectedClass = classes.find((c: any) => c.id === filterClass || c.uid === filterClass) as any;
+      const normClass = (str: string) => String(str || '').toLowerCase().replace(/class|\s|[-_]/g, '');
+      const targetClassNorm = selectedClass ? normClass(selectedClass.name || selectedClass.id) : normClass(filterClass);
+      
+      const classMatches = resolved.classId === filterClass || 
+                           s.classId === filterClass || 
+                           s.class === filterClass ||
+                           (selectedClass && String(s.class || s.className || '').toLowerCase().trim() === String(selectedClass.name || '').toLowerCase().trim()) ||
+                           (targetClassNorm && (
+                             normClass(resolved.className) === targetClassNorm || 
+                             normClass(resolved.classId) === targetClassNorm ||
+                             normClass(s.class) === targetClassNorm || 
+                             normClass(s.className) === targetClassNorm || 
+                             normClass(s.classId) === targetClassNorm
+                           ));
       if (!classMatches) return false;
     }
 
     if (filterBatch) {
-      const batchMatches = resolved.batchId === filterBatch;
+      const selectedBatch = batches.find((b: any) => b.id === filterBatch || b.uid === filterBatch) as any;
+      const normBatch = (str: string) => String(str || '').toLowerCase().replace(/batch|section|class|\s|[-_]/g, '');
+      const targetBatchNorm = selectedBatch ? normBatch(selectedBatch.section || selectedBatch.name || selectedBatch.id) : normBatch(filterBatch);
+      const sBatchNorm = normBatch(s.batch || s.batchName);
+      const resolvedBatchNorm = normBatch(resolved.batchName || resolved.batchId);
+
+      const batchMatches = resolved.batchId === filterBatch || 
+                           s.batchId === filterBatch ||
+                           (targetBatchNorm && (sBatchNorm === targetBatchNorm || resolvedBatchNorm === targetBatchNorm)) ||
+                           (selectedBatch && (
+                             (s.batch && selectedBatch.section && String(s.batch).toLowerCase().trim() === String(selectedBatch.section).toLowerCase().trim()) ||
+                             (s.batch && selectedBatch.name && String(s.batch).toLowerCase().trim() === String(selectedBatch.name).toLowerCase().trim()) ||
+                             (Array.isArray(selectedBatch.aliases) && s.batch && selectedBatch.aliases.some((a: string) => a.toLowerCase().trim() === String(s.batch).toLowerCase().trim())) ||
+                             (selectedBatch.section && s.batch && String(s.batch).toLowerCase().trim().includes(String(selectedBatch.section).toLowerCase().trim()))
+                           ));
       if (!batchMatches) return false;
     }
 
@@ -3075,7 +3165,7 @@ const Students: FC = () => {
       if (!isClassBatchMatch(s)) return false;
 
       // Classify and filter by activeTab status client-side using robust normalization
-      const sStatus = normalizeStudentStatus(s.status);
+      const sStatus = normalizeStudentStatus(s);
       if ((isTeacherPortal || isTeacherRole) && sStatus !== 'active') return false;
 
       const shouldEnforceStatus = !(isTeacherPortal || isTeacherRole);
@@ -3093,7 +3183,8 @@ const Students: FC = () => {
     // Group active target year students by normalized name to safely deduplicate stubs without merging different real students sharing the same name
     const nameGroups = new Map<string, any[]>();
     rawFiltered.forEach(s => {
-      const normName = (s.name || '').toLowerCase().trim().replace(/\s+/g, ' ');
+      const sFullName = (s.name || `${s.firstName || ''} ${s.secondName || s.lastName || ''}`).trim();
+      const normName = sFullName.toLowerCase().replace(/\s+/g, ' ') || s.id || s.uid;
       if (!normName) return;
       if (!nameGroups.has(normName)) {
         nameGroups.set(normName, []);
@@ -3191,15 +3282,15 @@ const Students: FC = () => {
   }, [students, searchTerm, classes, batches, filterAcademicYear, activeTab, isClassBatchMatch]);
 
   const activeCount = React.useMemo(() => {
-    return students.filter(s => getFilterMatch(s) && isClassBatchMatch(s) && normalizeStudentStatus(s.status) === 'active' && (!filterAcademicYear || normalizeYear(s.academicYear || '') === normalizeYear(filterAcademicYear))).length;
+    return students.filter(s => getFilterMatch(s) && isClassBatchMatch(s) && normalizeStudentStatus(s) === 'active' && (!filterAcademicYear || normalizeYear(s.academicYear || '') === normalizeYear(filterAcademicYear))).length;
   }, [students, searchTerm, filterAcademicYear, classes, batches, isClassBatchMatch]);
 
   const nonAttendingCount = React.useMemo(() => {
-    return students.filter(s => getFilterMatch(s) && isClassBatchMatch(s) && normalizeStudentStatus(s.status) === 'non_attending' && (!filterAcademicYear || normalizeYear(s.academicYear || '') === normalizeYear(filterAcademicYear))).length;
+    return students.filter(s => getFilterMatch(s) && isClassBatchMatch(s) && normalizeStudentStatus(s) === 'non_attending' && (!filterAcademicYear || normalizeYear(s.academicYear || '') === normalizeYear(filterAcademicYear))).length;
   }, [students, searchTerm, filterAcademicYear, classes, batches, isClassBatchMatch]);
 
   const inactiveCount = React.useMemo(() => {
-    return students.filter(s => getFilterMatch(s) && isClassBatchMatch(s) && normalizeStudentStatus(s.status) === 'inactive' && (!filterAcademicYear || normalizeYear(s.academicYear || '') === normalizeYear(filterAcademicYear))).length;
+    return students.filter(s => getFilterMatch(s) && isClassBatchMatch(s) && normalizeStudentStatus(s) === 'inactive' && (!filterAcademicYear || normalizeYear(s.academicYear || '') === normalizeYear(filterAcademicYear))).length;
   }, [students, searchTerm, filterAcademicYear, classes, batches, isClassBatchMatch]);
 
   const sortedList = [...filteredList].sort((a, b) => {
@@ -3209,8 +3300,30 @@ const Students: FC = () => {
       valA = a.name || '';
       valB = b.name || '';
     } else if (sortField === 'rollNumber') {
-      valA = a.rollNumber || a.rollNo || '';
-      valB = b.rollNumber || b.rollNo || '';
+      const rollA = String(a.rollNumber || a.rollNo || '').trim();
+      const rollB = String(b.rollNumber || b.rollNo || '').trim();
+      const numA = rollA ? parseInt(rollA, 10) : NaN;
+      const numB = rollB ? parseInt(rollB, 10) : NaN;
+      if (!isNaN(numA) && !isNaN(numB) && numA !== numB) {
+        return sortOrder === 'asc' ? numA - numB : numB - numA;
+      }
+      if (!isNaN(numA) && isNaN(numB)) return sortOrder === 'asc' ? -1 : 1;
+      if (isNaN(numA) && !isNaN(numB)) return sortOrder === 'asc' ? 1 : -1;
+
+      // Tie breaker according to section rule: Male students appear first ascending by name, then Female students ascending
+      const gA = normalizeStudentGender(a.gender);
+      const gB = normalizeStudentGender(b.gender);
+      if (gA !== gB) {
+        const orderMap = { male: 1, female: 2, other: 3 };
+        const diff = (orderMap[gA] || 3) - (orderMap[gB] || 3);
+        return sortOrder === 'asc' ? diff : -diff;
+      }
+      const nameComp = (a.name || `${a.firstName || ''} ${a.secondName || ''}`).trim().localeCompare(
+        (b.name || `${b.firstName || ''} ${b.secondName || ''}`).trim(),
+        undefined,
+        { numeric: true, sensitivity: 'base' }
+      );
+      return sortOrder === 'asc' ? nameComp : -nameComp;
     } else if (sortField === 'class') {
       valA = (classes.find(c => c.id === a?.classId)?.name || '') + ' ' + (batches.find(bat => bat.id === a?.batchId)?.name || a?.batch || '');
       valB = (classes.find(c => c.id === b?.classId)?.name || '') + ' ' + (batches.find(bat => bat.id === b?.batchId)?.name || b?.batch || '');
@@ -3242,8 +3355,15 @@ const Students: FC = () => {
   
   const availableBatches = batches.filter(b => {
     const classId = b.classId || (b as any).class_id || '';
-    const isVisibleInClass = !filterClass || (classId === filterClass) || 
-                             ((classes.find(c => c.id === filterClass)?.name || '') === (b as any).class);
+    const selectedClass = classes.find(c => c.id === filterClass || (c as any).uid === filterClass);
+    const selectedClassName = selectedClass?.name || '';
+    const norm = (str: string) => String(str || '').toLowerCase().replace(/class|\s|[-_]/g, '');
+    const isVisibleInClass = !filterClass || 
+                             (classId === filterClass) || 
+                             ((selectedClass?.name || '') === (b as any).class) ||
+                             (selectedClassName && b.className && selectedClassName.toLowerCase().trim() === b.className.toLowerCase().trim()) ||
+                             (selectedClassName && norm(selectedClassName) === norm(b.className || (b as any).class || b.classId || '')) ||
+                             (selectedClassName && b.id && b.id.toLowerCase().startsWith(selectedClassName.toLowerCase().trim()));
 
     if (!isTeacherPortal) return isVisibleInClass;
     const isAssignedBatch = b.id && (teacherBatchIds.current.includes(b.id) || teacherBatchIds.current.includes((b as any).name) || b.classTeacherId === profile?.uid);
@@ -3253,8 +3373,15 @@ const Students: FC = () => {
 
   const exportAvailableBatches = batches.filter(b => {
     const classId = b.classId || (b as any).class_id || '';
-    const isVisibleInClass = !exportFilters.classId || (classId === exportFilters.classId) || 
-                             ((classes.find(c => c.id === exportFilters.classId)?.name || '') === (b as any).class);
+    const selectedClass = classes.find(c => c.id === exportFilters.classId || (c as any).uid === exportFilters.classId);
+    const selectedClassName = selectedClass?.name || '';
+    const norm = (str: string) => String(str || '').toLowerCase().replace(/class|\s|[-_]/g, '');
+    const isVisibleInClass = !exportFilters.classId || 
+                             (classId === exportFilters.classId) || 
+                             ((selectedClass?.name || '') === (b as any).class) ||
+                             (selectedClassName && b.className && selectedClassName.toLowerCase().trim() === b.className.toLowerCase().trim()) ||
+                             (selectedClassName && norm(selectedClassName) === norm(b.className || (b as any).class || b.classId || '')) ||
+                             (selectedClassName && b.id && b.id.toLowerCase().startsWith(selectedClassName.toLowerCase().trim()));
 
     if (!isTeacherPortal) return isVisibleInClass;
     const isAssignedBatch = b.id && (teacherBatchIds.current.includes(b.id) || teacherBatchIds.current.includes((b as any).name) || b.classTeacherId === profile?.uid);
@@ -3352,6 +3479,17 @@ const Students: FC = () => {
               >
                 <RefreshCw className="w-3.5 h-3.5 text-neutral-500" />
                 <span>Refresh Data</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleTriggerAutoAssignRollNumbers}
+                disabled={isAssigningRolls}
+                title="Automatically assign roll numbers for this section or all sections (Male students 1st in ascending order, then Female students in ascending order)"
+                className="bg-indigo-50 border border-indigo-200/70 hover:bg-indigo-100 text-indigo-700 shadow-sm rounded-2xl text-[13px] font-bold px-4 py-2 flex items-center gap-1.5 transition-all disabled:opacity-50 active:scale-95"
+              >
+                <Hash className={`w-3.5 h-3.5 text-indigo-600 ${isAssigningRolls ? 'animate-spin' : ''}`} />
+                <span>{isAssigningRolls ? 'Assigning...' : (filterClass && filterBatch ? 'Assign Section Rolls' : 'Auto-Assign Rolls')}</span>
               </button>
 
               <button

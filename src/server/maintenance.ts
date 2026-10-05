@@ -16,7 +16,7 @@ import {
   setBatchDocuments,
   updateBatchDocuments,
   invalidateCollectionCache
-} from "./firestoreService.js";
+} from "./mongoDocService.js";
 import crypto from "crypto";
 
 const router = Router();
@@ -339,7 +339,7 @@ const invalidateProxyCache = (colPath: string) => {
 
 
 async function forwardToLiveProxy(operation: string, colPath: string, id: any, data: any, constraints: any, body: any): Promise<{ status?: number; json: any }> {
-  const isProdVPS = (process.env.APP_URL || '').includes('antonyschool.in') || process.env.DISABLE_PROXY_FORWARD === 'true';
+  const isProdVPS = (process.env.APP_URL || '').includes('antonyschool.in');
   if (isProdVPS) {
     if (operation === "list") {
       return { status: 200, json: { success: true, data: [] } };
@@ -349,6 +349,14 @@ async function forwardToLiveProxy(operation: string, colPath: string, id: any, d
     }
     return { status: 200, json: { success: true, data: null } };
   }
+  const isLogCol = typeof colPath === 'string' && (colPath.includes('log') || colPath.includes('audit') || colPath.includes('activit'));
+  if (isLogCol) {
+    if (operation === "list") return { status: 200, json: { success: true, data: [] } };
+    if (operation === "count") return { status: 200, json: { success: true, count: 0 } };
+    if (operation === "get") return { status: 200, json: { success: true, data: null } };
+    return { status: 200, json: { success: true, id: id || 'ok' } };
+  }
+  const timeoutMs = 12000;
   try {
     const vpsRes = await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
       method: "POST",
@@ -364,14 +372,17 @@ async function forwardToLiveProxy(operation: string, colPath: string, id: any, d
         constraints,
         ...body
       }),
-      signal: AbortSignal.timeout(1500)
+      signal: AbortSignal.timeout(timeoutMs)
     });
     if (vpsRes.ok) {
       const vpsData = await vpsRes.json();
       return { status: vpsRes.status, json: vpsData };
     }
   } catch (vpsErr: any) {
-    console.warn("[Maintenance] Live antonyschool.in proxy forwarding notice:", vpsErr?.message || vpsErr);
+    const isAbort = vpsErr?.name === 'AbortError' || String(vpsErr?.message || '').toLowerCase().includes('abort') || String(vpsErr?.message || '').toLowerCase().includes('timeout');
+    if (!isLogCol && !isAbort) {
+      console.warn("[Maintenance] Live antonyschool.in proxy forwarding notice:", vpsErr?.message || vpsErr);
+    }
   }
 
   // Graceful fallback for read operations so the client never encounters a 500 error or abort loop
@@ -404,7 +415,81 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
           if (!c) continue;
           if (c.type === "where") {
             let op = c.op;
-            if (c.field === "id" && (op === "equal" || op === "==")) {
+            if (colPath === "students" && c.field === "classId" && (op === "equal" || op === "==")) {
+              const val = String(c.value || '');
+              const normClass = val.replace(/_Class_Class$/, ' Class').replace(/_Class$/, '');
+              const orClass = Array.from(new Set([val, normClass, val.replace(/_/g, ' ')].filter(Boolean)));
+              const classCond = {
+                $or: [
+                  { classId: { $in: orClass } },
+                  { class: { $in: orClass } },
+                  { className: { $in: orClass } }
+                ]
+              };
+              if (filter.$or) {
+                if (!filter.$and) filter.$and = [{ $or: filter.$or }];
+                delete filter.$or;
+                filter.$and.push(classCond);
+              } else if (filter.$and) {
+                filter.$and.push(classCond);
+              } else {
+                filter.$or = classCond.$or;
+              }
+            } else if (colPath === "students" && c.field === "batchId" && (op === "equal" || op === "==")) {
+              const val = String(c.value || '');
+              const parts = val.split('_');
+              const sec = parts[1] || val;
+              const nameWithBatch = sec.replace('-', ' ') + ' Batch';
+              const nameSimple = sec.replace('-', ' ');
+              const orBatch = Array.from(new Set([val, sec, nameWithBatch, nameSimple, sec.toLowerCase(), val.toLowerCase()].filter(Boolean)));
+              const batchCond = {
+                $or: [
+                  { batchId: { $in: orBatch } },
+                  { batch: { $in: orBatch } },
+                  { batchName: { $in: orBatch } },
+                  { section: { $in: orBatch } }
+                ]
+              };
+              if (filter.$or) {
+                if (!filter.$and) filter.$and = [{ $or: filter.$or }];
+                delete filter.$or;
+                filter.$and.push(batchCond);
+              } else if (filter.$and) {
+                filter.$and.push(batchCond);
+              } else {
+                filter.$or = batchCond.$or;
+              }
+            } else if (colPath === "students" && c.field === "batchId" && op === "in" && Array.isArray(c.value)) {
+              const allBatchTerms: string[] = [];
+              c.value.forEach((v: string) => {
+                const str = String(v || '');
+                allBatchTerms.push(str);
+                const parts = str.split('_');
+                if (parts[1]) {
+                  allBatchTerms.push(parts[1]);
+                  allBatchTerms.push(parts[1].replace('-', ' '));
+                  allBatchTerms.push(parts[1].replace('-', ' ') + ' Batch');
+                }
+              });
+              const uniqueTerms = Array.from(new Set(allBatchTerms.filter(Boolean)));
+              const inBatchCond = {
+                $or: [
+                  { batchId: { $in: uniqueTerms } },
+                  { batch: { $in: uniqueTerms } },
+                  { batchName: { $in: uniqueTerms } },
+                  { section: { $in: uniqueTerms } }
+                ]
+              };
+              if (filter.$or) {
+                if (!filter.$and) filter.$and = [{ $or: filter.$or }];
+                delete filter.$or;
+                filter.$and.push(inBatchCond);
+              } else if (filter.$and) {
+                filter.$and.push(inBatchCond);
+              } else {
+                filter.$or = inBatchCond.$or;
+              }
+            } else if (c.field === "id" && (op === "equal" || op === "==")) {
               filter.$or = [{ id: c.value }, { uid: c.value }];
             } else if (op === "equal" || op === "==") {
               filter[c.field] = c.value;
@@ -481,22 +566,6 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
         }
       }
 
-      if (colPath === 'payments' || colPath === 'fees') {
-        try {
-          const firestoreDocs = await listDocuments(colPath, constraints);
-          if (firestoreDocs && firestoreDocs.length > 0) {
-            const seenIds = new Set(result.map((d: any) => d.id || d.uid));
-            for (const fd of firestoreDocs) {
-              const fid = fd.id || fd.uid;
-              if (fid && !seenIds.has(fid)) {
-                seenIds.add(fid);
-                result.push(fd);
-              }
-            }
-          }
-        } catch (_) {}
-      }
-
       if (result.length > 0) {
         return { json: { success: true, data: result } };
       }
@@ -505,23 +574,15 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
       try {
         const vpsRes = await forwardToLiveProxy(operation, colPath, id, data, constraints, body);
         if (vpsRes.json && Array.isArray(vpsRes.json.data) && vpsRes.json.data.length > 0) {
-          return vpsRes;
-        }
-      } catch (_) {}
-
-      // Secondary fallback to Cloud Firestore
-      try {
-        const firestoreDocs = await listDocuments(colPath, constraints);
-        if (firestoreDocs && firestoreDocs.length > 0) {
           // Asynchronously cache into Mongo so future queries resolve in milliseconds
           try {
-            const docsToInsert = firestoreDocs.map((d: any) => ({
+            const docsToInsert = vpsRes.json.data.map((d: any) => ({
               ...d,
               _id: d.id || d.uid || d._id
             }));
             col.insertMany(docsToInsert, { ordered: false }).catch(() => {});
           } catch (_) {}
-          return { json: { success: true, data: firestoreDocs } };
+          return vpsRes;
         }
       } catch (_) {}
 
@@ -535,7 +596,31 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
           if (!c) continue;
           if (c.type === "where") {
             let op = c.op;
-            if (op === "equal" || op === "==") filter[c.field] = c.value;
+            if (colPath === "students" && c.field === "classId" && (op === "equal" || op === "==")) {
+              const val = String(c.value || '');
+              const normClass = val.replace(/_Class_Class$/, ' Class').replace(/_Class$/, '');
+              const orClass = Array.from(new Set([val, normClass, val.replace(/_/g, ' ')].filter(Boolean)));
+              filter.$or = [
+                { classId: { $in: orClass } },
+                { class: { $in: orClass } },
+                { className: { $in: orClass } }
+              ];
+            } else if (colPath === "students" && c.field === "batchId" && (op === "equal" || op === "==")) {
+              const val = String(c.value || '');
+              const parts = val.split('_');
+              const sec = parts[1] || val;
+              const nameWithBatch = sec.replace('-', ' ') + ' Batch';
+              const nameSimple = sec.replace('-', ' ');
+              const orBatch = Array.from(new Set([val, sec, nameWithBatch, nameSimple, sec.toLowerCase(), val.toLowerCase()].filter(Boolean)));
+              filter.$or = [
+                { batchId: { $in: orBatch } },
+                { batch: { $in: orBatch } },
+                { batchName: { $in: orBatch } },
+                { section: { $in: orBatch } }
+              ];
+            } else if (op === "equal" || op === "==") {
+              filter[c.field] = c.value;
+            }
           }
         }
       }
@@ -670,7 +755,6 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
       const docId = id || crypto.randomUUID();
       const newDoc = { ...data, id: docId, uid: docId, createdAt: new Date().toISOString() };
       await col.insertOne(newDoc);
-      setDocument(colPath, docId, newDoc, { merge: true }).catch(err => console.warn(`[Firestore Dual-Write Notice] ${colPath}/${docId}:`, err?.message || err));
       forwardToLiveProxy(operation, colPath, docId, data, constraints, body).catch(() => {});
       return { json: { success: true, id: docId } };
     }
@@ -684,7 +768,6 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
       } else {
         await col.insertOne(cleaned);
       }
-      setDocument(colPath, docId, cleaned, { merge: true }).catch(err => console.warn(`[Firestore Dual-Write Notice] ${colPath}/${docId}:`, err?.message || err));
       forwardToLiveProxy(operation, colPath, docId, cleaned, constraints, body).catch(() => {});
       return { json: { success: true, id: docId } };
     }
@@ -698,7 +781,6 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
       } else {
         await col.insertOne({ ...data, id: docId, uid: docId, updatedAt: new Date().toISOString() });
       }
-      updateDocument(colPath, docId, data).catch(err => console.warn(`[Firestore Dual-Write Notice] ${colPath}/${docId}:`, err?.message || err));
       forwardToLiveProxy(operation, colPath, docId, data, constraints, body).catch(() => {});
       return { json: { success: true, id: docId } };
     }
@@ -706,7 +788,6 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
     if (operation === "delete") {
       if (!id) return { status: 400, json: { error: "Missing document id" } };
       await col.deleteOne({ $or: [{ id: id }, { uid: id }] });
-      deleteDocument(colPath, id).catch(() => {});
       forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
       return { json: { success: true } };
     }
@@ -810,49 +891,49 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
     } catch (_) {}
   }
 
-  // Write operations write directly to Firestore (or local Mongo if connected)
+  // Write operations: Forward to live MongoDB proxy on antonyschool.in first
   if (operation === "add") {
-    const docId = id || data?.id || data?.uid;
-    const res = await addDocument(colPath, { ...data, id: docId, uid: docId });
-    forwardToLiveProxy(operation, colPath, res.id, data, constraints, body).catch(() => {});
-    return { status: 200, json: { success: true, id: res.id } };
+    const docId = id || data?.id || data?.uid || crypto.randomUUID();
+    const vpsRes = await forwardToLiveProxy(operation, colPath, docId, data, constraints, body);
+    addDocument(colPath, { ...data, id: docId, uid: docId }).catch(() => {});
+    return { status: 200, json: vpsRes.json?.success ? vpsRes.json : { success: true, id: docId } };
   }
 
   if (operation === "set") {
     const docId = id || data?.id || data?.uid;
     if (!docId) return { status: 400, json: { error: "Missing document id" } };
-    const res = await setDocument(colPath, docId, data, { merge: true });
-    forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
-    return { status: 200, json: { success: true, id: res.id } };
+    const vpsRes = await forwardToLiveProxy(operation, colPath, docId, data, constraints, body);
+    setDocument(colPath, docId, data, { merge: true }).catch(() => {});
+    return { status: 200, json: vpsRes.json?.success ? vpsRes.json : { success: true, id: docId } };
   }
 
   if (operation === "update") {
     const docId = id || data?.id || data?.uid;
     if (!docId) return { status: 400, json: { error: "Missing document id" } };
-    const res = await updateDocument(colPath, docId, data);
-    forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
-    return { status: 200, json: { success: true, id: res.id } };
+    const vpsRes = await forwardToLiveProxy(operation, colPath, docId, data, constraints, body);
+    updateDocument(colPath, docId, data).catch(() => {});
+    return { status: 200, json: vpsRes.json?.success ? vpsRes.json : { success: true, id: docId } };
   }
 
   if (operation === "delete") {
     if (!id) return { status: 400, json: { error: "Missing document id" } };
-    await deleteDocument(colPath, id);
-    forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
-    return { status: 200, json: { success: true } };
+    const vpsRes = await forwardToLiveProxy(operation, colPath, id, data, constraints, body);
+    deleteDocument(colPath, id).catch(() => {});
+    return { status: 200, json: vpsRes.json?.success ? vpsRes.json : { success: true } };
   }
 
   if (operation === "deleteBatch") {
     const ids = body.ids || [];
-    await deleteBatchDocuments(colPath, ids);
-    forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
-    return { status: 200, json: { success: true } };
+    const vpsRes = await forwardToLiveProxy(operation, colPath, id, data, constraints, body);
+    deleteBatchDocuments(colPath, ids).catch(() => {});
+    return { status: 200, json: vpsRes.json?.success ? vpsRes.json : { success: true } };
   }
 
   if (operation === "setBatch" || operation === "updateBatch") {
     const items = body.items || [];
-    await setBatchDocuments(colPath, items);
-    forwardToLiveProxy(operation, colPath, id, data, constraints, body).catch(() => {});
-    return { status: 200, json: { success: true } };
+    const vpsRes = await forwardToLiveProxy(operation, colPath, id, data, constraints, body);
+    setBatchDocuments(colPath, items).catch(() => {});
+    return { status: 200, json: vpsRes.json?.success ? vpsRes.json : { success: true } };
   }
 
   // If local Cloud Firestore returned empty or null, try live antonyschool.in VPS db-proxy as secondary fallback
@@ -940,7 +1021,7 @@ router.get("/db-proxy", async (req, res) => {
     const targetBatch = (batch || batchId) as string;
     const targetDate = (date as string);
 
-    if (targetExam) {
+    if (targetExam && colPath !== "exams") {
       constraints.push({ type: "where", field: "examId", op: "==", value: targetExam });
     }
     if (targetClass) {
@@ -969,7 +1050,11 @@ router.get("/db-proxy", async (req, res) => {
     if (handlerRes.json && Array.isArray(handlerRes.json.data)) {
       let data = handlerRes.json.data;
       if (targetExam) {
-        data = data.filter((d: any) => d.examId === targetExam);
+        if (colPath === "exams") {
+          data = data.filter((d: any) => d.id === targetExam || d.title === targetExam || d.uid === targetExam);
+        } else {
+          data = data.filter((d: any) => d.examId === targetExam);
+        }
       }
       if (targetClass) {
         data = data.filter((d: any) => d.classId === targetClass);

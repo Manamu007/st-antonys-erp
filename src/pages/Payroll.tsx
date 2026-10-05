@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { CreditCard, Search, Plus, Filter, Download, FileText, Send, CheckCircle2, Bot, Calendar, UserPlus, Receipt, X, Printer, Eye, Trash2, Lock } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { dbService, where, orderBy, limit as firestoreLimit } from '../services/dbService';
+import { dbService, where, orderBy, limit as queryLimit } from '../services/dbService';
 import { toast } from 'sonner';
 import { Expenditure } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
@@ -53,7 +53,7 @@ const Payroll = () => {
 
   const loadPayslips = async () => {
     try {
-      const slips = await dbService.list('payslips', [orderBy('createdAt', 'desc'), firestoreLimit(100)]);
+      const slips = await dbService.list('payslips', [orderBy('createdAt', 'desc'), queryLimit(100)]);
       setPayslips(slips);
     } catch (error) {
       console.error(error);

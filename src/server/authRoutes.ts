@@ -140,7 +140,7 @@ async function searchUsersByPhone(phone10: string): Promise<any[]> {
   if (db) {
     try {
       const timeout = new Promise((resolve) => setTimeout(() => resolve(null), 4000));
-      const firestoreSearch = async () => {
+      const mongoSearch = async () => {
         const usersRef = db.collection('users');
         const [snap1, snap2, snap3, snap4, snap5] = await Promise.all([
           usersRef.where('parent_last10', '==', phone10).get().catch(() => ({ docs: [] })),
@@ -178,9 +178,9 @@ async function searchUsersByPhone(phone10: string): Promise<any[]> {
         } catch (e) {}
       };
 
-      await Promise.race([firestoreSearch(), timeout]);
+      await Promise.race([mongoSearch(), timeout]);
     } catch (err) {
-      console.warn('[AuthRoutes] searchUsersByPhone firebase error:', err);
+      console.warn('[AuthRoutes] searchUsersByPhone database error:', err);
     }
   }
 

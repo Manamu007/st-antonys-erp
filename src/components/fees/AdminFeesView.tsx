@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { extractParentPhone } from '../../utils/phoneUtils';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
-import { dbService, resilientFetch } from '../../services/dbService';
+import { dbService, resilientFetch, comparePaymentRecordsDescending } from '../../services/dbService';
 import { calculateStudentFee, normalizeYear, getFeeStructureCustomId, computeStudentFeeMetrics, calculateFinancialOverview } from '../../lib/feeUtils';
 import { FeeStructure, FeeConcession, FeeRecord, PaymentRecord, Expenditure, ReceiptBook } from '../../types';
 import { useSettings } from '../../context/SettingsContext';
@@ -855,7 +855,8 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
       }
     });
 
-    return [...fromPayments, ...fromFees];
+    const combined = [...fromPayments, ...fromFees];
+    return combined.sort(comparePaymentRecordsDescending);
   }, [payments, fees]);
 
   // Filtered and sorted collection history transactions
@@ -914,13 +915,14 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
         valA = Number(a.amount || 0);
         valB = Number(b.amount || 0);
       } else { // date
-        valA = new Date(a.date || 0).getTime();
-        valB = new Date(b.date || 0).getTime();
+        const dateCmp = comparePaymentRecordsDescending(a, b);
+        return transSortOrder === 'asc' ? -dateCmp : dateCmp;
       }
 
       if (valA < valB) return transSortOrder === 'asc' ? -1 : 1;
       if (valA > valB) return transSortOrder === 'asc' ? 1 : -1;
-      return 0;
+      // Default tie-breaker: strict descending date & timestamp
+      return comparePaymentRecordsDescending(a, b);
     });
   }, [baseTransPayments, transSearchQuery, transSortField, transSortOrder, students]);
 
@@ -3857,14 +3859,21 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
                         </button>
 
                         <div className="flex items-center gap-1 mx-1">
-                          {Array.from({ length: Math.min(5, transTotalPages) }, (_, i) => {
-                            let pageNum = transCurrentPage - 2 + i;
-                            if (pageNum < 1) pageNum = i + 1;
-                            if (pageNum > transTotalPages) pageNum = transTotalPages - (4 - i);
-                            if (pageNum < 1 || pageNum > transTotalPages) return null;
-                            return (
+                          {(() => {
+                            const maxVisible = 5;
+                            let start = Math.max(1, transCurrentPage - Math.floor(maxVisible / 2));
+                            let end = start + maxVisible - 1;
+                            if (end > transTotalPages) {
+                              end = transTotalPages;
+                              start = Math.max(1, end - maxVisible + 1);
+                            }
+                            const pages: number[] = [];
+                            for (let p = start; p <= end; p++) {
+                              pages.push(p);
+                            }
+                            return pages.map((pageNum) => (
                               <button
-                                key={pageNum}
+                                key={`trans-page-${pageNum}`}
                                 type="button"
                                 onClick={() => setTransCurrentPage(pageNum)}
                                 className={`w-7 h-7 rounded-lg text-xs font-black font-mono transition-all cursor-pointer ${
@@ -3875,8 +3884,8 @@ export const AdminFeesView: React.FC<AdminFeesViewProps> = ({
                               >
                                 {pageNum}
                               </button>
-                            );
-                          })}
+                            ));
+                          })()}
                         </div>
 
                         <button

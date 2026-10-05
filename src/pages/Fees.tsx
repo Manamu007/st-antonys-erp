@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { dbService, where, limit, startAfter, orderBy } from '../services/dbService';
+import { dbService, where, limit, startAfter, orderBy, comparePaymentRecordsDescending } from '../services/dbService';
 import { auth } from '../services/authService';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
@@ -359,7 +359,7 @@ const Fees: React.FC = () => {
       } else if (isStaffOrAdmin) {
         const studentsData = staffStudentsRes || [];
         const feesData = (staffFeesRes || []) as FeeRecord[];
-        const paymentsData = (staffPaymentsRes || []) as PaymentRecord[];
+        const paymentsData = ((staffPaymentsRes || []) as PaymentRecord[]).sort(comparePaymentRecordsDescending);
         
         if (profile?.role === 'play_school_incharge') {
           const filteredStudents = (studentsData || []).filter((s: any) => 
@@ -411,8 +411,25 @@ const Fees: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchDuesData();
+    // In preview/sandbox and admin view, always perform a fresh live fetch
+    fetchDuesData(true);
   }, [profile?.id, profile?.uid, filterAcademicYear]);
+
+  // Real-time Mutation Broadcast: Automatically reload live records when fees or payments change
+  useEffect(() => {
+    const handleFeesUpdated = (e: any) => {
+      const path = e?.detail?.path;
+      if (!path || path === 'payments' || path === 'fees' || path === 'fee_payments') {
+        fetchDuesData(true);
+      }
+    };
+    window.addEventListener('app:fees-updated', handleFeesUpdated);
+    window.addEventListener('app:db-mutation', handleFeesUpdated);
+    return () => {
+      window.removeEventListener('app:fees-updated', handleFeesUpdated);
+      window.removeEventListener('app:db-mutation', handleFeesUpdated);
+    };
+  }, [filterAcademicYear]);
 
   const activeStudentData = useMemo(() => {
     if (students.length > 0) {

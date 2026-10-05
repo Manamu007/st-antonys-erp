@@ -147,13 +147,6 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }, 5000);
 
     const fetchAllData = async () => {
-      // If we know quota is hit, don't even try and just use defaults/persistent cache
-      const isQuotaHit = typeof window !== 'undefined' && localStorage.getItem('firestore_quota_exceeded_timestamp');
-      if (isQuotaHit) {
-        setLoading(false);
-        return;
-      }
-
       try {
         // Fetch settings and siteConfig separately so one failure doesn't block the other
         const settingsData = await dbService.get('settings', 'school').catch(err => {

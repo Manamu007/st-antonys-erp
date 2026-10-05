@@ -1792,7 +1792,7 @@ const Academics: React.FC = () => {
                         .filter(b => canViewAllBatches || b.id === profile?.batchId)
                         .map((b, idx) => (
                           <option key={`${b.id || idx}-${idx}`} value={b.id}>
-                            {b.name} (Strength: {allStudents.filter(s => isStudentInBatch(s, b)).length})
+                            {b.name} (Strength: {allStudents.filter(s => isStudentInBatch(s, b, classes, displayedBatches)).length})
                           </option>
                         ))}
                     </select>
@@ -1842,7 +1842,7 @@ const Academics: React.FC = () => {
                       <option value="">Select Batch</option>
                       {findBatchesForClass({ id: promotionTarget.classId }, displayedBatches).map((b, idx) => (
                         <option key={`${b.id || idx}-${idx}`} value={b.id}>
-                          {b.name} (Strength: {allStudents.filter(s => isStudentInBatch(s, b)).length})
+                          {b.name} (Strength: {allStudents.filter(s => isStudentInBatch(s, b, classes, displayedBatches)).length})
                         </option>
                       ))}
                     </select>
@@ -2022,7 +2022,7 @@ const Academics: React.FC = () => {
                           {classBatches.length > 0 ? (
                             classBatches.map((b, bIdx) => (
                               <span key={`${b.id || bIdx}-${bIdx}`} className="px-2 py-0.5 bg-neutral-100 text-neutral-600 text-[10px] font-bold rounded-md border border-neutral-200">
-                                {b.name} ({allStudents.filter(s => isStudentInBatch(s, b)).length})
+                                {b.name} ({allStudents.filter(s => isStudentInBatch(s, b, classes, displayedBatches)).length})
                               </span>
                             ))
                           ) : (
@@ -2077,7 +2077,7 @@ const Academics: React.FC = () => {
                   return canViewAllBatches || b.id === profile?.batchId || b.classId === profile?.classId;
                 }).map((item, idx) => {
                   const resolvedClass = findClassForBatch(item, classes);
-                  const studentCount = allStudents.filter(s => isStudentInBatch(s, item)).length;
+                  const studentCount = allStudents.filter(s => isStudentInBatch(s, item, classes, displayedBatches)).length;
                   return (
                   <tr key={`${item.id || idx}-${idx}`} className="hover:bg-neutral-50/50 transition-colors group">
                     <td className="px-6 py-4 font-bold text-sidebar">
@@ -2364,7 +2364,7 @@ const Academics: React.FC = () => {
                               <div key={batch.id} className="flex items-center justify-between p-3 bg-neutral-50 rounded-xl border border-neutral-100">
                                 <div>
                                   <p className="font-bold text-sm text-sidebar">
-                                    {batch.name} (Strength: {allStudents.filter(s => isStudentInBatch(s, batch)).length})
+                                    {batch.name} (Strength: {allStudents.filter(s => isStudentInBatch(s, batch, classes, displayedBatches)).length})
                                   </p>
                                   <p className="text-[10px] text-neutral-400 uppercase tracking-wider">
                                     Teacher: {getBatchClassTeacherDisplayName(batch, teachers)}

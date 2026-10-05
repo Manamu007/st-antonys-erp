@@ -264,9 +264,9 @@ export function findClassForBatch(batch: any, classes: any[] = []): any {
     if (c) return c;
   }
 
-  // Numeric grades 1 to 10
+  // Numeric grades 10 down to 1
   for (let g = 10; g >= 1; g--) {
-    const tokenRegex = new RegExp(`\\b${g}\\b|cls_${g}|${g}_class|class_${g}|${g}th|class\\s*${g}`, 'i');
+    const tokenRegex = new RegExp(`(?:^|[^0-9]|cls_|class_|class\\s*)${g}(?!\\d)`, 'i');
     if (tokenRegex.test(combined)) {
       const c = classes.find(cls => {
         const clsStr = `${cls.id || ''} ${cls.name || ''} ${cls.code || ''}`.toLowerCase();
@@ -279,40 +279,140 @@ export function findClassForBatch(batch: any, classes: any[] = []): any {
   return null;
 }
 
-export function findBatchesForClass(cls: any, batches: any[] = []): any[] {
+export function findBatchesForClass(cls: any, batches: any[] = [], allClasses: any[] = []): any[] {
   if (!cls || !batches || batches.length === 0) return [];
+  const candidateClasses = (Array.isArray(allClasses) && allClasses.length > 0) ? allClasses : [cls];
   return batches.filter(b => {
     if (!b) return false;
     if (b.classId === cls.id || b.classId === cls.uid) return true;
     if (b.className && cls.name && b.className.toLowerCase().trim() === cls.name.toLowerCase().trim()) return true;
-    const resolvedCls = findClassForBatch(b, [cls]);
+    const resolvedCls = findClassForBatch(b, candidateClasses);
     return resolvedCls?.id === cls.id;
   });
 }
 
-export function isStudentInBatch(student: any, batch: any): boolean {
+export function doesStudentMatchClass(student: any, batch: any, classes: any[] = []): boolean {
   if (!student || !batch) return false;
-  if ((student.status || 'active') !== 'active') return false;
+
+  const sClassId = String(student.classId || '').trim();
+  const sClass = String(student.class || student.className || '').trim();
+  const bClassId = String(batch.classId || '').trim();
+  const bClass = String(batch.className || batch.class || '').trim();
+
+  let resolvedBClassId = bClassId;
+  let resolvedBClassName = bClass;
+  if ((!resolvedBClassId || !resolvedBClassName) && Array.isArray(classes) && classes.length > 0) {
+    const foundCls = findClassForBatch(batch, classes);
+    if (foundCls) {
+      resolvedBClassId = resolvedBClassId || foundCls.id || foundCls.uid || '';
+      resolvedBClassName = resolvedBClassName || foundCls.name || '';
+    }
+  }
+
+  // 1. Direct classId match
+  if (sClassId && resolvedBClassId && sClassId === resolvedBClassId) {
+    return true;
+  }
+
+  // 2. Direct className match
+  if (sClass && resolvedBClassName && sClass.toLowerCase().trim() === resolvedBClassName.toLowerCase().trim()) {
+    return true;
+  }
+
+  // 3. Cross check classId and className
+  if (sClassId && resolvedBClassName && sClassId.toLowerCase().trim() === resolvedBClassName.toLowerCase().trim()) {
+    return true;
+  }
+  if (sClass && resolvedBClassId && sClass.toLowerCase().trim() === resolvedBClassId.toLowerCase().trim()) {
+    return true;
+  }
+
+  // 4. Token grade match (10 down to 1, nursery, lkg, ukg)
+  const sCombined = `${sClassId} ${sClass}`.toLowerCase();
+  const bCombined = `${resolvedBClassId} ${resolvedBClassName} ${batch.id || ''} ${batch.code || ''}`.toLowerCase();
+
+  if (bCombined.includes('nur') || sCombined.includes('nur')) {
+    return bCombined.includes('nur') && sCombined.includes('nur');
+  }
+  if (bCombined.includes('lkg') || sCombined.includes('lkg')) {
+    return bCombined.includes('lkg') && sCombined.includes('lkg');
+  }
+  if (bCombined.includes('ukg') || sCombined.includes('ukg')) {
+    return bCombined.includes('ukg') && sCombined.includes('ukg');
+  }
+
+  for (let g = 10; g >= 1; g--) {
+    const regex = new RegExp(`(^|[^0-9])${g}([^0-9]|$)`, 'i');
+    const sHasGrade = regex.test(sCombined);
+    const bHasGrade = regex.test(bCombined);
+    if (sHasGrade || bHasGrade) {
+      return sHasGrade && bHasGrade;
+    }
+  }
+
+  return false;
+}
+
+export function isStudentInBatch(student: any, batch: any, classes: any[] = [], allBatches: any[] = []): boolean {
+  if (!student || !batch) return false;
+
+  const bId = String(batch.id || batch.uid || '').trim();
+  const bName = String(batch.name || '').trim();
+  const bSection = String(batch.section || '').trim();
+  const aliases: string[] = Array.isArray(batch.aliases) ? batch.aliases : [];
 
   const sBatchId = String(student.batchId || '').trim();
   const sBatch = String(student.batch || student.batchName || '').trim();
-  const bId = String(batch.id || batch.uid || '').trim();
-  const bName = String(batch.name || '').trim();
-  const aliases: string[] = Array.isArray(batch.aliases) ? batch.aliases : [];
 
-  if (sBatchId && (sBatchId === bId || aliases.includes(sBatchId))) return true;
-  if (sBatch && (sBatch === bName || sBatch === bId || aliases.includes(sBatch))) return true;
+  // If allBatches is provided, use resolveStudentClassAndBatch for 1-to-1 exact resolution
+  if (allBatches && allBatches.length > 0) {
+    const resolved = resolveStudentClassAndBatch(student, classes, allBatches);
+    if (resolved.batchId) {
+      return resolved.batchId === bId;
+    }
+    if (resolved.batchName && bName) {
+      return resolved.batchName.toLowerCase() === bName.toLowerCase();
+    }
+  }
 
-  const sCombined = `${sBatchId} ${sBatch}`.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const bCombined = `${bId} ${bName}`.toLowerCase().replace(/[^a-z0-9]/g, '');
+  // RULE 1: Direct batchId match
+  if (sBatchId && sBatchId !== 'N/A') {
+    if (sBatchId === bId || (batch.uid && sBatchId === batch.uid) || aliases.includes(sBatchId)) {
+      if (classes && classes.length > 0) {
+        return doesStudentMatchClass(student, batch, classes);
+      }
+      return true;
+    }
+    
+    const cleanS = sBatchId.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const cleanB = bId.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (cleanS === cleanB) {
+      if (classes && classes.length > 0) {
+        return doesStudentMatchClass(student, batch, classes);
+      }
+      return true;
+    }
+  }
 
-  if (sCombined && bCombined && (sCombined === bCombined || sCombined.includes(bCombined) || bCombined.includes(sCombined))) {
-    const sClass = String(student.classId || student.class || '').toLowerCase();
-    const bClass = String(batch.classId || batch.className || '').toLowerCase();
-    if (!sClass || !bClass) return true;
-    const sNum = sClass.match(/\d+|nur|lkg|ukg/)?.[0];
-    const bNum = bClass.match(/\d+|nur|lkg|ukg/)?.[0];
-    if (sNum && bNum && sNum === bNum) return true;
+  // RULE 2: Direct match by batch name / section within the same class
+  if (sBatch && sBatch !== 'N/A') {
+    if (sBatch.toLowerCase().trim() === bName.toLowerCase().trim() ||
+        (bSection && sBatch.toLowerCase().trim() === bSection.toLowerCase().trim()) ||
+        aliases.some(a => a.toLowerCase().trim() === sBatch.toLowerCase().trim())) {
+      if (classes && classes.length > 0) {
+        return doesStudentMatchClass(student, batch, classes);
+      }
+      return true;
+    }
+
+    if (doesStudentMatchClass(student, batch, classes)) {
+      const normS = sBatch.toLowerCase().replace(/batch|section|class|\s|[-_]/g, '');
+      const normB = bName.toLowerCase().replace(/batch|section|class|\s|[-_]/g, '');
+      const normSec = bSection.toLowerCase().replace(/batch|section|class|\s|[-_]/g, '');
+      if (normS && (normS === normB || (normSec && normS === normSec))) {
+        return true;
+      }
+    }
   }
 
   return false;
@@ -372,48 +472,55 @@ export function resolveStudentClassAndBatch(
   const sBatchId = String(student.batchId || '').trim();
   const sBatch = String(student.batch || student.batchName || '').trim();
 
-  // If student has explicit batchId, match directly in batches
-  if (sBatchId && sBatchId !== 'N/A') {
-    resolvedBatch = batches.find(b => b.id === sBatchId || b.uid === sBatchId);
-  }
-
   // If resolvedClass is known, prioritize batches belonging to this class!
-  if (!resolvedBatch && resolvedClass) {
-    const classBatches = findBatchesForClass(resolvedClass, batches);
-    
-    // First, check if sBatchId directly matches a batch belonging to this class
-    if (sBatchId && sBatchId !== 'N/A') {
+  if (resolvedClass) {
+    const classBatches = findBatchesForClass(resolvedClass, batches, classes);
+
+    // 1. Check if sBatchId matches a batch belonging to this class
+    if (sBatchId && sBatchId !== 'N/A' && sBatchId !== 'undefined') {
       resolvedBatch = classBatches.find(b => 
         b.id === sBatchId || 
+        b.uid === sBatchId ||
         (Array.isArray(b.aliases) && b.aliases.includes(sBatchId)) ||
-        (b.name && b.name.toLowerCase() === sBatchId.toLowerCase()) ||
-        (b.id && b.id.toLowerCase() === sBatchId.toLowerCase())
+        (b.name && b.name.toLowerCase().trim() === sBatchId.toLowerCase().trim()) ||
+        (b.id && b.id.toLowerCase().trim() === sBatchId.toLowerCase().trim())
       );
     }
-    
-    // Second, check if sBatch / batchName matches a batch belonging to this class
-    if (!resolvedBatch && sBatch && sBatch !== 'N/A') {
+
+    // 2. Check if sBatch (human-readable name e.g. "S-Batch", "IPL", "M-Batch", "Section A") matches a batch in this class
+    if (!resolvedBatch && sBatch && sBatch !== 'N/A' && sBatch !== 'undefined') {
       resolvedBatch = classBatches.find(b => 
-        b.id === sBatch ||
-        (Array.isArray(b.aliases) && b.aliases.includes(sBatch)) ||
-        (b.name && b.name.toLowerCase() === sBatch.toLowerCase()) ||
-        (b.id && b.id.toLowerCase() === sBatch.toLowerCase()) ||
-        (b.name && sBatch.toLowerCase().includes(b.name.toLowerCase()))
+        (b.section && b.section.toLowerCase().trim() === sBatch.toLowerCase().trim()) ||
+        (b.name && b.name.toLowerCase().trim() === sBatch.toLowerCase().trim()) ||
+        (Array.isArray(b.aliases) && b.aliases.some((a: string) => a.toLowerCase().trim() === sBatch.toLowerCase().trim()))
       );
+      if (!resolvedBatch) {
+        const normS = sBatch.toLowerCase().replace(/batch|section|class|\s|[-_]/g, '');
+        resolvedBatch = classBatches.find(b => {
+          const normB = (b.name || '').toLowerCase().replace(/batch|section|class|\s|[-_]/g, '');
+          const normSec = (b.section || '').toLowerCase().replace(/batch|section|class|\s|[-_]/g, '');
+          return normS && (normS === normB || normS === normSec);
+        });
+      }
     }
   }
 
-  // If still not resolved or no class resolved, search all batches
-  if (!resolvedBatch && sBatchId && sBatchId !== 'N/A') {
-    resolvedBatch = batches.find(b => b.id === sBatchId || (Array.isArray(b.aliases) && b.aliases.includes(sBatchId))) ||
-      batches.find(b => (b.name && b.name.toLowerCase() === sBatchId.toLowerCase()) || (b.id && b.id.toLowerCase() === sBatchId.toLowerCase()));
-  }
-  if (!resolvedBatch && sBatch && sBatch !== 'N/A') {
+  // Fallback: If not resolved yet, search all batches by sBatchId or sBatch
+  if (!resolvedBatch && sBatchId && sBatchId !== 'N/A' && sBatchId !== 'undefined') {
     resolvedBatch = batches.find(b => 
-      b.id === sBatch ||
-      (Array.isArray(b.aliases) && b.aliases.includes(sBatch)) ||
+      b.id === sBatchId || 
+      b.uid === sBatchId || 
+      (Array.isArray(b.aliases) && b.aliases.includes(sBatchId)) ||
+      (b.name && b.name.toLowerCase() === sBatchId.toLowerCase()) || 
+      (b.id && b.id.toLowerCase() === sBatchId.toLowerCase())
+    );
+  }
+
+  if (!resolvedBatch && sBatch && sBatch !== 'N/A' && sBatch !== 'undefined') {
+    resolvedBatch = batches.find(b => 
+      (b.section && b.section.toLowerCase() === sBatch.toLowerCase()) ||
       (b.name && b.name.toLowerCase() === sBatch.toLowerCase()) ||
-      (b.id && b.id.toLowerCase() === sBatch.toLowerCase())
+      (Array.isArray(b.aliases) && b.aliases.some((a: string) => a.toLowerCase() === sBatch.toLowerCase()))
     );
   }
 
@@ -424,4 +531,54 @@ export function resolveStudentClassAndBatch(
     batchName: resolvedBatch ? resolvedBatch.name : (student.batch || student.batchName || '')
   };
 }
+
+/**
+ * Normalizes student gender into 'male' | 'female' | 'other'
+ */
+export function normalizeStudentGender(gender?: string | null): 'male' | 'female' | 'other' {
+  if (!gender) return 'male';
+  const g = String(gender).trim().toLowerCase();
+  if (g === 'female' || g === 'f' || g === 'girl' || g === 'girls') return 'female';
+  if (g === 'male' || g === 'm' || g === 'boy' || g === 'boys') return 'male';
+  return 'other';
+}
+
+/**
+ * Sorts students in a section according to mandatory school rule:
+ * In each section, male students appear first in ascending alphabetical order of name,
+ * and female students appear second in ascending alphabetical order of name,
+ * followed by others in ascending alphabetical order.
+ */
+export function sortStudentsBySectionRules<T extends { name?: string; firstName?: string; secondName?: string; gender?: string }>(students: T[]): T[] {
+  const sortAsc = (list: T[]) => [...list].sort((a, b) => {
+    const nameA = (a.name || `${a.firstName || ''} ${a.secondName || ''}`).trim();
+    const nameB = (b.name || `${b.firstName || ''} ${b.secondName || ''}`).trim();
+    return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+  });
+
+  const males = sortAsc(students.filter(s => normalizeStudentGender(s.gender) === 'male'));
+  const females = sortAsc(students.filter(s => normalizeStudentGender(s.gender) === 'female'));
+  const others = sortAsc(students.filter(s => normalizeStudentGender(s.gender) === 'other'));
+
+  return [...males, ...females, ...others];
+}
+
+/**
+ * Calculates sequential roll numbers (1..M for boys, M+1..N for girls) for a section of students.
+ */
+export function calculateSectionRollNumbers<T extends { id?: string; uid?: string; name?: string; firstName?: string; secondName?: string; gender?: string; rollNumber?: string; rollNo?: string }>(
+  students: T[]
+): Array<{ student: T; rollNumber: string; isChanged: boolean }> {
+  const sorted = sortStudentsBySectionRules(students);
+  return sorted.map((student, idx) => {
+    const rollNumber = String(idx + 1);
+    const currentRoll = String(student.rollNumber || student.rollNo || '').trim();
+    return {
+      student,
+      rollNumber,
+      isChanged: currentRoll !== rollNumber
+    };
+  });
+}
+
 

@@ -72,13 +72,33 @@ export function filterActiveStudents(students: any[], selectedClass?: string, se
 
     // 2. Filter by class if provided
     if (selectedClass && selectedClass !== 'all') {
-      const matchClass = s.class === selectedClass || s.className === selectedClass || s.classId === selectedClass;
+      const cleanTargetClass = selectedClass.toLowerCase().replace(/class|\s|[-_]/g, '');
+      const matchClass = s.class === selectedClass || 
+                         s.className === selectedClass || 
+                         s.classId === selectedClass ||
+                         (s.class && s.class.toLowerCase().replace(/class|\s|[-_]/g, '') === cleanTargetClass) ||
+                         (s.className && s.className.toLowerCase().replace(/class|\s|[-_]/g, '') === cleanTargetClass);
       if (!matchClass) return false;
     }
 
     // 3. Filter by batch if provided
     if (selectedBatch && selectedBatch !== 'all') {
-      const matchBatch = s.batch === selectedBatch || s.batchName === selectedBatch || s.batchId === selectedBatch;
+      const cleanTargetBatch = selectedBatch.toLowerCase().replace(/batch|section|class|\s|[-_]/g, '');
+      const sBatchClean = String(s.batch || '').toLowerCase().replace(/batch|section|class|\s|[-_]/g, '');
+      const sBatchNameClean = String(s.batchName || '').toLowerCase().replace(/batch|section|class|\s|[-_]/g, '');
+      const sBatchIdClean = String(s.batchId || '').toLowerCase().replace(/batch|section|class|\s|[-_]/g, '');
+      
+      const matchBatch = s.batch === selectedBatch || 
+                         s.batchName === selectedBatch || 
+                         s.batchId === selectedBatch ||
+                         (cleanTargetBatch && (
+                           sBatchClean === cleanTargetBatch || 
+                           sBatchNameClean === cleanTargetBatch || 
+                           sBatchIdClean === cleanTargetBatch || 
+                           (sBatchClean && cleanTargetBatch.includes(sBatchClean)) ||
+                           (cleanTargetBatch && sBatchClean.includes(cleanTargetBatch)) ||
+                           (sBatchIdClean && sBatchIdClean.includes(cleanTargetBatch))
+                         ));
       if (!matchBatch) return false;
     }
 

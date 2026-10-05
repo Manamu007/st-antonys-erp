@@ -258,8 +258,13 @@ export interface FeeRecord {
 
 export interface PaymentRecord {
   id?: string;
+  uid?: string;
   studentId: string;
   studentUid?: string;
+  studentName?: string;
+  className?: string;
+  batchName?: string;
+  rollNo?: string;
   amount: number;
   date: string;
   method: 'cash' | 'online' | 'cheque' | 'razorpay' | 'razorpay_online' | 'razorpay_sandbox' | string;
@@ -268,6 +273,7 @@ export interface PaymentRecord {
   academicYear: string;
   component: 'term1' | 'term2' | 'term3' | 'hostel_term1' | 'hostel_term2' | 'hostel_term3' | 'transport' | 'transport_term1' | 'transport_term2' | 'transport_term3' | 'admission' | 'ipl' | 'healthCard' | 'other' | string;
   paymentTime?: string;
+  recordedBy?: string;
   receiptBookId?: string;
   receiptBookName?: string;
   serialNumber?: string;
@@ -283,6 +289,7 @@ export interface PaymentRecord {
   status?: 'success' | 'pending' | 'failed' | 'voided' | string;
   verifiedAt?: string;
   createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface PaymentTransactionAudit {

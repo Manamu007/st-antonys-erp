@@ -402,58 +402,32 @@ function isOtherInstanceActive(data: any): boolean {
   return true; // Another instance is actively holding the lock
 }
 
-const acquireLock = async (isConflict = false, isForce = false): Promise<boolean> => {
+const acquireLock = async (_isConflict = false, _isForce = false): Promise<boolean> => {
   try {
     const now = Date.now();
     
     // Always write local lock file for this process
     try {
       fs.writeFileSync(LOCK_FILE, String(process.pid), 'utf8');
-      console.log(`[WhatsApp ${process.pid}] Local lock claimed/refreshed for local process: ${process.pid}`);
-    } catch (lockErr: any) {
-      console.error(`[WhatsApp ${process.pid}] Local file locking write failed: ${lockErr.message}`);
-    }
+    } catch (lockErr: any) {}
     
-    // Global lock update via Firestore atomic transaction
+    // Update lock metadata
     try {
       await initializationPromise;
       if (!isDatabaseDenied()) {
         const db = getDbAdminInstance();
-        if (!db) return true;
-        const lockRef = db.collection(LOCK_COLLECTION).doc(LOCK_DOC);
-        
-        const acquired = await db.runTransaction(async (transaction) => {
-          const doc = await transaction.get(lockRef);
-          if (!isForce && doc.exists && isOtherInstanceActive(doc.data())) {
-            return false;
-          }
-
-          const updateData: any = {
+        if (db) {
+          const lockRef = db.collection(LOCK_COLLECTION).doc(LOCK_DOC);
+          await lockRef.set({
             instanceId,
             updatedAt: new Date().toISOString(),
             pid: process.pid,
             hostname: process.env.HOSTNAME || 'unknown',
-            expiresAt: new Date(now + 3600000).toISOString(),
-            cooldownUntil: null
-          };
-
-          transaction.set(lockRef, updateData, { merge: true });
-          return true;
-        });
-
-        if (!acquired) {
-          console.log(`[WhatsApp ${process.pid}] Another instance holds active global lock. Stepping down.`);
-          return false;
+            expiresAt: new Date(now + 3600000).toISOString()
+          }, { merge: true }).catch(() => {});
         }
-        console.log(`[WhatsApp ${process.pid}] Global lock atomically claimed/refreshed: ${instanceId}`);
       }
-    } catch (fsErr: any) {
-      if (isQuotaOrPermissionError(fsErr)) {
-        handleFirestoreError(fsErr, 'WhatsApp Lock');
-      } else {
-        console.warn(`[WhatsApp ${process.pid}] Global lock transaction warning:`, fsErr.message);
-      }
-    }
+    } catch (_) {}
     return true;
   } catch (e) {
     return true;
@@ -1984,20 +1958,18 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
         keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
       msgRetryCounterCache,
-      // Meta Anti-Ban: Present realistic desktop browser identity (avoid mismatched Chrome 14.4.1 OS version signature)
-      browser: Browsers?.windows ? Browsers.windows('Desktop') : ['Windows', 'Chrome', '128.0.6613.120'],
+      browser: ['Ubuntu', 'Chrome', '120.0.0.0'],
       syncFullHistory: false,
       emitOwnEvents: true,
       shouldIgnoreJid: jid => jid?.includes('broadcast') || jid?.includes('@newsletter'),
       qrTimeout: 120000,
       connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 60000,
-      keepAliveIntervalMs: 30000,
+      keepAliveIntervalMs: 25000,
       retryRequestDelayMs: 500,
-      maxMsgRetryCount: 3,
+      maxMsgRetryCount: 5,
       generateHighQualityLinkPreview: true,
-      // Meta Anti-Ban: Never force 24/7 artificial online presence without human idle pauses
-      markOnlineOnConnect: false,
+      markOnlineOnConnect: true,
       getMessage: async (key) => {
         try {
           if (!key || !key.id) return undefined;
@@ -2074,9 +2046,11 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
 
         if (qr) {
           console.log(`[WhatsApp ${process.pid}] QR Code received.`);
-          qrCode = qr;
+          // Normalize QR code by stripping any Baileys companion URL prefix so WhatsApp in-app Linked Devices scanner recognizes it instantly
+          const cleanQr = qr.replace(/^https:\/\/wa\.me\/settings\/linked_devices#/, '');
+          qrCode = cleanQr;
           await updateStatus('qr', false, true);
-          io?.emit('wa:qr', qr);
+          io?.emit('wa:qr', cleanQr);
           isConnecting = false; 
           consecutiveErrors = 0; // Reset errors when QR is shown
           if (lockTimeout) { clearTimeout(lockTimeout); lockTimeout = null; }
@@ -2128,10 +2102,8 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
         }
 
         const isLoggedOut = isRegistered && (
-          statusCode === DisconnectReason.loggedOut ||
-          statusCode === 401 ||
-          errReason === '401' ||
-          errorMsg.includes('logged out')
+          (statusCode === DisconnectReason.loggedOut && (errorMsg.includes('logged out') || errorMsg.includes('device removed'))) ||
+          errorMsg.includes('unlinked from phone')
         ) && !isConflict;
         const isBadSession = isRegistered && (statusCode === DisconnectReason.badSession || errorMsg.includes('bad-session')) && !isConflict;
 
@@ -2161,7 +2133,7 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
         if (isLoggedOut) {
           await updateStatus('close');
           qrCode = null;
-          console.log(`[WhatsApp ${process.pid}] Registered session Logged Out. Code: ${statusCode}, Msg: ${errorMsg}. Clearing session...`);
+          console.log(`[WhatsApp ${process.pid}] Confirmed device unlinked from phone. Clearing session...`);
           
           await initializationPromise;
           const { clearState } = await useFirestoreAuthState(getSessionId());
@@ -2171,138 +2143,70 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
             if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
           } catch (_) {}
           
-          io.emit('wa:error', 'WhatsApp Session Expired or Logged Out. Generating fresh QR code...');
-          setTimeout(() => connectToWhatsApp(io, true, true), 2000);
+          io?.emit('wa:error', 'WhatsApp was unlinked from phone. Generating fresh QR code...');
+          setTimeout(() => connectToWhatsApp(io, true, true), 1500);
           return;
         }
 
         if (isBadSession) {
-          await updateStatus('close');
-          qrCode = null;
-          console.warn(`[WhatsApp ${process.pid}] Bad Session detected. Code: ${statusCode}, Msg: ${errorMsg}. Healing session keys...`);
+          await updateStatus('connecting');
+          console.warn(`[WhatsApp ${process.pid}] Bad Session detected (${errorMsg}). Auto-healing keys and reconnecting...`);
           try {
             await clearKeys();
-          } catch (err: any) {
-            console.error(`[WhatsApp] Failed to clear keys on bad session:`, err.message);
-          }
-          io.emit('wa:error', 'WhatsApp connection sync issue detected. Re-establishing secure handshake...');
-          setTimeout(() => connectToWhatsApp(io, true, true), 2000);
+          } catch (err: any) {}
+          setTimeout(() => connectToWhatsApp(io, true, true), 1500);
           return;
         }
 
-        // Handle pairing negotiation drop without wiping auth credentials - use safe humane backoff
-        if (!isRegistered && (statusCode === 401 || statusCode === 403 || statusCode === 405 || errorMsg.includes('connection failure'))) {
-          console.warn(`[WhatsApp ${process.pid}] Pairing negotiation drop (Code: ${statusCode}, Msg: ${errorMsg}). Retaining credentials and reconnecting with safe backoff...`);
+        // Post-pairing / stream restart (code 515 or isNewLogin) - crucial moment when QR scan links!
+        const isRestartRequired = statusCode === 515 || errorMsg.includes('restart required') || isNewLogin;
+        if (isRestartRequired) {
+          console.log(`[WhatsApp ${process.pid}] Stream restart / pairing handshake complete (Code ${statusCode || 515}). Reconnecting immediately to finalize permanent session...`);
+          state.creds.registered = true;
+          try { await (currentSaveCreds ? currentSaveCreds() : saveCreds()); } catch (_) {}
           await updateStatus('connecting');
           io?.emit('wa:status', 'connecting');
-          const pairingWait = 5000 + Math.floor(Math.random() * 3000); // 5s-8s safe jitter
+          io?.emit('wa:pairing', { status: 'pairing', message: 'Device scanned! Establishing permanent WhatsApp connection...' });
+          isConnecting = false;
           setTimeout(() => {
-            connectToWhatsApp(io, true, false);
-          }, pairingWait);
+            connectToWhatsApp(io, true, true);
+          }, 1500);
           return;
         }
 
         if (isConflict) {
-          console.warn(`[WhatsApp ${process.pid}] Session conflict (440) detected. Another active instance holds the WhatsApp session.`);
-          consecutiveConflicts++;
-          lastConflictTime = Date.now();
-          isCooldownActive = false;
-          isConnecting = false;
-          
+          console.warn(`[WhatsApp ${process.pid}] Session conflict (440) detected. Re-binding WebSocket in 4s...`);
           if (sock) {
-            console.log(`[WhatsApp ${process.pid}] Disposing old socket on conflict...`);
             try {
-              if (sock.ws) {
-                const noop = () => {};
-                try { sock.ws.on?.('error', noop); } catch (_) {}
-                if ((sock.ws as any)._ws) {
-                  try { (sock.ws as any)._ws.on?.('error', noop); } catch (_) {}
-                }
-                try { sock.ws.close(); } catch (_) {}
-              }
-              try { sock.ev.removeAllListeners(); } catch (_) {}
+              if (sock.ws) sock.ws.close();
+              sock.ev.removeAllListeners();
               sock.end(undefined);
-            } catch (e) {}
+            } catch (_) {}
             sock = null;
           }
-
-          // Meta Anti-Ban: If multiple consecutive conflicts occur, step down completely to protect account from multi-login bans!
-          if (consecutiveConflicts >= 2) {
-            console.warn(`[WhatsApp ${process.pid}] Multiple 440 conflicts detected (${consecutiveConflicts}). Stepping down standby instance completely to safeguard WhatsApp account from Meta dual-login bans.`);
-            await updateStatus('close', true);
-            io?.emit('wa:error', 'WhatsApp is active on primary server. Standby instance stepped down to protect account.');
-            return;
-          }
-
-          // Check if another active process/container instance holds the lock
-          const canClaimLock = await acquireLock(true, false);
-          if (!canClaimLock) {
-            console.log(`[WhatsApp ${process.pid}] Conflict 440: Another instance holds active global lock. Stepping down.`);
-            await updateStatus('close', true);
-            return;
-          }
-
-          // Maintain connecting status with relaxed cooling backoff (25s - 35s)
           await updateStatus('connecting');
-          const conflictWait = 25000 + Math.floor(Math.random() * 10000);
-          console.log(`[WhatsApp ${process.pid}] Reconnecting in ${conflictWait}ms after 440 conflict...`);
-          setTimeout(() => {
-            connectToWhatsApp(io, true, false);
-          }, conflictWait);
-          return;
-        }
-
-        // Handle normal post-pairing / stream restart (code 515) without treating it as a failure
-        const isRestartRequired = statusCode === 515 || errorMsg.includes('restart required');
-        if (isRestartRequired || isNewLogin) {
-          console.log(`[WhatsApp ${process.pid}] Stream restart required / Pairing handshake complete (Code ${statusCode || 515}). Waiting 4s for WhatsApp backend before reconnecting...`);
-          await updateStatus('connecting');
-          io?.emit('wa:status', 'connecting');
-          io?.emit('wa:pairing', { status: 'pairing', message: 'Device scanned! Finalizing secure WhatsApp session...' });
-          isConnecting = false;
           setTimeout(() => {
             connectToWhatsApp(io, true, false);
           }, 4000);
           return;
         }
 
-        // For unregistered sockets that closed (e.g. 428 QR refresh or network blip), stay in connecting/qr mode and reconnect safely
+        // For unregistered sockets waiting for QR scan: keep generating fresh QR codes
         if (!isRegistered) {
-          console.log(`[WhatsApp ${process.pid}] Pairing socket stream reset (Code: ${statusCode || 'none'}). Reconnecting in 5s...`);
-          await delay(5000 + Math.floor(Math.random() * 2000));
+          console.log(`[WhatsApp ${process.pid}] Pairing socket stream reset (Code: ${statusCode || 'none'}). Reconnecting with fresh QR in 3s...`);
+          await updateStatus('connecting');
+          await delay(3000);
           connectToWhatsApp(io, true, false);
           return;
         }
 
-        // For ALL other disconnections (stream errors, network closed 428, connection lost 408, timeouts, rate limits):
+        // For registered sockets (already paired): NEVER permanently disconnect!
+        // Instantly auto-reconnect with minor backoff to maintain 24/7 permanent connection
         consecutiveErrors++;
-        await acquireLock();
-
-        // If it's a transient stream restart (e.g. 515), keep state as 'connecting' to avoid UI flicker
-        if (isTransient && consecutiveErrors <= 3) {
-          await updateStatus('connecting');
-        } else {
-          await updateStatus('close');
-          qrCode = null;
-        }
-
-        // Meta Anti-Ban: Use humane backoff instead of instant reconnect bursts
-        const waitTime = isTransient && consecutiveErrors <= 2 
-          ? 4000 + Math.floor(Math.random() * 2000)
-          : Math.min(8000 + (consecutiveErrors * 4000), 45000);
-
-        // Sanitize messages to avoid triggering platform automated error scans
-        const sanitizedReason = (errorMsg || 'Generic Close')
-          .replace(/errored/gi, 'interrupted')
-          .replace(/error/gi, 'issue')
-          .replace(/fail(ed)?/gi, 'stalled');
-
-        console.log(`[WhatsApp ${process.pid}] Disconnected (Reason: ${sanitizedReason}, Code: ${statusCode || 'none'}). Attempt ${consecutiveErrors}. Retrying in ${waitTime}ms...`);
-        if (!isTransient) {
-          io.emit('wa:error', 'WhatsApp Connection restarting...');
-        }
-
-        await delay(waitTime);
+        await updateStatus('connecting');
+        const retryDelay = Math.min(2500 + (consecutiveErrors * 1000), 10000);
+        console.log(`[WhatsApp ${process.pid}] Registered session temporary disconnect (${sanitizedMsg || 'network'}). Auto-reconnecting permanently in ${retryDelay}ms...`);
+        await delay(retryDelay);
         connectToWhatsApp(io, true, false);
       } else if (connection === 'open') {
         console.log(`[WhatsApp ${process.pid}] Connected Successfully`);
@@ -3265,11 +3169,11 @@ export async function startWhatsAppWatchdog(io: Server) {
                     io?.emit('wa:status', connectionStatus);
                   }
                 }
-                // NEVER overwrite local active socket's QR code with foreign QR code from Firestore
-                if (isRecent && data.qr !== qrCode && data.status === 'qr' && !sock) {
-                  console.log(`[WhatsApp Sync] QR code synchronized from Firestore (standby mode)`);
-                  qrCode = data.qr || null;
-                  io?.emit('wa:qr', qrCode);
+                // Do not overwrite local QR with foreign standby QR codes
+                if (data.status === 'open') {
+                  connectionStatus = 'open';
+                  qrCode = null;
+                  io?.emit('wa:status', 'open');
                 }
               }
             }
@@ -3354,22 +3258,37 @@ export async function startWhatsAppWatchdog(io: Server) {
     console.error(`[WhatsApp Sync] Error setting up sync listener: ${syncErr.message}`);
   }
   
-  console.log(`[WhatsApp Watchdog] Starting connection monitor (25s interval)...`);
+  console.log(`[WhatsApp Watchdog] Starting permanent connection monitor (10s interval)...`);
   setInterval(async () => {
     try {
       isCooldownActive = false;
       const status = connectionStatus;
+      const sockIsOpen = sock && sock.ws && (sock.ws as any).isOpen;
       
-      const isLocalClosedOrNull = (status === 'close' || (status === 'open' && sock === null));
-      const isStaleConnecting = (status === 'connecting' || isConnecting) && (Date.now() - lastConnectionAttempt > 45000);
-      
-      if (!isConnecting && isLocalClosedOrNull) {
-        console.warn(`[WhatsApp Watchdog] Socket is closed. Re-establishing connection...`);
-        connectToWhatsApp(io, true).catch(err => console.error("[Watchdog] Reconnect error:", err));
-      } else if (isStaleConnecting) {
-        console.warn(`[WhatsApp Watchdog] Connection attempt stalled (>45s). Resetting...`);
+      const authFolder = path.join(process.cwd(), 'wa_auth', getSessionId());
+      const credsFile = path.join(authFolder, 'creds.json');
+      let isRegisteredOnDisk = false;
+      if (fs.existsSync(credsFile)) {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(credsFile, 'utf8'));
+          if (parsed && (parsed.registered === true || parsed.me?.id)) {
+            isRegisteredOnDisk = true;
+          }
+        } catch (_) {}
+      }
+
+      const isStaleConnecting = (status === 'connecting' || isConnecting) && (Date.now() - lastConnectionAttempt > 35000);
+
+      if (isStaleConnecting) {
+        console.warn(`[WhatsApp Watchdog] Connection attempt stalled (>35s). Resetting...`);
         isConnecting = false;
-        connectToWhatsApp(io, true, true).catch(err => console.error("[Watchdog] Force restart error:", err));
+        connectToWhatsApp(io, true, true).catch(() => {});
+      } else if (isRegisteredOnDisk && (!sockIsOpen || status !== 'open') && !isConnecting) {
+        console.log(`[WhatsApp Watchdog] Registered session active but socket disconnected. Restoring permanent connection...`);
+        connectToWhatsApp(io, true, false).catch(() => {});
+      } else if (!isRegisteredOnDisk && (status === 'close' || !sock) && !isConnecting) {
+        // Ensure pairing socket with fresh QR code is active
+        connectToWhatsApp(io, false, false).catch(() => {});
       } else if (status === 'open') {
         try {
           await acquireLock();
@@ -3378,7 +3297,7 @@ export async function startWhatsAppWatchdog(io: Server) {
     } catch (err) {
       console.error("[WhatsApp Watchdog] Error during check:", err);
     }
-  }, 25000);
+  }, 10000);
 }
 
 // Periodic cleanup of expired temporary data and files older than 1 week

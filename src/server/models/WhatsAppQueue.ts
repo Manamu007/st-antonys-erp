@@ -400,17 +400,17 @@ export async function updateQueueItem(
     persistLocalQueue();
   }
 
-  // Synchronize to Firestore mirrored queue document so Firestore fallback never re-sends this item
+  // Synchronize to MongoDB mirrored queue document so fallback never re-sends this item
   try {
     const { getDbAdmin, isDatabaseDenied } = await import('../db.js');
     if (typeof isDatabaseDenied === 'function' ? !isDatabaseDenied() : true) {
       const db = getDbAdmin();
       if (db && typeof db.collection === 'function') {
-        const firestoreUpdates: any = { ...updates, updatedAt: new Date().toISOString() };
-        if (updates.sentAt instanceof Date) firestoreUpdates.sentAt = updates.sentAt.toISOString();
-        if (updates.nextAttemptAt instanceof Date) firestoreUpdates.nextAttemptAt = updates.nextAttemptAt.toISOString();
-        if (updates.startedAt instanceof Date) firestoreUpdates.startedAt = updates.startedAt.toISOString();
-        await db.collection('whatsapp_queue').doc(String(id)).set(firestoreUpdates, { merge: true }).catch(() => {});
+        const mongoUpdates: any = { ...updates, updatedAt: new Date().toISOString() };
+        if (updates.sentAt instanceof Date) mongoUpdates.sentAt = updates.sentAt.toISOString();
+        if (updates.nextAttemptAt instanceof Date) mongoUpdates.nextAttemptAt = updates.nextAttemptAt.toISOString();
+        if (updates.startedAt instanceof Date) mongoUpdates.startedAt = updates.startedAt.toISOString();
+        await db.collection('whatsapp_queue').doc(String(id)).set(mongoUpdates, { merge: true }).catch(() => {});
       }
     }
   } catch (_) {}

@@ -6,7 +6,7 @@ import {
   getDocument,
   setDocument,
   deleteDocument
-} from './firestoreService.js';
+} from './mongoDocService.js';
 
 // MongoDB URI targeting antonyschool_erp database
 const MONGO_URI = process.env.MONGODB_URI || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/antonyschool_erp';
@@ -570,14 +570,15 @@ export const authAdmin = {
   }
 };
 
-const firestoreFn = Object.assign(() => mongoDbInstance, {
+const mongoDatabaseFn = Object.assign(() => mongoDbInstance, {
   FieldValue,
   Timestamp
 });
 
 export const admin = {
   auth: () => authAdmin,
-  firestore: firestoreFn,
+  db: mongoDatabaseFn,
+  firestore: mongoDatabaseFn,
   FieldValue,
   serverTimestamp: FieldValue.serverTimestamp,
   Timestamp,

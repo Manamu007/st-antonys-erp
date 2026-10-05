@@ -1,4 +1,4 @@
-import { getDbAdmin, initializationPromise } from '../src/server/firebaseAdmin.js';
+import { getDbAdmin, initializationPromise } from '../src/server/db.js';
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { RekognitionClient, CreateCollectionCommand, DescribeCollectionCommand, IndexFacesCommand } from "@aws-sdk/client-rekognition";
 import 'dotenv/config';
@@ -76,7 +76,7 @@ async function runMigration() {
   const db = getDbAdmin();
 
   if (!db) {
-    console.error("FAILED to initialize Firebase Admin. Please check your firebase-applet-config.json and project environment.");
+    console.error("FAILED to initialize Database Admin.");
     process.exit(1);
   }
 

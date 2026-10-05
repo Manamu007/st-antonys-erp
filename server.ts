@@ -266,36 +266,33 @@ async function startServer() {
 
   app.get("/api/whatsapp/status", async (req, res) => {
     try {
-      const { getWAStatus, getWASocket } = await import("./src/server/whatsapp.js");
+      const { getWAStatus, getWASocket, connectToWhatsApp } = await import("./src/server/whatsapp.js");
       const local = getWAStatus();
       const localSock = getWASocket();
       const localActuallyOpen = local && local.status === 'open' && localSock && localSock.ws && (localSock.ws as any).isOpen;
       
-      // If local WhatsApp engine is active and has an open socket, return immediately
+      // If local WhatsApp engine is active and has an open socket, return open
       if (localActuallyOpen) {
-        return res.json(local);
+        return res.json({ status: 'open', qr: null });
       }
 
-      // If local has generated a live QR code, return it
+      // If local has generated a live QR code, return clean raw format immediately
       if (local && local.status === 'qr' && local.qr) {
-        return res.json(local);
+        const cleanQr = local.qr.replace(/^https:\/\/wa\.me\/settings\/linked_devices#/, '');
+        return res.json({ status: 'qr', qr: cleanQr });
       }
 
-      // Fallback to live production status (handles both open and qr code for scanning)
-      try {
-        const vpsRes = await fetch("https://antonyschool.in/api/whatsapp/status", {
-          headers: { 'Accept': 'application/json' },
-          signal: AbortSignal.timeout(2000)
-        });
-        if (vpsRes.ok) {
-          const liveStatus = await vpsRes.json();
-          if (liveStatus && (liveStatus.status === 'open' || liveStatus.status === 'qr' || liveStatus.qr)) {
-            return res.json(liveStatus);
-          }
-        }
-      } catch (_) {}
+      // If local is currently connecting, return connecting state
+      if (local && local.status === 'connecting') {
+        return res.json({ status: 'connecting', qr: local.qr || null });
+      }
 
-      res.json(local || { status: 'close', qr: null });
+      // Auto-trigger connection if engine is closed or socket is null
+      if (!local || local.status === 'close' || !localSock) {
+        connectToWhatsApp(io, false, false).catch(() => {});
+      }
+
+      res.json(local || { status: 'connecting', qr: null });
     } catch {
       res.json({ status: 'close', qr: null });
     }
@@ -668,7 +665,7 @@ async function startServer() {
 
   app.post("/api/whatsapp/restart", async (req, res) => {
     try {
-      const { getWAStatus, getRemoteWAStatus, getWASocket, connectToWhatsApp } = await import("./src/server/whatsapp.js");
+      const { getWAStatus, getWASocket, connectToWhatsApp } = await import("./src/server/whatsapp.js");
       const status = getWAStatus();
       const localSock = getWASocket();
       const isActuallyOpen = status?.status === 'open' && localSock && localSock.ws && (localSock.ws as any).isOpen;
@@ -678,13 +675,8 @@ async function startServer() {
         res.json({ success: true, message: "WhatsApp is already connected." });
         return;
       }
-      const remote = await getRemoteWAStatus();
-      if (remote?.status === 'open' && !isForce) {
-        res.json({ success: true, message: "WhatsApp is already connected on the active engine." });
-        return;
-      }
       await connectToWhatsApp(io, true, true);
-      res.json({ success: true });
+      res.json({ success: true, message: "WhatsApp reconnection initiated." });
     } catch (error) {
       res.status(500).json({ error: "Failed to restart WhatsApp" });
     }
@@ -855,22 +847,16 @@ async function startServer() {
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
     
-    // Initialize WhatsApp and start Watchdog safely to avoid multi-server session collisions
+    // Initialize WhatsApp and start Watchdog to maintain permanent connection
     setTimeout(async () => {
       try {
-        const { getRemoteWAStatus } = await import("./src/server/whatsapp.js");
-        const remoteStatus = await getRemoteWAStatus().catch(() => null);
-        if (remoteStatus && remoteStatus.status === 'open') {
-          console.log("[Server] Remote WhatsApp engine is active on primary server. Dev instance running in standby sync mode to prevent Meta dual-login bans.");
-          startWhatsAppWatchdog(io);
-          return;
-        }
+        console.log("[Server] Starting permanent WhatsApp engine & watchdog...");
         connectToWhatsApp(io, false, false).catch(err => console.error("WA Init Error:", err));
         startWhatsAppWatchdog(io);
       } catch (err: any) {
         console.error("WA Init Error:", err?.message || err);
       }
-    }, 2000);
+    }, 1500);
     
     // Connect to MongoDB using Mongoose for WhatsAppQueue when connection URI is provided
     const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/antonyschool_erp';

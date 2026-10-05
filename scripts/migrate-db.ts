@@ -1,13 +1,13 @@
-import { getDbAdmin, initializationPromise } from '../src/server/firebaseAdmin.js';
+import { getDbAdmin, initializationPromise } from '../src/server/db.js';
 import 'dotenv/config';
 
 async function migrate() {
-  console.log("Waiting for Firebase Admin initialization...");
+  console.log("Waiting for Database Admin initialization...");
   await initializationPromise;
   const db = getDbAdmin();
   
   if (!db) {
-    console.error("FAILED to initialize Firebase Admin. Please check your firebase-applet-config.json and project environment.");
+    console.error("FAILED to initialize Database Admin.");
     process.exit(1);
   }
 

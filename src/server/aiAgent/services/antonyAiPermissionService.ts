@@ -182,7 +182,7 @@ export async function validateRolePermission(
 }
 
 /**
- * Validates data isolation on firestore query boundaries.
+ * Validates data isolation on database query boundaries.
  * In a secure multi-tenant environment, the filters applied must match schoolId and hospitalId context.
  */
 export function enforceIsolationFilters(

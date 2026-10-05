@@ -19,56 +19,53 @@ export const DB_PROXY_API_URL = 'https://antonyschool.in/api/maintenance/db-prox
 
 export function isPreviewEnvironment(): boolean {
   if (typeof window === 'undefined') {
-    return true;
+    return false;
   }
 
-  const hostname = window.location.hostname || '';
+  const hostname = (window.location.hostname || '').toLowerCase();
   
   // Production domain
   if (hostname === 'antonyschool.in' || hostname === 'www.antonyschool.in') {
     return false;
   }
 
-  // Running in preview container (AI Studio, Cloud Run, localhost, dev)
+  // Preview sandbox (AI Studio, WebContainer, localhost, Cloud Run preview)
   return true;
 }
 
 export function getApiBaseUrl(): string {
-  // In non-browser environments, return the full live production URL
-  if (typeof window === 'undefined') {
-    return DEFAULT_API_BASE_URL;
-  }
-  // In the browser preview container, use relative paths so requests hit
-  // the container's CORS-enabled Express proxy which securely communicates with antonyschool.in
-  return '';
+  return '/api';
 }
 
 /**
  * Resolves an API URL or path to the proper endpoint.
- * In the browser preview container, ensures requests route via the local CORS-enabled Express proxy.
+ * In AI Studio / preview sandbox, routes directly to https://antonyschool.in/api.
+ * On production (antonyschool.in), routes to relative /api.
  */
 export function resolveApiUrl(pathOrUrl: string): string {
   if (!pathOrUrl) return pathOrUrl;
 
-  // In browser preview: rewrite direct antonyschool.in API calls to relative paths so they
-  // go through our Express server which proxies to https://antonyschool.in with full CORS headers
-  if (typeof window !== 'undefined') {
-    if (pathOrUrl.startsWith('https://antonyschool.in/api/') || pathOrUrl.startsWith('http://antonyschool.in/api/')) {
-      return pathOrUrl.replace(/^https?:\/\/antonyschool\.in/, '');
-    }
-    if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
+  const base = getApiBaseUrl();
+
+  if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
+    if (pathOrUrl.startsWith('https://antonyschool.in/api') || pathOrUrl.startsWith('http://antonyschool.in/api')) {
+      if (base === '/api') {
+        return pathOrUrl.replace(/^https?:\/\/antonyschool\.in\/api/, '/api');
+      }
       return pathOrUrl;
     }
-    const cleanPath = pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`;
-    return cleanPath.startsWith('/api') ? cleanPath : `/api${cleanPath}`;
-  }
-
-  // Server-side / Node.js runtime:
-  if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
     return pathOrUrl;
   }
 
-  const cleanPath = pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`;
-  const fullApiPath = cleanPath.startsWith('/api') ? cleanPath : `/api${cleanPath}`;
-  return `${DEFAULT_API_BASE_URL}${fullApiPath}`;
+  let subPath = pathOrUrl;
+  if (subPath.startsWith('/api/')) {
+    subPath = subPath.substring(5);
+  } else if (subPath.startsWith('/api')) {
+    subPath = subPath.substring(4);
+  }
+  if (subPath.startsWith('/')) {
+    subPath = subPath.substring(1);
+  }
+
+  return subPath ? (base + '/' + subPath) : base;
 }

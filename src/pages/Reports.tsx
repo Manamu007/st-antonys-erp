@@ -987,20 +987,21 @@ const Reports: React.FC = () => {
               </button>
               
               <div className="flex items-center gap-1">
-                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                  let pageNum = i + 1;
-                  if (totalPages > 5) {
-                    if (currentPage > 3) {
-                      pageNum = currentPage - 2 + i;
-                    }
-                    if (pageNum + (4 - i) > totalPages) {
-                      pageNum = totalPages - 4 + i;
-                    }
+                {(() => {
+                  const maxVisible = 5;
+                  let start = Math.max(1, currentPage - Math.floor(maxVisible / 2));
+                  let end = start + maxVisible - 1;
+                  if (end > totalPages) {
+                    end = totalPages;
+                    start = Math.max(1, end - maxVisible + 1);
                   }
-                  
-                  return (
+                  const pages: number[] = [];
+                  for (let p = start; p <= end; p++) {
+                    pages.push(p);
+                  }
+                  return pages.map((pageNum) => (
                     <button
-                      key={pageNum}
+                      key={`rep-page-${pageNum}`}
                       onClick={() => setCurrentPage(pageNum)}
                       className={`w-8 h-8 flex items-center justify-center text-xs font-bold rounded-xl transition-all ${
                         currentPage === pageNum
@@ -1010,8 +1011,8 @@ const Reports: React.FC = () => {
                     >
                       {pageNum}
                     </button>
-                  );
-                })}
+                  ));
+                })()}
               </div>
 
               <button

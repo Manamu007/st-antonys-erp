@@ -26,7 +26,7 @@ import {
   Check,
   Activity
 } from 'lucide-react';
-import { dbService, where, orderBy, limit as firestoreLimit } from '../services/dbService';
+import { dbService, where, orderBy, limit } from '../services/dbService';
 import { whatsappService } from '../services/whatsappService';
 import { useAuth } from '../context/AuthContext';
 import { toast } from 'sonner';
