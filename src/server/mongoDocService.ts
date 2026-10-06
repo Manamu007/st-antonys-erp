@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { getMongoDb } from './mongoSession.js';
 
 // Simple in-memory cache for queries to ensure sub-5ms responses
@@ -6,7 +8,77 @@ interface CacheEntry {
   timestamp: number;
 }
 const queryCache = new Map<string, CacheEntry>();
-const CACHE_TTL_MS = 20000; // 20 seconds
+const DEFAULT_CACHE_TTL_MS = 60000; // 1 minute
+const HEAVY_COLLECTION_TTL_MS = 600000; // 10 minutes for users and staff
+
+// In-flight request deduplication (Single Flight)
+const inFlightRequests = new Map<string, Promise<any>>();
+
+// Persistent disk snapshot directory
+const SNAPSHOT_DIR = path.join(process.cwd(), '.cache', 'db_snapshots');
+try {
+  if (!fs.existsSync(SNAPSHOT_DIR)) {
+    fs.mkdirSync(SNAPSHOT_DIR, { recursive: true });
+  }
+} catch (_) {}
+
+function readDiskSnapshot(colPath: string): any[] | null {
+  try {
+    const file = path.join(SNAPSHOT_DIR, `${colPath}.json`);
+    if (fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (Array.isArray(data)) return data;
+    }
+  } catch (_) {}
+  return null;
+}
+
+function writeDiskSnapshot(colPath: string, data: any[]) {
+  try {
+    if (!Array.isArray(data) || data.length === 0) return;
+    const file = path.join(SNAPSHOT_DIR, `${colPath}.json`);
+    fs.writeFileSync(file, JSON.stringify(data), 'utf8');
+  } catch (_) {}
+}
+
+function readDiskDoc(colPath: string, id: string): any | null {
+  try {
+    const singleFile = path.join(SNAPSHOT_DIR, `${colPath}__${id}.json`);
+    if (fs.existsSync(singleFile)) {
+      return JSON.parse(fs.readFileSync(singleFile, 'utf8'));
+    }
+    const list = readDiskSnapshot(colPath);
+    if (Array.isArray(list)) {
+      const match = list.find((d: any) => d && (d.id === id || d.uid === id));
+      if (match) return match;
+    }
+  } catch (_) {}
+  return null;
+}
+
+function writeDiskDoc(colPath: string, id: string, doc: any) {
+  try {
+    const singleFile = path.join(SNAPSHOT_DIR, `${colPath}__${id}.json`);
+    fs.writeFileSync(singleFile, JSON.stringify(doc), 'utf8');
+    const list = readDiskSnapshot(colPath) || [];
+    const idx = list.findIndex((d: any) => d && (d.id === id || d.uid === id));
+    if (idx >= 0) {
+      list[idx] = doc;
+    } else {
+      list.push(doc);
+    }
+    writeDiskSnapshot(colPath, list);
+  } catch (_) {}
+}
+
+function removeDiskSnapshot(colPath: string) {
+  try {
+    const file = path.join(SNAPSHOT_DIR, `${colPath}.json`);
+    if (fs.existsSync(file)) {
+      fs.unlinkSync(file);
+    }
+  } catch (_) {}
+}
 
 // In-memory ring buffer for audit and activity tracking collections to prevent remote timeout errors
 const telemetryStore = new Map<string, Map<string, any>>();
@@ -46,6 +118,11 @@ export function invalidateCollectionCache(colPath: string) {
       queryCache.delete(key);
     }
   }
+  for (const key of inFlightRequests.keys()) {
+    if (key.includes(`:${colPath}:`)) {
+      inFlightRequests.delete(key);
+    }
+  }
 }
 
 async function forwardToLiveMongo(
@@ -77,53 +154,112 @@ async function forwardToLiveMongo(
     return { success: true, id: payload.id || 'ok' };
   }
 
-  const timeoutMs = 12000;
+  // Deduplicate in-flight read requests
+  const flightKey = `${operation}:${colPath}:${JSON.stringify(payload)}`;
+  if ((operation === 'list' || operation === 'get' || operation === 'count') && inFlightRequests.has(flightKey)) {
+    return inFlightRequests.get(flightKey);
+  }
 
-  try {
-    const vpsRes = await fetch('https://antonyschool.in/api/maintenance/db-proxy', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-      },
-      body: JSON.stringify({
-        operation,
-        path: colPath,
-        ...payload
-      }),
-      signal: AbortSignal.timeout(timeoutMs)
+  const execPromise = (async () => {
+    // For large collections like users & staff with heavy base64 photos, ensure a safe ceiling limit is present
+    const adjustedPayload = { ...payload };
+    if ((colPath === 'users' || colPath === 'staff') && operation === 'list') {
+      const constraints = Array.isArray(adjustedPayload.constraints) ? [...adjustedPayload.constraints] : [];
+      const hasLimit = constraints.some((c: any) => c && c.type === 'limit');
+      if (!hasLimit) {
+        constraints.push({ type: 'limit', value: 250 });
+      }
+      adjustedPayload.constraints = constraints;
+    }
+
+    const timeoutMs = (colPath === 'users' || colPath === 'staff') ? 30000 : 15000;
+
+    try {
+      const vpsRes = await fetch('https://antonyschool.in/api/maintenance/db-proxy', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        },
+        body: JSON.stringify({
+          operation,
+          path: colPath,
+          ...adjustedPayload
+        }),
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+
+      if (vpsRes.ok) {
+        const vpsData = await vpsRes.json();
+        if (operation === 'list') {
+          const list = Array.isArray(vpsData.data) ? vpsData.data : [];
+          if (list.length > 0) {
+            writeDiskSnapshot(colPath, list);
+          }
+          return list;
+        }
+        if (operation === 'count') return typeof vpsData.count === 'number' ? vpsData.count : (Array.isArray(vpsData.data) ? vpsData.data.length : 0);
+        if (operation === 'get') return vpsData.data || null;
+        return vpsData;
+      }
+    } catch (err: any) {
+      const msg = String(err?.message || '').toLowerCase();
+      const isNetworkAbortOrReset =
+        err?.name === 'AbortError' ||
+        msg.includes('abort') ||
+        msg.includes('timeout') ||
+        msg.includes('terminated') ||
+        msg.includes('econnreset') ||
+        msg.includes('socket') ||
+        msg.includes('fetch failed') ||
+        msg.includes('premature close');
+      if (!isLogCol && !isNetworkAbortOrReset) {
+        console.warn(`[MongoDocService] Live VPS proxy notice for ${colPath} (${operation}):`, err?.message || err);
+      }
+    }
+
+    // Graceful disk snapshot fallback on network error/timeout/termination
+    if (operation === 'list') {
+      const diskFallback = readDiskSnapshot(colPath);
+      if (diskFallback && diskFallback.length > 0) {
+        return diskFallback;
+      }
+      if (isLogCol && telemetryStore.has(colPath)) {
+        return Array.from(telemetryStore.get(colPath)!.values());
+      }
+      return [];
+    }
+    if (operation === 'count') {
+      const diskFallback = readDiskSnapshot(colPath);
+      if (diskFallback) {
+        return diskFallback.length;
+      }
+      if (isLogCol && telemetryStore.has(colPath)) {
+        return telemetryStore.get(colPath)!.size;
+      }
+      return 0;
+    }
+    if (operation === 'get' && payload.id) {
+      const diskFallback = readDiskSnapshot(colPath);
+      if (diskFallback) {
+        const match = diskFallback.find((d: any) => d.id === payload.id || d.uid === payload.id);
+        if (match) return match;
+      }
+      if (isLogCol && telemetryStore.has(colPath)) {
+        return telemetryStore.get(colPath)!.get(payload.id) || null;
+      }
+    }
+    return null;
+  })();
+
+  if (operation === 'list' || operation === 'get' || operation === 'count') {
+    inFlightRequests.set(flightKey, execPromise);
+    execPromise.finally(() => {
+      inFlightRequests.delete(flightKey);
     });
-
-    if (vpsRes.ok) {
-      const vpsData = await vpsRes.json();
-      if (operation === 'list') return Array.isArray(vpsData.data) ? vpsData.data : [];
-      if (operation === 'count') return typeof vpsData.count === 'number' ? vpsData.count : (Array.isArray(vpsData.data) ? vpsData.data.length : 0);
-      if (operation === 'get') return vpsData.data || null;
-      return vpsData;
-    }
-  } catch (err: any) {
-    const isAbort = err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('abort') || String(err?.message || '').toLowerCase().includes('timeout');
-    if (!isLogCol && !isAbort) {
-      console.warn(`[MongoDocService] Live VPS proxy error for ${colPath} (${operation}):`, err?.message || err);
-    }
   }
 
-  if (operation === 'list') {
-    if (isLogCol && telemetryStore.has(colPath)) {
-      return Array.from(telemetryStore.get(colPath)!.values());
-    }
-    return [];
-  }
-  if (operation === 'count') {
-    if (isLogCol && telemetryStore.has(colPath)) {
-      return telemetryStore.get(colPath)!.size;
-    }
-    return 0;
-  }
-  if (operation === 'get' && payload.id && isLogCol && telemetryStore.has(colPath)) {
-    return telemetryStore.get(colPath)!.get(payload.id) || null;
-  }
-  return null;
+  return execPromise;
 }
 
 function buildMongoQuery(constraints: any[] = []): { filter: any; sort: any; limitVal: number | null } {
@@ -168,7 +304,8 @@ function buildMongoQuery(constraints: any[] = []): { filter: any; sort: any; lim
 export async function listDocuments(colPath: string, constraints: any[] = []): Promise<any[]> {
   const cacheKey = `${colPath}:list:${JSON.stringify(constraints)}`;
   const cached = queryCache.get(cacheKey);
-  if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
+  const ttl = (colPath === 'users' || colPath === 'staff') ? HEAVY_COLLECTION_TTL_MS : DEFAULT_CACHE_TTL_MS;
+  if (cached && (Date.now() - cached.timestamp < ttl)) {
     return cached.data;
   }
 
@@ -187,6 +324,7 @@ export async function listDocuments(colPath: string, constraints: any[] = []): P
         return { id: docId, uid: docId, ...rest };
       });
       queryCache.set(cacheKey, { data: results, timestamp: Date.now() });
+      if (results.length > 0) writeDiskSnapshot(colPath, results);
       return results;
     } catch (err: any) {
       console.warn(`[MongoDocService] Local list query failed for ${colPath}:`, err?.message || err);
@@ -195,12 +333,19 @@ export async function listDocuments(colPath: string, constraints: any[] = []): P
 
   // Forward to live MongoDB proxy on antonyschool.in
   const liveResults = await forwardToLiveMongo('list', colPath, { constraints });
-  if (Array.isArray(liveResults)) {
+  if (Array.isArray(liveResults) && liveResults.length > 0) {
     queryCache.set(cacheKey, { data: liveResults, timestamp: Date.now() });
+    writeDiskSnapshot(colPath, liveResults);
     return liveResults;
   }
 
-  return [];
+  const diskFallback = readDiskSnapshot(colPath);
+  if (diskFallback && diskFallback.length > 0) {
+    queryCache.set(cacheKey, { data: diskFallback, timestamp: Date.now() });
+    return diskFallback;
+  }
+
+  return Array.isArray(liveResults) ? liveResults : [];
 }
 
 export async function getDocument(colPath: string, id: string): Promise<any | null> {
@@ -214,14 +359,23 @@ export async function getDocument(colPath: string, id: string): Promise<any | nu
       if (doc) {
         const { _id, ...rest } = doc;
         const docId = rest.id || rest.uid || id;
-        return { id: docId, uid: docId, ...rest };
+        const res = { id: docId, uid: docId, ...rest };
+        writeDiskDoc(colPath, docId, res);
+        return res;
       }
     } catch (err: any) {
       console.warn(`[MongoDocService] Local get query failed for ${colPath}/${id}:`, err?.message || err);
     }
   }
 
-  return forwardToLiveMongo('get', colPath, { id });
+  const liveDoc = await forwardToLiveMongo('get', colPath, { id });
+  if (liveDoc) {
+    writeDiskDoc(colPath, id, liveDoc);
+    return liveDoc;
+  }
+
+  // Fallback to disk snapshot
+  return readDiskDoc(colPath, id);
 }
 
 export async function countDocuments(colPath: string, constraints: any[] = []): Promise<number> {
@@ -253,6 +407,9 @@ export async function setDocument(
     uid: data?.uid || docId,
     updatedAt: new Date().toISOString()
   };
+
+  // Always write to local disk snapshot for instantaneous persistence
+  writeDiskDoc(colPath, docId, cleaned);
 
   const mongo = await getMongoDb().catch(() => null);
   if (mongo) {
@@ -287,6 +444,8 @@ export async function addDocument(colPath: string, data: any): Promise<{ id: str
     updatedAt: new Date().toISOString()
   };
 
+  writeDiskDoc(colPath, docId, cleaned);
+
   const mongo = await getMongoDb().catch(() => null);
   if (mongo) {
     try {
@@ -314,6 +473,8 @@ export async function updateDocument(colPath: string, id: string, data: any): Pr
     uid: data?.uid || docId,
     updatedAt: new Date().toISOString()
   };
+
+  writeDiskDoc(colPath, docId, cleaned);
 
   const mongo = await getMongoDb().catch(() => null);
   if (mongo) {

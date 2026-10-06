@@ -32,6 +32,7 @@ import {
   WhatsAppQueue
 } from './models/WhatsAppQueue.js';
 import { startWhatsAppQueueWorker, triggerQueueProcessing, processNextQueueItem } from './whatsappQueueWorker.js';
+import { checkWhatsAppDeduplication, markWhatsAppMessageQueued, markWhatsAppMessageSent, isAbsentAlert } from './whatsappDeduplication.js';
 import mongoose from 'mongoose';
 import crypto from 'crypto';
 import NodeCache from 'node-cache';
@@ -3853,23 +3854,34 @@ export const sendMessage = async (to: string, text: string, options: any = {}, t
     const rawDigits = String(to || '').replace(/\D/g, '');
     const cleanMsgText = String(text || '').trim();
 
-    // User requirement: Prevent duplicate WhatsApp messages (do not send same message two times)
-    if (rawDigits && cleanMsgText) {
-      const msgFingerprint = `${rawDigits.slice(-10)}_${cleanMsgText}`;
-      const lastSentTime = recentSentMessageDeduplicationMap.get(msgFingerprint);
-      const now = Date.now();
+    // Comprehensive Deduplication Guard: Never send duplicate messages (attendance alerts, notices, broadcasts, identical texts)
+    const dedupCheck = checkWhatsAppDeduplication({
+      recipient: to,
+      text,
+      options,
+      type,
+      idempotencyKey: options.idempotencyKey,
+      forceSend: options.forceSend === true
+    });
 
-      if (lastSentTime && (now - lastSentTime) < 60000) {
-        console.log(`[WhatsApp Deduplication] Suppressed duplicate message to +91 ${rawDigits.slice(-10)} (sent ${(now - lastSentTime) / 1000}s ago).`);
-        return {
-          success: true,
-          skipped: true,
-          duplicate: true,
-          reason: 'Duplicate message prevented within 60-second window'
-        };
-      }
-      recentSentMessageDeduplicationMap.set(msgFingerprint, now);
+    if (dedupCheck.isDuplicate) {
+      console.log(`[WhatsApp Deduplication Guard] Blocked duplicate message to ${to}: ${dedupCheck.reason}`);
+      return {
+        success: true,
+        skipped: true,
+        duplicate: true,
+        reason: dedupCheck.reason
+      };
     }
+
+    // Register as queued in-flight
+    markWhatsAppMessageQueued({
+      recipient: to,
+      text,
+      options,
+      type,
+      idempotencyKey: options.idempotencyKey
+    });
 
     const isStudentPermission = options.templateType === 'student_permission' || options.messageType === 'permission_notice' || options.eventType === 'student_permission';
     const isHostelOuting = options.templateType === 'hostel_outing_permission' || options.messageType === 'outing_notice' || options.eventType === 'hostel_outing_permission' || options.templateType === 'hostel_outing';
@@ -4080,11 +4092,13 @@ export const sendMessage = async (to: string, text: string, options: any = {}, t
         studentId: studentIdForKey,
         outingId: outingIdForKey
       });
+    } else if (isAbsentAlert(text, options)) {
+      idempotencyKey = `${schoolId}_${normalizedPhone.replace(/\+/g, '')}_${studentId}_absent_${dateToday}`;
     } else if (type === 'broadcast') {
       const classIdKey = options.classId ? `_${options.classId}` : '';
       const textHash = crypto.createHash('sha256').update((text || '').trim().toLowerCase().replace(/\s+/g, ' ')).digest('hex').substring(0, 12);
       idempotencyKey = `${schoolId}_${normalizedPhone.replace(/\+/g, '')}_broadcast${classIdKey}_${textHash}_${dateToday}`;
-    } else if (templateType === 'none' || !templateType || type === 'single' || options.custom || options.messageType === 'custom') {
+    } else if (!templateType || templateType === 'none' || options.custom || options.messageType === 'custom') {
       // Deterministic key for single/custom messages based on text hash to block rapid double-send of identical text to same recipient
       const textHash = crypto.createHash('sha256').update((text || '').trim().toLowerCase().replace(/\s+/g, ' ')).digest('hex').substring(0, 12);
       idempotencyKey = `${schoolId}_${normalizedPhone.replace(/\+/g, '')}_${studentId}_custom_${textHash}_${dateToday}`;

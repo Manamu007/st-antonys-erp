@@ -1,6 +1,7 @@
 import mongoose, { Schema, Document, Model } from 'mongoose';
 import crypto from 'crypto';
 import { WhatsAppQueue } from './WhatsAppQueue.js';
+import { checkWhatsAppDeduplication, markWhatsAppMessageSent } from '../whatsappDeduplication.js';
 
 export interface IWhatsAppIdempotency extends Document {
   key: string;
@@ -135,6 +136,28 @@ export async function checkWhatsAppDuplicate(params: {
     return { isDuplicate: false };
   }
 
+  // 0. Universal Deduplication Check (in-memory + disk cache)
+  const universalCheck = checkWhatsAppDeduplication({
+    recipient: params.recipient,
+    text: params.text,
+    options: {
+      templateType: params.templateType,
+      messageType: params.messageType,
+      studentId: params.studentId,
+      forceSend: params.forceSend
+    },
+    idempotencyKey: params.idempotencyKey,
+    forceSend: params.forceSend
+  });
+
+  if (universalCheck.isDuplicate) {
+    return {
+      isDuplicate: true,
+      reason: universalCheck.reason,
+      existingIdempotencyKey: params.idempotencyKey
+    };
+  }
+
   const cleanPhone = cleanPhoneNumber(params.recipient);
   const contentHash = generateContentHash(params.text);
   const isMongoConnected = mongoose.connection.readyState === 1;
@@ -142,6 +165,24 @@ export async function checkWhatsAppDuplicate(params: {
   if (!cleanPhone || !params.text?.trim()) {
     return { isDuplicate: false };
   }
+
+  const phone10 = cleanPhone.slice(-10);
+  const phoneVariants = Array.from(new Set([
+    cleanPhone,
+    `+${cleanPhone}`,
+    `${cleanPhone}@s.whatsapp.net`,
+    phone10,
+    `+91${phone10}`,
+    `91${phone10}`,
+    `91${phone10}@s.whatsapp.net`
+  ].filter(Boolean)));
+
+  const phoneQuery = {
+    $or: [
+      { recipient: { $in: phoneVariants } },
+      { to: { $in: phoneVariants } }
+    ]
+  };
 
   if (isMongoConnected) {
     try {
@@ -167,12 +208,7 @@ export async function checkWhatsAppDuplicate(params: {
 
       // 2. Check MongoDB whatsapp_queue for identical message currently in pending or processing status
       const activeQueueDuplicate = await WhatsAppQueue.findOne({
-        $or: [
-          { recipient: cleanPhone },
-          { recipient: `+${cleanPhone}` },
-          { to: cleanPhone },
-          { to: `+${cleanPhone}` }
-        ],
+        ...phoneQuery,
         status: { $in: ['pending', 'processing'] }
       }).sort({ createdAt: -1 });
 
@@ -188,28 +224,39 @@ export async function checkWhatsAppDuplicate(params: {
         }
       }
 
-      // 3. Check MongoDB whatsapp_queue for identical message already SENT
-      const isDailyAutomated = 
+      // 3. Absent alert student-level deduplication (strictly 1 absent alert per student per day)
+      const isAbsentNotice = 
         params.templateType === 'absent' || 
-        params.templateType === 'exam_result' || 
-        params.templateType === 'fee_receipt' || 
         params.messageType === 'attendance_absent' ||
-        params.messageType === 'marks_result' ||
-        params.messageType === 'payment_receipt';
+        params.text?.toLowerCase().includes('marked *absent*') ||
+        params.text?.toLowerCase().includes('marked absent');
 
-      // Deduplication time window:
-      // For automated daily notices: within 24 hours (86,400,000 ms)
-      // For general / custom / broadcast messages: within 15 minutes (900,000 ms) to prevent double clicks & repeats
-      const deduplicationWindowMs = isDailyAutomated ? 24 * 60 * 60 * 1000 : 15 * 60 * 1000;
+      const deduplicationWindowMs = 24 * 60 * 60 * 1000; // 24-hour deduplication window
       const windowStart = new Date(Date.now() - deduplicationWindowMs);
 
+      if (isAbsentNotice && params.studentId && params.studentId !== 'none') {
+        const studentAbsentSent = await WhatsAppQueue.findOne({
+          $or: [
+            { 'options.studentId': params.studentId },
+            { studentId: params.studentId }
+          ],
+          status: 'sent',
+          sentAt: { $gte: windowStart }
+        }).sort({ sentAt: -1 });
+
+        if (studentAbsentSent) {
+          return {
+            isDuplicate: true,
+            reason: `Attendance absent alert already delivered today for student ID ${params.studentId}`,
+            existingStatus: 'sent',
+            existingId: studentAbsentSent._id.toString()
+          };
+        }
+      }
+
+      // 4. Check MongoDB whatsapp_queue for identical message already SENT within 24 hours
       const recentSentDuplicate = await WhatsAppQueue.findOne({
-        $or: [
-          { recipient: cleanPhone },
-          { recipient: `+${cleanPhone}` },
-          { to: cleanPhone },
-          { to: `+${cleanPhone}` }
-        ],
+        ...phoneQuery,
         status: 'sent',
         sentAt: { $gte: windowStart }
       }).sort({ sentAt: -1 });
@@ -220,9 +267,9 @@ export async function checkWhatsAppDuplicate(params: {
           const timeSinceSentMin = Math.round((Date.now() - new Date(recentSentDuplicate.sentAt || windowStart).getTime()) / 60000);
           return {
             isDuplicate: true,
-            reason: isDailyAutomated 
-              ? `Identical automated notice already delivered today (${timeSinceSentMin} mins ago)`
-              : `Identical message already sent to this recipient ${timeSinceSentMin} mins ago`,
+            reason: isAbsentNotice 
+              ? `Attendance absent alert already delivered today (${timeSinceSentMin} mins ago)`
+              : `Identical message already sent to this recipient today (${timeSinceSentMin} mins ago)`,
             existingStatus: 'sent',
             existingId: recentSentDuplicate._id.toString()
           };
@@ -250,6 +297,19 @@ export async function recordWhatsAppIdempotency(params: {
   source?: string;
   waMessageId?: string;
 }): Promise<void> {
+  if (params.status === 'sent') {
+    markWhatsAppMessageSent({
+      recipient: params.recipient,
+      text: params.text,
+      options: {
+        templateType: params.templateType,
+        messageType: params.messageType,
+        studentId: params.studentId
+      },
+      idempotencyKey: params.key
+    });
+  }
+
   const isMongoConnected = mongoose.connection.readyState === 1;
   if (!isMongoConnected || !params.key) return;
 

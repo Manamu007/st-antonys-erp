@@ -869,16 +869,18 @@ const SchoolSettings: FC = () => {
         setLoading(true);
         const url = await uploadService.uploadFile(file);
         const keys = path.split('.');
-        setLocalSiteConfig((prev: any) => {
-          const newState = JSON.parse(JSON.stringify(prev));
-          let current = newState;
-          for (let i = 0; i < keys.length - 1; i++) {
-            current = current[keys[i]];
-          }
-          current[keys[keys.length - 1]] = url;
-          return newState;
-        });
-        toast.success("Image uploaded!");
+        const newState = JSON.parse(JSON.stringify(localSiteConfig || {}));
+        let current = newState;
+        for (let i = 0; i < keys.length - 1; i++) {
+          if (!current[keys[i]]) current[keys[i]] = {};
+          current = current[keys[i]];
+        }
+        current[keys[keys.length - 1]] = url;
+        setLocalSiteConfig(newState);
+
+        // Auto-save immediately to database so landing page updates instantly
+        await updateSiteConfig(newState);
+        toast.success("Image uploaded and saved to landing page!");
       } catch (error: any) {
         toast.error(error.message || "Failed to upload image.");
       } finally {
@@ -893,12 +895,20 @@ const SchoolSettings: FC = () => {
       try {
         setLoading(true);
         const url = await uploadService.uploadFile(file);
-        setLocalSiteConfig((prev: any) => {
-          const newPhotos = [...(prev.about.gridPhotos || ['', '', '', ''])];
-          newPhotos[index] = url;
-          return { ...prev, about: { ...prev.about, gridPhotos: newPhotos } };
-        });
-        toast.success("Image uploaded!");
+        const currentGrid = [...(localSiteConfig?.about?.gridPhotos || ['', '', '', ''])];
+        currentGrid[index] = url;
+        const updatedConfig = {
+          ...localSiteConfig,
+          about: {
+            ...localSiteConfig?.about,
+            gridPhotos: currentGrid
+          }
+        };
+        setLocalSiteConfig(updatedConfig);
+
+        // Auto-save immediately to database so landing page updates instantly
+        await updateSiteConfig(updatedConfig);
+        toast.success(`Gallery photo ${index + 1} uploaded and saved!`);
       } catch (error: any) {
         toast.error(error.message || "Failed to upload image.");
       } finally {
@@ -2551,9 +2561,9 @@ const SchoolSettings: FC = () => {
                 <div className="grid grid-cols-2 gap-4">
                   {[0, 1, 2, 3].map((idx) => (
                     <div key={idx} className="relative group aspect-square rounded-2xl overflow-hidden border border-neutral-100 bg-neutral-50 flex items-center justify-center">
-                      {siteConfig.about.gridPhotos?.[idx] ? (
+                      {localSiteConfig?.about?.gridPhotos?.[idx] ? (
                         <img 
-                          src={normalizeUrl(siteConfig.about.gridPhotos[idx])} 
+                          src={normalizeUrl(localSiteConfig.about.gridPhotos[idx])} 
                           alt={`Gallery ${idx}`} 
                           className="w-full h-full object-cover" 
                           referrerPolicy="no-referrer"
@@ -2687,10 +2697,12 @@ const SchoolSettings: FC = () => {
                               try {
                                 setLoading(true);
                                 const url = await uploadService.uploadFile(file);
-                                const newLeaders = [...localSiteConfig.leadership];
-                                newLeaders[idx].photoUrl = url;
-                                setLocalSiteConfig({...localSiteConfig, leadership: newLeaders});
-                                toast.success("Photo uploaded");
+                                const newLeaders = [...(localSiteConfig?.leadership || [])];
+                                newLeaders[idx] = { ...newLeaders[idx], photoUrl: url };
+                                const updatedConfig = { ...localSiteConfig, leadership: newLeaders };
+                                setLocalSiteConfig(updatedConfig);
+                                await updateSiteConfig(updatedConfig);
+                                toast.success("Photo uploaded and saved!");
                               } catch (err) {
                                 toast.error("Upload failed");
                               } finally {

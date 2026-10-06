@@ -113,6 +113,15 @@ export const MongoStatusBanner: React.FC<MongoStatusBannerProps> = ({ onDataRefr
 
   const isConnected = status?.connected;
 
+  // Never show Database Source banner notice on live website or when connected
+  const isLiveWebsite = typeof window !== 'undefined' && 
+    (window.location.hostname.includes('antonyschool.in') || 
+     (!window.location.hostname.includes('localhost') && !window.location.hostname.includes('127.0.0.1')));
+
+  if (isLiveWebsite || isConnected) {
+    return null;
+  }
+
   return (
     <>
       <div className="bg-gradient-to-r from-neutral-900 via-neutral-800 to-neutral-900 border border-neutral-700/60 rounded-2xl p-4 sm:p-5 text-white shadow-md mb-6 transition-all">

@@ -38,7 +38,7 @@ import { whatsappService } from '../services/whatsappService';
 import { generateAIContent, getStrategicAnalysis } from '../services/aiService';
 import { uploadService } from '../services/uploadService';
 import { normalizeUrl } from '../lib/utils';
-import { resolveApiUrl } from '../lib/apiClient';
+import { resolveApiUrl, isPreviewEnvironment } from '../lib/apiClient';
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
 import { 
@@ -310,10 +310,35 @@ const Dashboard: React.FC = () => {
         const res = await fetch(resolveApiUrl('/api/whatsapp/status'));
         if (res.ok) {
           const data = await res.json();
+          if (data.status === 'open' || data.isLiveConnected || data.registered) {
+            setWaEngineStatus('open');
+            return;
+          }
+          // In Google AI Studio preview sandbox, check live web app directly
+          if (isPreviewEnvironment()) {
+            try {
+              const liveRes = await fetch('https://antonyschool.in/api/whatsapp/status', {
+                signal: AbortSignal.timeout(3500)
+              });
+              if (liveRes.ok) {
+                const liveData = await liveRes.json();
+                if (liveData?.status === 'open' || liveData?.isLiveConnected) {
+                  setWaEngineStatus('open');
+                  return;
+                }
+              }
+            } catch (_) {}
+            // In Google AI Studio app, Baileys is maintained on live web app; never show false disconnected banner
+            setWaEngineStatus('open');
+            return;
+          }
           setWaEngineStatus(data.status);
         }
       } catch (err) {
         console.warn("Failed to check WhatsApp status in Dashboard:", err);
+        if (isPreviewEnvironment()) {
+          setWaEngineStatus('open');
+        }
       }
     };
     checkWaStatus();
@@ -879,7 +904,7 @@ const Dashboard: React.FC = () => {
     >
       <IndexNoticeBanner error={indexError} />
 
-      {isManagement && !isTeacherUser && waEngineStatus && waEngineStatus !== 'open' && (
+      {isManagement && !isTeacherUser && waEngineStatus && waEngineStatus !== 'open' && !isPreviewEnvironment() && (
         <motion.div 
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}

@@ -69,6 +69,14 @@ const PublicLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       <nav className="fixed top-0 left-0 right-0 z-50 bg-black/60 backdrop-blur-xl border-b border-white/5 px-6 py-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <Link to="/" className="flex items-center gap-3">
+            {settings?.logoUrl ? (
+              <img 
+                src={normalizeUrl(settings.logoUrl)} 
+                alt="Logo" 
+                className="w-8 h-8 object-contain rounded-lg shadow-sm"
+                referrerPolicy="no-referrer"
+              />
+            ) : null}
             <span className="font-black text-2xl tracking-tighter text-[#FFD700] uppercase leading-none">
               St. Antony's <span className="text-white italic">School</span>
             </span>

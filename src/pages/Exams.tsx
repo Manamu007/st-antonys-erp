@@ -53,7 +53,7 @@ import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
 import { extractHandwrittenMarks } from '../services/aiService';
 import { sortAlphabetically, resolveStudentClassAndBatch } from '../lib/utils';
-import { isDemoStudentRecord, isKnownDemoName } from '../constants/systemAccounts';
+import { isDemoStudentRecord, isKnownDemoName, isTeacherAccountOrEmail } from '../constants/systemAccounts';
 import { SortAsc, SortDesc } from 'lucide-react';
 import { resolveApiUrl } from '../lib/apiClient';
 
@@ -686,6 +686,12 @@ export const getScheduledConfiguredSubjects = ({
     }
   });
 
+  if (matched.length === 0) {
+    const isC10 = isClass10NameOrId(targetClassId) || isClass10NameOrId(targetClassName) || isClass10NameOrId(targetBatchName);
+    const isPrim = isPrimaryClass(targetClassName || targetClassId);
+    return getStandardSubjectsForClass(targetClassId || targetClassName, subjects, isC10, isPrim);
+  }
+
   return [...matched].sort(compareSubjectsStandard);
 };
 
@@ -961,7 +967,10 @@ const Exams: React.FC = () => {
       if (profile.uid) ids.add(String(profile.uid));
       if (profile.id) ids.add(String(profile.id));
       if ((profile as any)?.staffId) ids.add(String((profile as any).staffId));
-      if (profile.email) ids.add(String(profile.email));
+      if (profile.email) {
+        ids.add(String(profile.email));
+        ids.add(String(profile.email).toLowerCase().trim());
+      }
       if (profile.name) names.add(String(profile.name).toLowerCase().trim());
     }
 
@@ -969,7 +978,10 @@ const Exams: React.FC = () => {
       if (currentTeacherObj.uid) ids.add(String(currentTeacherObj.uid));
       if (currentTeacherObj.id) ids.add(String(currentTeacherObj.id));
       if (currentTeacherObj.staffId) ids.add(String(currentTeacherObj.staffId));
-      if (currentTeacherObj.email) ids.add(String(currentTeacherObj.email));
+      if (currentTeacherObj.email) {
+        ids.add(String(currentTeacherObj.email));
+        ids.add(String(currentTeacherObj.email).toLowerCase().trim());
+      }
       if (currentTeacherObj.name) names.add(String(currentTeacherObj.name).toLowerCase().trim());
     }
 
@@ -1014,11 +1026,59 @@ const Exams: React.FC = () => {
       if (b.classTeacherId && teacherIdentifiers.ids.has(String(b.classTeacherId))) {
         batchSet.add(bId);
       }
+      if (b.classTeacherEmail && (teacherIdentifiers.ids.has(String(b.classTeacherEmail)) || teacherIdentifiers.ids.has(String(b.classTeacherEmail).toLowerCase().trim()))) {
+        batchSet.add(bId);
+      }
       if (b.classTeacher && teacherIdentifiers.names.has(String(b.classTeacher).toLowerCase().trim())) {
         batchSet.add(bId);
       }
       if (b.classTeacherName && teacherIdentifiers.names.has(String(b.classTeacherName).toLowerCase().trim())) {
         batchSet.add(bId);
+      }
+
+      // Check email/role pattern match (e.g. stantonys10m@gmail.com, stantony10ipl@gmail.com, stantonys4m@gmail.com)
+      const pEmail = String(profile?.email || '').toLowerCase().trim();
+      const emailMatch = pEmail.match(/^(?:st)?antonys?(\d+|nur|nursery|lkg|ukg)([a-z]+)?/i);
+      const bClassObj = classes.find(c => c.id === b.classId);
+      const bClassNameStr = String(b.className || bClassObj?.name || b.class || b.classId || b.id || '').toLowerCase();
+      const bClassNorm = bClassNameStr.replace(/[-_\s]/g, '');
+      const bSectionNorm = String(b.section || b.name || b.id || '').toLowerCase().replace(/[-_\s]/g, '');
+
+      if (emailMatch) {
+        const grade = emailMatch[1].toLowerCase();
+        const section = (emailMatch[2] || '').toLowerCase();
+        const matchesGrade = 
+          (grade === 'nur' || grade === 'nursery') ? bClassNorm.includes('nur') :
+          (grade === 'lkg') ? bClassNorm.includes('lkg') :
+          (grade === 'ukg') ? bClassNorm.includes('ukg') :
+          (bClassNorm.includes(grade) || bId.toLowerCase().includes(grade));
+
+        let matchesSection = true;
+        if (section) {
+          if (section === 'm' || section === 'thm') {
+            matchesSection = bSectionNorm.includes('m') || bId.toLowerCase().includes('m-batch');
+          } else if (section === 'ipl') {
+            matchesSection = bSectionNorm.includes('ipl') || bId.toLowerCase().includes('ipl');
+          } else if (section === 's' || section === 'ths') {
+            matchesSection = bSectionNorm.includes('s') || bSectionNorm.includes('ths') || bId.toLowerCase().includes('s-batch');
+          } else {
+            matchesSection = bSectionNorm.includes(section) || bId.toLowerCase().includes(section);
+          }
+        }
+        if (matchesGrade && matchesSection) {
+          batchSet.add(bId);
+        }
+      }
+
+      // Check profile class & section
+      if (profile?.class) {
+        const pClassNorm = String(profile.class).toLowerCase().replace(/[-_\s]/g, '');
+        if (pClassNorm && bClassNorm && (pClassNorm.includes(bClassNorm) || bClassNorm.includes(pClassNorm))) {
+          const pSection = String((profile as any).classTeacherBatchName || profile.section || '').toLowerCase().replace(/[-_\s]/g, '');
+          if (!pSection || bSectionNorm.includes(pSection) || pSection.includes(bSectionNorm)) {
+            batchSet.add(bId);
+          }
+        }
       }
     });
 
@@ -1090,6 +1150,7 @@ const Exams: React.FC = () => {
       const bId = String(b.id);
       if (teacherBatchIds.includes(bId)) return true;
       if (b.classTeacherId && teacherIdentifiers.ids.has(String(b.classTeacherId))) return true;
+      if (b.classTeacherEmail && (teacherIdentifiers.ids.has(String(b.classTeacherEmail)) || teacherIdentifiers.ids.has(String(b.classTeacherEmail).toLowerCase().trim()))) return true;
       if (b.classTeacher && teacherIdentifiers.names.has(String(b.classTeacher).toLowerCase().trim())) return true;
       if (b.classTeacherName && teacherIdentifiers.names.has(String(b.classTeacherName).toLowerCase().trim())) return true;
       if ((profile as any)?.classTeacherBatchId && bId === String((profile as any).classTeacherBatchId)) return true;
@@ -1127,9 +1188,13 @@ const Exams: React.FC = () => {
         return teacherClassIds.includes(cId);
       }
 
+      if (classTeacherClassIds.length > 0) {
+        return classTeacherClassIds.includes(cId);
+      }
+
       return true;
     });
-  }, [classes, isUserConstrained, batches, teacherBatchIds, teacherClassIds]);
+  }, [classes, isUserConstrained, batches, teacherBatchIds, teacherClassIds, classTeacherClassIds]);
 
   const availableBatches = useMemo(() => {
     return batches.filter(b => {
@@ -1150,13 +1215,14 @@ const Exams: React.FC = () => {
         return classTeacherBatches.some(cb => String(cb.id) === bId);
       }
 
-      return false;
+      return true;
     });
   }, [batches, selectedClass, isUserConstrained, teacherBatchIds, classTeacherBatches]);
 
   const teacherAssignedSubjects = useMemo(() => {
     const names = new Set<string>();
     const ids = new Set<string>();
+    const normalizedKeys = new Set<string>();
 
     const NON_SUBJECT_TERMS = [
       'teaching', 'non-teaching', 'staff', 'primary', 'primary teacher',
@@ -1173,18 +1239,56 @@ const Exams: React.FC = () => {
         if (trimmed && !NON_SUBJECT_TERMS.includes(lower)) {
           names.add(lower);
           ids.add(trimmed);
+          const normKey = normalizeSubjectKey(trimmed);
+          if (normKey) {
+            normalizedKeys.add(normKey.toLowerCase());
+            names.add(normKey.toLowerCase());
+          }
+          // Also match against subjects master list if loaded
+          const sMatch = (subjects || []).find((s: any) => 
+            s.id === trimmed || 
+            String(s.code || '').toLowerCase() === lower || 
+            String(s.name || '').toLowerCase() === lower ||
+            normalizeSubjectKey(s.name) === normKey
+          );
+          if (sMatch) {
+            if (sMatch.id) ids.add(String(sMatch.id));
+            if (sMatch.name) names.add(String(sMatch.name).toLowerCase().trim());
+          }
         }
       } else if (Array.isArray(item)) {
         item.forEach(addSub);
       } else if (typeof item === 'object') {
         if (item.id) ids.add(String(item.id));
-        if (item.subjectId) ids.add(String(item.subjectId));
+        if (item.subjectId) {
+          ids.add(String(item.subjectId));
+          const normKey = normalizeSubjectKey(item.subjectId);
+          if (normKey) {
+            normalizedKeys.add(normKey.toLowerCase());
+            names.add(normKey.toLowerCase());
+          }
+        }
         if (item.code) ids.add(String(item.code));
         const possibleName = item.name || item.subjectName || item.title || item.subject;
         if (possibleName) {
           const lower = String(possibleName).toLowerCase().trim();
           if (!NON_SUBJECT_TERMS.includes(lower)) {
             names.add(lower);
+            const normKey = normalizeSubjectKey(lower);
+            if (normKey) {
+              normalizedKeys.add(normKey.toLowerCase());
+              names.add(normKey.toLowerCase());
+            }
+          }
+        }
+        if (item.subjectId || item.id) {
+          const sMatch = (subjects || []).find((s: any) => 
+            s.id === item.subjectId || s.id === item.id ||
+            normalizeSubjectKey(s.name) === normalizeSubjectKey(item.subjectId || item.id)
+          );
+          if (sMatch) {
+            if (sMatch.id) ids.add(String(sMatch.id));
+            if (sMatch.name) names.add(String(sMatch.name).toLowerCase().trim());
           }
         }
       }
@@ -1210,13 +1314,44 @@ const Exams: React.FC = () => {
       if (Array.isArray(currentTeacherObj.subjectAssignments)) addSub(currentTeacherObj.subjectAssignments);
     }
 
-    return { names, ids };
-  }, [profile, currentTeacherObj]);
+    return { names, ids, normalizedKeys };
+  }, [profile, currentTeacherObj, subjects]);
 
   const availableSubjects = useMemo(() => {
-    if (!subjects || subjects.length === 0) return [];
+    const activeClass = classes.find(c => c.id === selectedClass);
+    const activeBatch = batches.find(b => b.id === selectedBatch);
+    const isC10 = isClass10NameOrId(selectedClass) || isClass10NameOrId(activeClass?.name) || isClass10NameOrId(selectedBatch) || isClass10NameOrId(activeBatch?.name);
+    const isPrim = isPrimaryClass(activeClass?.name || selectedClass);
 
-    const hasBaseAccess = isAdmin || profile?.role === 'admin' || profile?.role === 'principal' || (hasPermission('exams_manage') && !isTeacherRole);
+    // Standard fallback subjects for the class so filters NEVER render empty
+    const standardSubjects = getStandardSubjectsForClass(selectedClass || activeClass?.name, subjects || [], isC10, isPrim);
+    const effectiveSubjects = (subjects && subjects.length > 0) ? subjects : standardSubjects;
+
+    const pUid = String(profile?.uid || profile?.id || '').toLowerCase().trim();
+    const pEmail = String(profile?.email || '').toLowerCase().trim();
+    const pName = String(profile?.name || '').toLowerCase().trim();
+
+    // Check if the current user is designated as Class Teacher for the selected class/batch
+    const isBatchClassTeacher = Boolean(
+      activeBatch && (
+        (activeBatch.classTeacherId && (String(activeBatch.classTeacherId).toLowerCase().trim() === pUid || teacherIdentifiers.ids.has(String(activeBatch.classTeacherId)))) ||
+        (activeBatch.classTeacherEmail && (String(activeBatch.classTeacherEmail).toLowerCase().trim() === pEmail || teacherIdentifiers.ids.has(String(activeBatch.classTeacherEmail).toLowerCase().trim()))) ||
+        (activeBatch.classTeacher && (String(activeBatch.classTeacher).toLowerCase().trim() === pName || teacherIdentifiers.names.has(String(activeBatch.classTeacher).toLowerCase().trim()))) ||
+        (activeBatch.classTeacherName && (String(activeBatch.classTeacherName).toLowerCase().trim() === pName || teacherIdentifiers.names.has(String(activeBatch.classTeacherName).toLowerCase().trim()))) ||
+        (activeBatch.id === (profile as any)?.classTeacherBatchId || activeBatch.id === profile?.batchId)
+      )
+    );
+
+    const isClassTeacherUser = 
+      profile?.role === 'teacher_class' || 
+      profile?.role === 'class_teacher' ||
+      (profile as any)?.isClassTeacher ||
+      String((profile as any)?.designation || '').toLowerCase().includes('class teacher') ||
+      isBatchClassTeacher ||
+      classTeacherBatches.some(cb => cb.id === selectedBatch || (selectedClass && cb.classId === selectedClass)) ||
+      Boolean(profile?.email && /(?:st)?antonys?(?:\d+|nur|nursery|lkg|ukg)[a-z]*@/i.test(profile.email));
+
+    const hasBaseAccess = isAdmin || profile?.role === 'admin' || profile?.role === 'super_admin' || profile?.role === 'principal' || profile?.role === 'vice_principal' || isClassTeacherUser || (hasPermission('exams_manage') && !isTeacherRole);
 
     // 1. If an exam is selected, get scheduled configured subjects
     let baseList: any[] = [];
@@ -1226,48 +1361,58 @@ const Exams: React.FC = () => {
         selectedClass,
         selectedBatch,
         examSchedules,
-        subjects,
+        subjects: effectiveSubjects,
         classes,
         batches,
         exams
       });
     } else {
       // If no exam selected yet, class-specific filter
-      let classFiltered = subjects.filter(s => {
+      let classFiltered = effectiveSubjects.filter(s => {
         if (!s) return false;
         if (selectedClass && s.classId && s.classId !== selectedClass) return false;
         return true;
       });
-      baseList = classFiltered.length > 0 ? classFiltered : subjects;
+      baseList = classFiltered.length > 0 ? classFiltered : effectiveSubjects;
     }
 
+    // Safety fallback: if baseList is empty, resolve standard subjects for the class
     if (baseList.length === 0) {
-      return [];
+      baseList = standardSubjects.length > 0 ? standardSubjects : effectiveSubjects;
     }
 
     // 2. Role-based subject filtering for teachers
-    if (!hasBaseAccess && (teacherAssignedSubjects.names.size > 0 || teacherAssignedSubjects.ids.size > 0)) {
+    // (Class teachers get full access to all subjects of their class; subject teachers get their assigned subjects)
+    if (!hasBaseAccess && (teacherAssignedSubjects.names.size > 0 || teacherAssignedSubjects.ids.size > 0 || teacherAssignedSubjects.normalizedKeys.size > 0)) {
       const filtered = baseList.filter(s => {
         const sId = String(s.id || '');
         const sCode = String(s.code || '');
         const sName = String(s.name || '').toLowerCase().trim();
+        const sNorm = normalizeSubjectKey(s.name || s.id).toLowerCase();
 
         const matchesId = (sId && teacherAssignedSubjects.ids.has(sId)) || (sCode && teacherAssignedSubjects.ids.has(sCode));
         const matchesName = sName && (
           teacherAssignedSubjects.names.has(sName) ||
           Array.from(teacherAssignedSubjects.names).some(tName => tName && (sName.includes(tName) || tName.includes(sName)))
         );
+        const matchesNorm = sNorm && teacherAssignedSubjects.normalizedKeys.has(sNorm);
         const matchesTeacherId = s.teacherId && teacherIdentifiers.ids.has(String(s.teacherId));
         const matchesTeacherName = s.teacherName && teacherIdentifiers.names.has(String(s.teacherName).toLowerCase().trim());
 
-        return matchesId || matchesName || matchesTeacherId || matchesTeacherName;
+        return matchesId || matchesName || matchesNorm || matchesTeacherId || matchesTeacherName;
       });
 
-      return [...filtered].sort(compareSubjectsStandard);
+      if (filtered.length > 0) {
+        return [...filtered].sort(compareSubjectsStandard);
+      }
     }
 
-    return [...baseList].sort(compareSubjectsStandard);
-  }, [subjects, isAdmin, profile, isTeacherRole, teacherAssignedSubjects, selectedClass, activeTab, selectedExam, examSchedules, selectedBatch, teacherIdentifiers, hasPermission, classes, batches, exams]);
+    // Fallback: always return at least the scheduled or standard subjects so filters NEVER render empty
+    if (baseList.length > 0) {
+      return [...baseList].sort(compareSubjectsStandard);
+    }
+    return standardSubjects.length > 0 ? [...standardSubjects].sort(compareSubjectsStandard) : [...effectiveSubjects].sort(compareSubjectsStandard);
+  }, [subjects, isAdmin, profile, isTeacherRole, teacherAssignedSubjects, selectedClass, activeTab, selectedExam, examSchedules, selectedBatch, teacherIdentifiers, hasPermission, classes, batches, exams, classTeacherBatches]);
 
   // Sync selected batch when class changes
   useEffect(() => {
@@ -1283,27 +1428,31 @@ const Exams: React.FC = () => {
     }
   }, [selectedClass, availableBatches, selectedBatch]);
 
-  // Auto-select first available class for teachers or when selection is invalid
+  // Auto-select class: prefer teacher's assigned class
   useEffect(() => {
     if (availableClasses.length > 0) {
       if (!selectedClass || !availableClasses.some(c => c.id === selectedClass)) {
-        setSelectedClass(availableClasses[0].id);
+        const preferredClassId = profile?.classId || currentTeacherObj?.classId || (classTeacherBatches.length > 0 ? classTeacherBatches[0].classId : null);
+        const matchingClass = preferredClassId && availableClasses.find(c => c.id === preferredClassId);
+        setSelectedClass(matchingClass ? matchingClass.id : availableClasses[0].id);
       }
     } else {
       setSelectedClass('');
     }
-  }, [availableClasses, selectedClass, activeTab]);
+  }, [availableClasses, selectedClass, profile?.classId, currentTeacherObj?.classId, classTeacherBatches, activeTab]);
 
-  // Secondary auto-select for batch
+  // Secondary auto-select for batch: prefer teacher's assigned batch
   useEffect(() => {
     if (selectedClass && availableBatches.length > 0) {
       if (!selectedBatch || !availableBatches.some(b => b.id === selectedBatch)) {
-        setSelectedBatch(availableBatches[0].id);
+        const preferredBatchId = profile?.batchId || (profile as any)?.classTeacherBatchId || currentTeacherObj?.batchId || (classTeacherBatches.length > 0 ? classTeacherBatches[0].id : null);
+        const matchingBatch = preferredBatchId && availableBatches.find(b => b.id === preferredBatchId);
+        setSelectedBatch(matchingBatch ? matchingBatch.id : availableBatches[0].id);
       }
     } else if (!selectedClass) {
       setSelectedBatch('');
     }
-  }, [selectedClass, availableBatches, selectedBatch, activeTab]);
+  }, [selectedClass, availableBatches, selectedBatch, profile?.batchId, currentTeacherObj?.batchId, classTeacherBatches, activeTab]);
 
   // Auto-select exam if not selected (prefer FA-1)
   useEffect(() => {
@@ -1326,7 +1475,7 @@ const Exams: React.FC = () => {
         setSelectedSubject('');
       }
     }
-  }, [selectedExam, selectedBatch, availableSubjects, selectedSubject, activeTab]);
+  }, [selectedClass, selectedBatch, selectedExam, availableSubjects, selectedSubject, activeTab]);
 
   useEffect(() => {
     let unsubscribeExams: (() => void) | undefined;
@@ -1337,7 +1486,7 @@ const Exams: React.FC = () => {
         const defaultRoles = ['teacher', 'accountant', 'clerk', 'admin', 'principal', 'vice_principal', 'staff', 'driver', 'attendant', 'helper', 'aya', 'coordinator', 'front_office', 'receptionist'];
         const staffRoles = Array.from(new Set([...defaultRoles, ...roles.filter((r: any) => !r.isDeleted).map((r: any) => r.id)])).slice(0, 30);
 
-        const [classesData, batchesData, subjectsData, teachersData] = await Promise.all([
+        const [classesData, batchesData, subjectsData, staffData, usersData] = await Promise.all([
           dbService.list('classes').catch(e => { console.error("Exams component error listing classes:", e); return []; }),
           dbService.list('batches').catch(e => { console.error("Exams component error listing batches:", e); return []; }),
           dbService.list('subjects').catch(e => { console.error("Exams component error listing subjects:", e); return []; }),
@@ -1347,10 +1496,26 @@ const Exams: React.FC = () => {
               console.error("Exams fallback staff fetch also failed:", innerErr);
               return [];
             });
-          })
+          }),
+          dbService.list('users').catch(() => [])
         ]);
+
+        const teacherMap = new Map<string, any>();
+        (usersData || []).forEach((u: any) => {
+          if (u && (u.role?.includes('teacher') || u.designation?.toLowerCase().includes('teacher') || isTeacherAccountOrEmail(u.email))) {
+            const key = u.id || u.uid;
+            if (key) teacherMap.set(key, u);
+          }
+        });
+        (staffData || []).forEach((s: any) => {
+          if (s) {
+            const key = s.id || s.uid;
+            if (key) teacherMap.set(key, s);
+          }
+        });
+        const mergedTeachers = Array.from(teacherMap.values());
         
-        setTeachers(teachersData || []);
+        setTeachers(mergedTeachers);
 
         const isActuallyTeacher = (isTeacherRole || profile?.isTeacherPortal || profile?.role === 'teacher') && !isAdmin && profile?.role !== 'admin' && profile?.role !== 'super_admin' && profile?.role !== 'principal' && profile?.role !== 'vice_principal';
         if (isActuallyTeacher) {
@@ -1365,11 +1530,37 @@ const Exams: React.FC = () => {
             const norm = (s: string) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
             const nameNorm = norm(user?.displayName || profile?.name || '');
 
+            const emailMatch = email.match(/^(?:st)?antonys?(\d+|nur|nursery|lkg|ukg)([a-z]+)?/i);
+
             const directBatches = (batchesData as any[]).filter(b => {
               const bCTId = String(b.classTeacherId || '').toLowerCase().trim();
               const bCTEmail = String(b.classTeacherEmail || '').toLowerCase().trim();
               const bCT = norm(b.classTeacher || b.classTeacherName || '');
+              const bId = String(b.id || '');
+              const bName = String(b.name || '').toLowerCase();
+              const bClassObj = (classesData as any[]).find(c => c.id === b.classId);
+              const bClassName = String(b.className || bClassObj?.name || b.class || b.classId || bId).toLowerCase();
+
+              let matchesEmailPattern = false;
+              if (emailMatch) {
+                const grade = emailMatch[1].toLowerCase();
+                const section = (emailMatch[2] || '').toLowerCase();
+                const gMatch = (grade === 'nur' || grade === 'nursery') ? bClassName.includes('nur') :
+                  (grade === 'lkg') ? bClassName.includes('lkg') :
+                  (grade === 'ukg') ? bClassName.includes('ukg') :
+                  (bClassName.includes(grade) || bId.toLowerCase().includes(grade));
+                let sMatch = true;
+                if (section) {
+                  if (section === 'm' || section === 'thm') sMatch = bName.includes('m') || bId.toLowerCase().includes('m-batch');
+                  else if (section === 'ipl') sMatch = bName.includes('ipl') || bId.toLowerCase().includes('ipl');
+                  else if (section === 's' || section === 'ths') sMatch = bName.includes('s') || bName.includes('ths') || bId.toLowerCase().includes('s-batch');
+                  else sMatch = bName.includes(section) || bId.toLowerCase().includes(section);
+                }
+                matchesEmailPattern = gMatch && sMatch;
+              }
+
               return (
+                matchesEmailPattern ||
                 (uid && bCTId === uid) ||
                 (email && bCTEmail === email) ||
                 (nameNorm && bCT && bCT === nameNorm) ||
@@ -1383,6 +1574,10 @@ const Exams: React.FC = () => {
               filteredBatches = directBatches;
               const directClassIds = new Set(directBatches.map(b => b.classId));
               filteredClasses = (classesData as any[]).filter(c => directClassIds.has(c.id));
+            } else {
+              // Safety fallback: never leave teacher with 0 classes and 0 batches
+              filteredBatches = batchesData as any[];
+              filteredClasses = classesData as any[];
             }
           } else {
             const directClassIds = new Set(filteredBatches.map(b => b.classId).filter(Boolean));
@@ -2726,10 +2921,14 @@ const Exams: React.FC = () => {
               <select 
                 value={selectedSubject}
                 onChange={(e) => setSelectedSubject(e.target.value)}
-                className="w-40 px-3 py-2 bg-neutral-50 border border-neutral-200 rounded-lg text-sm outline-none focus:border-primary"
+                className="w-48 px-3 py-2 bg-neutral-50 border border-neutral-200 rounded-lg text-sm outline-none focus:border-primary font-bold text-sidebar"
               >
                 <option value="">Select Subject</option>
-                {availableSubjects.map((s, idx) => <option key={`${s.id || idx}-${idx}`} value={s.id}>{s.name}</option>)}
+                {availableSubjects.map((s, idx) => (
+                  <option key={`${s.id || idx}-${idx}`} value={s.id}>
+                    {s.name} {s.code ? `(${s.code})` : ''}
+                  </option>
+                ))}
               </select>
             </div>
           )}

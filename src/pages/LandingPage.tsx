@@ -37,6 +37,13 @@ interface SiteConfig {
 
 const defaultHeroImage = "https://images.unsplash.com/photo-1523050335391-4b7713d09a1f?ixlib=rb-4.0.3&auto=format&fit=crop&w=2000&q=80";
 
+const defaultGalleryPhotos = [
+  "https://images.unsplash.com/photo-1580582932707-520aed937b7b?auto=format&fit=crop&w=800&q=80",
+  "https://images.unsplash.com/photo-1577896851231-70ef18881754?auto=format&fit=crop&w=800&q=80",
+  "https://images.unsplash.com/photo-1509062522246-3755977927d7?auto=format&fit=crop&w=800&q=80",
+  "https://images.unsplash.com/photo-1524178232363-1fb2b075b655?auto=format&fit=crop&w=800&q=80"
+];
+
 const defaultLeaders = [
   { name: "Dr. Alistair Vance", role: "PRINCIPAL", quote: "My vision for St. Antony's is to foster an atmosphere of curiosity where every child feels empowered to ask 'why' and 'how'.", photoUrl: "https://images.unsplash.com/photo-1560250097-0b93528c311a?auto=format&fit=crop&w=800&q=80" },
   { name: "Prof. Elena Rodriguez", role: "DEAN OF ACADEMICS", quote: "Overseeing our curriculum innovation and teacher training programs with a focus on STEM integration.", photoUrl: "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=800&q=80" },
@@ -87,6 +94,12 @@ const LandingPage = () => {
             alt="School Exterior" 
             className="w-full h-full object-cover"
             referrerPolicy="no-referrer"
+            onError={(e) => {
+              const target = e.currentTarget as HTMLImageElement;
+              if (target.src !== defaultHeroImage) {
+                target.src = defaultHeroImage;
+              }
+            }}
           />
           <div className="absolute inset-0 bg-black/70"></div>
           <div className="absolute inset-0 bg-gradient-to-t from-[#0A0A0A]/95 via-[#0A0A0A]/40 to-transparent"></div>
@@ -173,19 +186,28 @@ const LandingPage = () => {
 
           <div id="gallery" className="lg:col-span-6 relative">
             <div className="grid grid-cols-2 gap-4">
-              {config?.about?.gridPhotos?.map((photo, i) => (
-                <div key={i} className={`aspect-[4/5] rounded-2xl overflow-hidden ${i % 2 === 0 ? 'mt-8' : 'mb-8'}`}>
-                  <img 
-                    src={normalizeUrl(photo) || `https://images.unsplash.com/photo-${1500000000000 + i}?auto=format&fit=crop&w=800`} 
-                    alt="Activity" 
-                    className="w-full h-full object-cover grayscale opacity-80" 
-                    referrerPolicy="no-referrer" 
-                    loading="lazy"
-                  />
-                </div>
-              )) || [0, 1, 2, 3].map(i => (
-                <div key={i} className={`aspect-[4/5] bg-neutral-900 rounded-2xl overflow-hidden ${i % 2 === 0 ? 'mt-8' : 'mb-8'}`} />
-              ))}
+              {[0, 1, 2, 3].map((i) => {
+                const uploadedPhoto = config?.about?.gridPhotos?.[i];
+                const hasValidUpload = uploadedPhoto && typeof uploadedPhoto === 'string' && uploadedPhoto.trim() !== '';
+                const photoSrc = hasValidUpload ? normalizeUrl(uploadedPhoto) : defaultGalleryPhotos[i];
+                return (
+                  <div key={i} className={`aspect-[4/5] rounded-2xl overflow-hidden shadow-2xl border border-white/10 ${i % 2 === 0 ? 'mt-8' : 'mb-8'}`}>
+                    <img 
+                      src={photoSrc} 
+                      alt={`School Activity ${i + 1}`} 
+                      className="w-full h-full object-cover transition-transform duration-500 hover:scale-105" 
+                      referrerPolicy="no-referrer" 
+                      loading="lazy"
+                      onError={(e) => {
+                        const target = e.currentTarget as HTMLImageElement;
+                        if (target.src !== defaultGalleryPhotos[i]) {
+                          target.src = defaultGalleryPhotos[i];
+                        }
+                      }}
+                    />
+                  </div>
+                );
+              })}
             </div>
             
             {/* Quote Card */}
@@ -212,32 +234,45 @@ const LandingPage = () => {
           </div>
 
           <div className="grid md:grid-cols-3 gap-8">
-            {(config?.leadership?.length ? config.leadership : defaultLeaders).map((leader, i) => (
-              <div key={i} className="bg-[#111111] rounded-[2rem] overflow-hidden border border-white/5 hover:border-[#FFD700]/30 transition-all group">
-                <div className="aspect-[4/5] overflow-hidden">
-                  <img 
-                    src={leader.photoUrl || (leader as any).photo} 
-                    alt={leader.name} 
-                    className="w-full h-full object-cover grayscale transition-all group-hover:grayscale-0 group-hover:scale-105" 
-                    referrerPolicy="no-referrer"
-                    loading="lazy"
-                  />
-                </div>
-                <div className="p-8 space-y-6">
-                  <div className="space-y-2">
-                    <div className="text-[#FFD700] text-[10px] font-black uppercase tracking-widest">{leader.role}</div>
-                    <h3 className="text-2xl font-bold text-white">{leader.name}</h3>
+            {(config?.leadership?.length ? config.leadership : defaultLeaders).map((leader, i) => {
+              const leaderPhoto = leader.photoUrl || (leader as any).photo;
+              const defaultPhoto = defaultLeaders[i % defaultLeaders.length].photoUrl;
+              const photoSrc = (leaderPhoto && typeof leaderPhoto === 'string' && leaderPhoto.trim())
+                ? normalizeUrl(leaderPhoto)
+                : defaultPhoto;
+              return (
+                <div key={i} className="bg-[#111111] rounded-[2rem] overflow-hidden border border-white/5 hover:border-[#FFD700]/30 transition-all group">
+                  <div className="aspect-[4/5] overflow-hidden">
+                    <img 
+                      src={photoSrc} 
+                      alt={leader.name} 
+                      className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" 
+                      referrerPolicy="no-referrer"
+                      loading="lazy"
+                      onError={(e) => {
+                        const target = e.currentTarget as HTMLImageElement;
+                        if (target.src !== defaultPhoto) {
+                          target.src = defaultPhoto;
+                        }
+                      }}
+                    />
                   </div>
-                  <p className="text-neutral-400 text-sm italic font-medium leading-relaxed">
-                    "{leader.quote}"
-                  </p>
-                  <div className="flex gap-4 pt-4">
-                     <Mail className="w-4 h-4 text-neutral-500 hover:text-white cursor-pointer" />
-                     <Youtube className="w-4 h-4 text-neutral-500 hover:text-white cursor-pointer" />
+                  <div className="p-8 space-y-6">
+                    <div className="space-y-2">
+                      <div className="text-[#FFD700] text-[10px] font-black uppercase tracking-widest">{leader.role}</div>
+                      <h3 className="text-2xl font-bold text-white">{leader.name}</h3>
+                    </div>
+                    <p className="text-neutral-400 text-sm italic font-medium leading-relaxed">
+                      "{leader.quote}"
+                    </p>
+                    <div className="flex gap-4 pt-4">
+                       <Mail className="w-4 h-4 text-neutral-500 hover:text-white cursor-pointer" />
+                       <Youtube className="w-4 h-4 text-neutral-500 hover:text-white cursor-pointer" />
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </section>

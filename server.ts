@@ -192,11 +192,47 @@ async function startServer() {
     maxAge: '7d'
   }));
 
+  // Fallback for missing uploads: fetch from live antonyschool.in VPS and cache locally
+  app.get('/uploads/*', async (req, res, next) => {
+    try {
+      const relPath = req.params[0];
+      if (!relPath) return next();
+      const liveUrl = `https://antonyschool.in/uploads/${relPath}`;
+      const remoteRes = await fetch(liveUrl, { signal: AbortSignal.timeout(6000) });
+      if (remoteRes.ok) {
+        const contentType = remoteRes.headers.get('content-type') || 'application/octet-stream';
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Cache-Control', 'public, max-age=604800');
+        const buffer = Buffer.from(await remoteRes.arrayBuffer());
+        try {
+          const localDest = path.join(process.cwd(), 'uploads', relPath);
+          fs.mkdirSync(path.dirname(localDest), { recursive: true });
+          fs.writeFileSync(localDest, buffer);
+        } catch (_) {}
+        return res.send(buffer);
+      }
+    } catch (_) {}
+    next();
+  });
+
   // Serve AI weights models with browser caching (30 days) directly from public/models to completely bypass build/version paths
   app.use('/models', express.static(path.join(process.cwd(), 'public', 'models'), {
     maxAge: '30d',
     setHeaders: (res) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+  }));
+
+  // Serve PWA assets (sw.js, manifest.json, icons, screenshots) with proper Service-Worker-Allowed header
+  app.use(express.static(path.join(process.cwd(), 'public'), {
+    setHeaders: (res, filepath) => {
+      if (filepath.endsWith('sw.js')) {
+        res.setHeader('Service-Worker-Allowed', '/');
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      } else if (filepath.endsWith('manifest.json')) {
+        res.setHeader('Content-Type', 'application/manifest+json');
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+      }
     }
   }));
 
@@ -236,6 +272,20 @@ async function startServer() {
       const fileUrl = `/uploads/${relativePath}`;
       
       console.log(`[Upload] File saved (${isComm ? 'temp' : 'perm'}): ${fileUrl}`);
+
+      // Forward permanent uploads to live VPS in the background so both environments have the file
+      if (!isComm && fs.existsSync(req.file.path)) {
+        try {
+          const fileBuffer = fs.readFileSync(req.file.path);
+          const form = new FormData();
+          form.append('file', new Blob([fileBuffer], { type: req.file.mimetype }), req.file.filename);
+          fetch(`https://antonyschool.in/api/upload?purpose=permanent`, {
+            method: 'POST',
+            body: form,
+            signal: AbortSignal.timeout(10000)
+          }).catch(() => {});
+        } catch (_) {}
+      }
       
       res.json({ 
         success: true, 
@@ -275,6 +325,32 @@ async function startServer() {
       if (localActuallyOpen) {
         return res.json({ status: 'open', qr: null });
       }
+
+      // Check if WhatsApp is already connected on the live web app (antonyschool.in)
+      try {
+        const vpsRes = await fetch("https://antonyschool.in/api/whatsapp/status", {
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(3500)
+        });
+        if (vpsRes.ok) {
+          const liveWa = await vpsRes.json();
+          if (liveWa && liveWa.status === 'open') {
+            return res.json({ status: 'open', qr: null, isLiveConnected: true });
+          }
+        }
+      } catch (_) {}
+
+      // Check if live WhatsApp session is registered in MongoDB whatsapp_sessions
+      try {
+        const { getMongoDb } = await import("./src/server/mongoSession.js");
+        const mongo = await getMongoDb().catch(() => null);
+        if (mongo) {
+          const registeredSession = await mongo.collection("whatsapp_sessions").findOne({ registered: true }).catch(() => null);
+          if (registeredSession) {
+            return res.json({ status: 'open', qr: null, isLiveConnected: true, registered: true });
+          }
+        }
+      } catch (_) {}
 
       // If local has generated a live QR code, return clean raw format immediately
       if (local && local.status === 'qr' && local.qr) {

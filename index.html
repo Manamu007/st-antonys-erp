@@ -11,11 +11,28 @@
     <!-- PWA Settings and iOS Safari Support -->
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#4f46e5" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="St. Antony's ERP" />
-    <link rel="apple-touch-icon" href="/school_logo.svg" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192x192.png" />
     <link rel="icon" type="image/svg+xml" href="/school_logo.svg" />
+
+    <!-- Service Worker Registration for PWABuilder & Offline PWA -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function() {
+          navigator.serviceWorker.register('/sw.js', { scope: '/' })
+            .then(function(reg) {
+              console.log('[PWA] ServiceWorker active with scope:', reg.scope);
+            })
+            .catch(function(err) {
+              console.warn('[PWA] ServiceWorker registration notice:', err);
+            });
+        });
+      }
+    </script>
 
     <!-- AI Studio Sandbox Error & Storage Resiliency -->
     <script>

@@ -237,9 +237,10 @@ router.post('/auto-assign-roll-numbers', async (req, res) => {
     // Group students by section (class & batch) using robust resolution
     const sectionMap = new Map<string, any[]>();
     for (const s of targetStudents) {
-      const res = resolveStudentClassAndBatch(s, classes, batches);
-      const effectiveClassId = res.classId || s.classId || s.class || 'UnknownClass';
-      const effectiveBatchId = res.batchId || s.batchId || s.batch || 'UnknownBatch';
+      // Prioritize student's explicit classId and batchId
+      const resolved = resolveStudentClassAndBatch(s, classes, batches);
+      const effectiveClassId = s.classId || s.class || resolved.classId || 'UnknownClass';
+      const effectiveBatchId = s.batchId || s.batch || resolved.batchId || 'UnknownBatch';
       const secKey = `${effectiveClassId}:::${effectiveBatchId}`;
       if (!sectionMap.has(secKey)) sectionMap.set(secKey, []);
       sectionMap.get(secKey)!.push(s);
@@ -252,11 +253,6 @@ router.post('/auto-assign-roll-numbers', async (req, res) => {
       // In each section: male students appear first in ascending alphabetical order,
       // and female students appear second in ascending alphabetical order
       const ordered = sortStudentsBySectionRules(list);
-      const [effClassId, effBatchId] = secKey.split(':::');
-      const targetClassObj = classes.find(c => c.id === effClassId);
-      const targetBatchObj = batches.find(b => b.id === effBatchId);
-      const effClassName = targetClassObj?.name || effClassId;
-      const effBatchName = targetBatchObj?.name || targetBatchObj?.section || effBatchId;
 
       ordered.forEach((s, idx) => {
         const expectedRollNo = String(idx + 1);
@@ -264,26 +260,14 @@ router.post('/auto-assign-roll-numbers', async (req, res) => {
         if (!sId) return;
 
         const currentRoll = String(s.rollNumber || s.rollNo || '').trim();
-        const needsClassSync = effClassId && effClassId !== 'UnknownClass' && (s.classId !== effClassId || s.className !== effClassName);
-        const needsBatchSync = effBatchId && effBatchId !== 'UnknownBatch' && (s.batchId !== effBatchId || (s.batch && s.batch !== effBatchName && s.batch !== targetBatchObj?.section));
 
-        if (currentRoll !== expectedRollNo || needsClassSync || needsBatchSync) {
+        // Strictly update only roll numbers - NEVER automatically change batch, class or section
+        if (currentRoll !== expectedRollNo) {
           const updateData: any = {
             rollNumber: expectedRollNo,
             rollNo: expectedRollNo,
             updatedAt: new Date().toISOString()
           };
-          if (needsClassSync) {
-            updateData.classId = effClassId;
-            updateData.className = effClassName;
-            updateData.class = effClassName;
-          }
-          if (needsBatchSync) {
-            updateData.batchId = effBatchId;
-            updateData.batchName = effBatchName;
-            updateData.batch = effBatchName;
-            if (targetBatchObj?.section) updateData.section = targetBatchObj.section;
-          }
 
           itemsToUpdate.push({
             id: sId,

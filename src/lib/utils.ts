@@ -8,10 +8,14 @@ export function cn(...inputs: ClassValue[]) {
 
 export function normalizeUrl(url?: string | null) {
   if (!url || url === 'null' || url === 'undefined' || url === 'NaN') return '';
-  const urlStr = String(url);
-  // Convert legacy localhost/127.0.0.1 URLs to relative paths so they work in proxy environments
-  if (urlStr.includes('localhost:3000/uploads/') || urlStr.includes('127.0.0.1:3000/uploads/')) {
-    return urlStr.replace(/https?:\/\/(localhost|127\.0\.0\.1):3000\/uploads\//, '/uploads/');
+  const urlStr = String(url).trim();
+  // Convert legacy localhost/127.0.0.1 and antonyschool.in uploads URLs to relative paths so they work universally
+  if (
+    urlStr.includes('localhost:3000/uploads/') || 
+    urlStr.includes('127.0.0.1:3000/uploads/') ||
+    urlStr.includes('antonyschool.in/uploads/')
+  ) {
+    return urlStr.replace(/https?:\/\/(localhost:3000|127\.0\.0\.1:3000|(www\.)?antonyschool\.in)\/uploads\//, '/uploads/');
   }
   return urlStr;
 }
@@ -472,11 +476,18 @@ export function resolveStudentClassAndBatch(
   const sBatchId = String(student.batchId || '').trim();
   const sBatch = String(student.batch || student.batchName || '').trim();
 
+  // If student has an explicit batchId that directly matches a registered batch, honor it strictly!
+  if (sBatchId && sBatchId !== 'N/A' && sBatchId !== 'undefined') {
+    resolvedBatch = batches.find(b => 
+      b && (b.id === sBatchId || b.uid === sBatchId)
+    );
+  }
+
   // If resolvedClass is known, prioritize batches belonging to this class!
-  if (resolvedClass) {
+  if (!resolvedBatch && resolvedClass) {
     const classBatches = findBatchesForClass(resolvedClass, batches, classes);
 
-    // 1. Check if sBatchId matches a batch belonging to this class
+    // 1. Check if sBatchId matches a batch belonging to this class (by id, uid or alias)
     if (sBatchId && sBatchId !== 'N/A' && sBatchId !== 'undefined') {
       resolvedBatch = classBatches.find(b => 
         b.id === sBatchId || 

@@ -122,38 +122,10 @@ export class MongoDocRef {
 
   async get() {
     const mongo = await getMongoDb().catch(() => null);
-    if (!mongo) {
+    if (mongo) {
       try {
-        const res = await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
-          method: "POST",
-          headers: { 
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-          },
-          body: JSON.stringify({
-            operation: "get",
-            path: this.colName,
-            id: this.id
-          }),
-          signal: AbortSignal.timeout(8000)
-        });
-        if (res.ok) {
-          const json = await res.json();
-          if (json.success && json.data) {
-            const data = json.data;
-            const outId = data.id || data.uid || this.id;
-            return {
-              exists: true,
-              id: outId,
-              ref: this,
-              data: () => ({ ...data, id: outId })
-            };
-          }
-        }
-      } catch (proxyErr) {}
-
-      try {
-        const doc = await getDocument(this.colName, this.id);
+        const col = mongo.collection(this.colName);
+        const doc = await col.findOne({ $or: [{ id: this.id }, { uid: this.id }] });
         if (doc) {
           const outId = doc.id || doc.uid || this.id;
           return {
@@ -163,32 +135,23 @@ export class MongoDocRef {
             data: () => ({ ...doc, id: outId })
           };
         }
-      } catch (err) {}
-
-      return {
-        exists: false,
-        id: this.id,
-        ref: this,
-        data: () => undefined
-      };
+      } catch (err) {
+        console.warn(`[MongoDB] doc.get error on ${this.colName}/${this.id}:`, err);
+      }
     }
 
     try {
-      const col = mongo.collection(this.colName);
-      const doc = await col.findOne({ $or: [{ id: this.id }, { uid: this.id }, { _id: this.id as any }] });
+      const doc = await getDocument(this.colName, this.id);
       if (doc) {
-        const { _id, ...data } = doc;
-        const outId = data.id || data.uid || String(_id);
+        const outId = doc.id || doc.uid || this.id;
         return {
           exists: true,
           id: outId,
           ref: this,
-          data: () => ({ ...data, id: outId })
+          data: () => ({ ...doc, id: outId })
         };
       }
-    } catch (err) {
-      console.warn(`[MongoDB] doc.get failed on ${this.colName}/${this.id}:`, err);
-    }
+    } catch (err) {}
 
     return {
       exists: false,
@@ -221,25 +184,11 @@ export class MongoDocRef {
       } catch (err) {
         console.warn(`[MongoDB] doc.set error on ${this.colName}/${cleanId}:`, err);
       }
-    } else {
-      try {
-        await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            operation: "set",
-            path: this.colName,
-            id: cleanId,
-            data: docData
-          }),
-          signal: AbortSignal.timeout(8000)
-        });
-      } catch (proxyErr) {}
-
-      try {
-        await setDocument(this.colName, cleanId, docData, { merge: !!options?.merge });
-      } catch (err) {}
     }
+
+    try {
+      await setDocument(this.colName, cleanId, docData, { merge: !!options?.merge });
+    } catch (err) {}
     return { id: cleanId };
   }
 
@@ -257,24 +206,11 @@ export class MongoDocRef {
       } catch (err) {
         console.warn(`[MongoDB] doc.delete error on ${this.colName}/${cleanId}:`, err);
       }
-    } else {
-      try {
-        await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            operation: "delete",
-            path: this.colName,
-            id: cleanId
-          }),
-          signal: AbortSignal.timeout(8000)
-        });
-      } catch (proxyErr) {}
-
-      try {
-        await deleteDocument(this.colName, cleanId);
-      } catch (err) {}
     }
+
+    try {
+      await deleteDocument(this.colName, cleanId);
+    } catch (err) {}
     return { success: true };
   }
 
@@ -333,43 +269,6 @@ export class MongoQueryRef {
   async get() {
     const mongo = await getMongoDb().catch(() => null);
     if (!mongo) {
-      try {
-        const res = await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
-          method: "POST",
-          headers: { 
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-          },
-          body: JSON.stringify({
-            operation: "list",
-            path: this.colName,
-            constraints: this.constraints
-          }),
-          signal: AbortSignal.timeout(10000)
-        });
-        if (res.ok) {
-          const json = await res.json();
-          if (json.success && Array.isArray(json.data)) {
-            const docs = json.data.map((rest: any) => {
-              const docId = rest.id || rest.uid || String(rest._id || '');
-              return {
-                exists: true,
-                id: docId,
-                ref: new MongoDocRef(this.colName, docId),
-                data: () => ({ ...rest, id: docId })
-              };
-            });
-            return {
-              empty: docs.length === 0,
-              size: docs.length,
-              docs,
-              forEach: (cb: (doc: any) => void) => docs.forEach(cb),
-              docChanges: () => docs.map((d: any) => ({ type: 'added', doc: d }))
-            };
-          }
-        }
-      } catch (proxyErr) {}
-
       try {
         const results = await listDocuments(this.colName, this.constraints);
         const docs = results.map((rest: any) => {

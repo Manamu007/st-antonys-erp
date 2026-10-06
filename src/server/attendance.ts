@@ -4,6 +4,7 @@ import path from 'path';
 import { getDbAdmin, isDatabaseDenied, setDatabaseDenied, isQuotaOrPermissionError, handleFirestoreError } from './db.js';
 import { getMongoDb } from './mongoSession.js';
 import { sendMessage } from './whatsapp.js';
+import { checkWhatsAppDeduplication, markWhatsAppMessageSent } from './whatsappDeduplication.js';
 import { normalizeIndianPhone, safeLogWhatsappEvent } from './whatsappUtils.js';
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { RekognitionClient, CompareFacesCommand, IndexFacesCommand, CreateCollectionCommand, DescribeCollectionCommand, SearchFacesByImageCommand, DeleteCollectionCommand } from "@aws-sdk/client-rekognition";
@@ -1399,6 +1400,22 @@ router.post('/notify-absent', async (req, res) => {
             console.log(`[Attendance Alert] Absent alert already sent today for student ${studentId}. Skipping duplicate.`);
             continue;
           }
+
+          const dedupCheck = checkWhatsAppDeduplication({
+            recipient: studentId,
+            text: 'attendance absent alert',
+            options: {
+              templateType: 'absent',
+              messageType: 'attendance_absent',
+              eventType: 'absent',
+              studentId,
+              date
+            }
+          });
+          if (dedupCheck.isDuplicate) {
+            console.log(`[Attendance Alert] ${dedupCheck.reason} for student ${studentId}. Skipping duplicate.`);
+            continue;
+          }
         }
 
         let student: any = null;
@@ -1509,6 +1526,18 @@ router.post('/notify-absent', async (req, res) => {
           parentPhone,
           sentAt: new Date().toISOString()
         }).catch(() => {});
+
+        markWhatsAppMessageSent({
+          recipient: parentPhone,
+          text: message,
+          options: {
+            studentId,
+            templateType: "absent",
+            messageType: "attendance_absent",
+            eventType: "absent",
+            date
+          }
+        });
 
         results.success++;
       } catch (err: any) {

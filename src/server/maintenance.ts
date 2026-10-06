@@ -356,8 +356,16 @@ async function forwardToLiveProxy(operation: string, colPath: string, id: any, d
     if (operation === "get") return { status: 200, json: { success: true, data: null } };
     return { status: 200, json: { success: true, id: id || 'ok' } };
   }
-  const timeoutMs = 12000;
+  const timeoutMs = (colPath === 'users' || colPath === 'staff') ? 30000 : 15000;
   try {
+    const safeConstraints = Array.isArray(constraints) ? [...constraints] : [];
+    if ((colPath === 'users' || colPath === 'staff') && operation === 'list') {
+      const hasLimit = safeConstraints.some((c: any) => c && c.type === 'limit');
+      if (!hasLimit) {
+        safeConstraints.push({ type: 'limit', value: 250 });
+      }
+    }
+
     const vpsRes = await fetch("https://antonyschool.in/api/maintenance/db-proxy", {
       method: "POST",
       headers: { 
@@ -369,7 +377,7 @@ async function forwardToLiveProxy(operation: string, colPath: string, id: any, d
         path: colPath,
         id,
         data,
-        constraints,
+        constraints: safeConstraints,
         ...body
       }),
       signal: AbortSignal.timeout(timeoutMs)
@@ -379,7 +387,16 @@ async function forwardToLiveProxy(operation: string, colPath: string, id: any, d
       return { status: vpsRes.status, json: vpsData };
     }
   } catch (vpsErr: any) {
-    const isAbort = vpsErr?.name === 'AbortError' || String(vpsErr?.message || '').toLowerCase().includes('abort') || String(vpsErr?.message || '').toLowerCase().includes('timeout');
+    const msg = String(vpsErr?.message || '').toLowerCase();
+    const isAbort =
+      vpsErr?.name === 'AbortError' ||
+      msg.includes('abort') ||
+      msg.includes('timeout') ||
+      msg.includes('terminated') ||
+      msg.includes('econnreset') ||
+      msg.includes('socket') ||
+      msg.includes('fetch failed') ||
+      msg.includes('premature close');
     if (!isLogCol && !isAbort) {
       console.warn("[Maintenance] Live antonyschool.in proxy forwarding notice:", vpsErr?.message || vpsErr);
     }
@@ -894,24 +911,24 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
   // Write operations: Forward to live MongoDB proxy on antonyschool.in first
   if (operation === "add") {
     const docId = id || data?.id || data?.uid || crypto.randomUUID();
+    await addDocument(colPath, { ...data, id: docId, uid: docId }).catch(() => {});
     const vpsRes = await forwardToLiveProxy(operation, colPath, docId, data, constraints, body);
-    addDocument(colPath, { ...data, id: docId, uid: docId }).catch(() => {});
     return { status: 200, json: vpsRes.json?.success ? vpsRes.json : { success: true, id: docId } };
   }
 
   if (operation === "set") {
     const docId = id || data?.id || data?.uid;
     if (!docId) return { status: 400, json: { error: "Missing document id" } };
+    await setDocument(colPath, docId, data, { merge: true }).catch(() => {});
     const vpsRes = await forwardToLiveProxy(operation, colPath, docId, data, constraints, body);
-    setDocument(colPath, docId, data, { merge: true }).catch(() => {});
     return { status: 200, json: vpsRes.json?.success ? vpsRes.json : { success: true, id: docId } };
   }
 
   if (operation === "update") {
     const docId = id || data?.id || data?.uid;
     if (!docId) return { status: 400, json: { error: "Missing document id" } };
+    await updateDocument(colPath, docId, data).catch(() => {});
     const vpsRes = await forwardToLiveProxy(operation, colPath, docId, data, constraints, body);
-    updateDocument(colPath, docId, data).catch(() => {});
     return { status: 200, json: vpsRes.json?.success ? vpsRes.json : { success: true, id: docId } };
   }
 

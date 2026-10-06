@@ -1153,9 +1153,9 @@ export async function syncLocalStudentsToLive(force = false): Promise<void> {
       const existsByAdm = adm && remoteAdmIndex.has(adm);
 
       const isMissing = !existsById && !existsByRoll && !existsByAdm;
-      const isTargetStudent = student.phone === '6302927411' || student.whatsappNumber?.includes('6302927411') || student.name?.toUpperCase().includes('GURU AYUSHIRISHIKA') || student.name?.toUpperCase().includes('GURU SHANVI SREE');
 
-      if (isMissing || isTargetStudent) {
+      // Only push if the student does not exist on remote - NEVER overwrite an existing student's batch or data
+      if (isMissing) {
         const ok = await pushStudentToRemoteServer(student);
         if (ok) pushedCount++;
       }
@@ -2457,7 +2457,6 @@ export const dbService = {
 
       // Build primary live endpoint with dynamic cache buster timestamp
       const timestamp = Date.now();
-      const apiBase = isPreview ? 'https://antonyschool.in/api' : '/api';
       const params = new URLSearchParams();
       params.append('collection', targetCollection);
       params.append('_t', String(timestamp));
@@ -2468,14 +2467,14 @@ export const dbService = {
       if (limitParam) params.append('limit', limitParam);
       if (targetCollection === 'examMarks' && !limitParam) params.append('limit', '10000');
 
-      const primaryUrl = apiBase + '/maintenance/db-proxy?' + params.toString();
-
       let liveData: any[] | null = null;
 
       // 1. Universal Network-First: Always fetch live MongoDB records when online
+      // Always try the local container backend proxy route first (instant, low latency, no cross-origin/502 issues)
       if (isOnline) {
         try {
-          const res = await fetch(primaryUrl, {
+          const localUrl = '/api/maintenance/db-proxy?' + params.toString();
+          const localRes = await fetch(localUrl, {
             method: 'GET',
             mode: 'cors',
             cache: 'no-store',
@@ -2484,14 +2483,36 @@ export const dbService = {
               'Cache-Control': 'no-cache, no-store, must-revalidate',
               'Pragma': 'no-cache'
             },
-            signal: AbortSignal.timeout(15000)
+            signal: AbortSignal.timeout(6000)
           });
-          if (res.ok) {
-            const json = await res.json();
-            liveData = Array.isArray(json) ? json : (json.data || []);
+          if (localRes.ok) {
+            const localJson = await localRes.json();
+            liveData = Array.isArray(localJson) ? localJson : (localJson.data || []);
           }
-        } catch (netErr) {
-          console.warn('Universal live GET sync failed for ' + path + ':', netErr);
+        } catch (_) {}
+
+        // Fallback to remote antonyschool.in if local proxy failed and in preview
+        if (liveData === null && isPreview) {
+          try {
+            const remoteUrl = 'https://antonyschool.in/api/maintenance/db-proxy?' + params.toString();
+            const res = await fetch(remoteUrl, {
+              method: 'GET',
+              mode: 'cors',
+              cache: 'no-store',
+              headers: {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache'
+              },
+              signal: AbortSignal.timeout(6000)
+            });
+            if (res.ok) {
+              const json = await res.json();
+              liveData = Array.isArray(json) ? json : (json.data || []);
+            }
+          } catch (netErr) {
+            console.warn('Universal live GET sync failed for ' + path + ':', netErr);
+          }
         }
 
         // Secondary Network Fallback: POST proxyRequest
@@ -2500,23 +2521,6 @@ export const dbService = {
             const postRes = await proxyRequest('list', targetCollection, { constraints });
             if (postRes && Array.isArray(postRes.data)) {
               liveData = postRes.data;
-            }
-          } catch (_) {}
-        }
-
-        // Tertiary Network Fallback: Container backend proxy route
-        if (liveData === null && isPreview) {
-          try {
-            const localUrl = '/api/maintenance/db-proxy?' + params.toString();
-            const localRes = await fetch(localUrl, {
-              method: 'GET',
-              mode: 'cors',
-              headers: { 'Content-Type': 'application/json' },
-              signal: AbortSignal.timeout(5000)
-            });
-            if (localRes.ok) {
-              const localJson = await localRes.json();
-              liveData = Array.isArray(localJson) ? localJson : (localJson.data || []);
             }
           } catch (_) {}
         }

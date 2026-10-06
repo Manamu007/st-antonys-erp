@@ -199,16 +199,34 @@ export async function getTeacherAssignments(
         p.staffBatches.forEach((bId: any) => bId && assignedBatchIds.add(String(bId)));
       }
 
+      if (p.subject) assignedSubjects.add(String(p.subject).toLowerCase().trim());
+      if (p.subjectName) assignedSubjects.add(String(p.subjectName).toLowerCase().trim());
+      if (p.primarySubject) assignedSubjects.add(String(p.primarySubject).toLowerCase().trim());
+
       if (Array.isArray(p.subjects)) {
-        p.subjects.forEach((subj: any) => assignedSubjects.add(String(subj).toLowerCase().trim()));
+        p.subjects.forEach((subj: any) => {
+          if (subj) {
+            assignedSubjects.add(String(subj).toLowerCase().trim());
+            if (typeof subj === 'object' && (subj.name || subj.subjectName || subj.id || subj.subjectId)) {
+              if (subj.name) assignedSubjects.add(String(subj.name).toLowerCase().trim());
+              if (subj.subjectName) assignedSubjects.add(String(subj.subjectName).toLowerCase().trim());
+              if (subj.id) assignedSubjects.add(String(subj.id).toLowerCase().trim());
+              if (subj.subjectId) assignedSubjects.add(String(subj.subjectId).toLowerCase().trim());
+            }
+          }
+        });
       }
 
       if (Array.isArray(p.subjectAssignments)) {
         p.subjectAssignments.forEach((sa: any) => {
+          if (!sa) return;
           if (sa.classId) assignedClassIds.add(String(sa.classId));
           if (sa.batchId) assignedBatchIds.add(String(sa.batchId));
           if (sa.subjectName || sa.subject) {
             assignedSubjects.add(String(sa.subjectName || sa.subject).toLowerCase().trim());
+          }
+          if (sa.subjectId) {
+            assignedSubjects.add(String(sa.subjectId).toLowerCase().trim());
           }
         });
       }
@@ -251,12 +269,13 @@ export async function getTeacherAssignments(
         const bClassId = String(b.classId || '');
 
         let matchesTag = false;
-        if (sectionTag === 'm') {
-          matchesTag = bName.includes('m-batch') || bName.includes('-m') || bName.includes(' m') || bName.startsWith('m ') || bName === 'm' || bName.endsWith('m') || bName.includes('section m') || bName.includes('m section') || bName.includes('m-section');
+        const bIdLower = bId.toLowerCase();
+        if (sectionTag === 'm' || sectionTag === 'thm') {
+          matchesTag = bName.includes('m-batch') || bName.includes('-m') || bName.includes(' m') || bName.startsWith('m ') || bName === 'm' || bName.endsWith('m') || bName.includes('section m') || bName.includes('m section') || bName.includes('m-section') || bIdLower.includes('m-batch') || bIdLower.includes('_m_') || bIdLower.endsWith('_m');
         } else if (sectionTag === 'ipl') {
-          matchesTag = bName.includes('ipl');
+          matchesTag = bName.includes('ipl') || bIdLower.includes('ipl');
         } else if (sectionTag === 's' || sectionTag === 'ths') {
-          matchesTag = bName.includes('s-batch') || bName.includes('-s') || bName.includes(' s') || bName.startsWith('s ') || bName === 's' || bName.endsWith('s') || bName.includes('section s') || bName.includes('s section') || bName.includes('s-section') || bName.includes('ths');
+          matchesTag = bName.includes('s-batch') || bName.includes('-s') || bName.includes(' s') || bName.startsWith('s ') || bName === 's' || bName.endsWith('s') || bName.includes('section s') || bName.includes('s section') || bName.includes('s-section') || bName.includes('ths') || bIdLower.includes('s-batch') || bIdLower.includes('_s_') || bIdLower.endsWith('_s');
         }
 
         if (assignedClassIds.has(bClassId) && (matchesTag || !sectionTag)) {

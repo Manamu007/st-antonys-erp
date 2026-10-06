@@ -156,6 +156,9 @@ export default function Users() {
   // Modals
   const [showAddEditModal, setShowAddEditModal] = useState(false);
   const [showResetModal, setShowResetModal] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [userToDelete, setUserToDelete] = useState<any | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [selectedUser, setSelectedUser] = useState<any | null>(null);
 
   // Form states
@@ -368,15 +371,43 @@ export default function Users() {
     }
   };
 
-  const handleDeleteUser = async (userId: string) => {
-    if (!window.confirm('Are you sure you want to delete this user?')) return;
+  const handleOpenDelete = (user: any) => {
+    setUserToDelete(user);
+    setShowDeleteConfirm(true);
+  };
+
+  const confirmDeleteUser = async () => {
+    if (!userToDelete) return;
+    const targetId = userToDelete.id || userToDelete.uid;
+    if (!targetId) return;
+
+    setIsDeleting(true);
     try {
-      await dbService.delete('users', userId);
-      toast.success('User deleted successfully');
+      // 1. Delete from users collection
+      await dbService.delete('users', targetId);
+      if (userToDelete.uid && userToDelete.uid !== targetId) {
+        await dbService.delete('users', userToDelete.uid).catch(() => {});
+      }
+
+      // 2. Also clean from staff or students if linked
+      if (userToDelete.role && (userToDelete.role.includes('teacher') || userToDelete.role === 'staff' || userToDelete.role === 'principal' || userToDelete.role === 'accountant' || userToDelete.role === 'clerk')) {
+        await dbService.delete('staff', targetId).catch(() => {});
+        if (userToDelete.uid) {
+          await dbService.delete('staff', userToDelete.uid).catch(() => {});
+        }
+      }
+
+      // Optimistic update
+      setUsers(prev => prev.filter(u => u.id !== targetId && u.uid !== targetId && (userToDelete.uid ? u.id !== userToDelete.uid && u.uid !== userToDelete.uid : true)));
+      toast.success(`User "${userToDelete.name || userToDelete.email || 'Account'}" deleted successfully`);
+      setShowDeleteConfirm(false);
+      setUserToDelete(null);
       loadUsers();
     } catch (e) {
       console.error('Error deleting user:', e);
       toast.error('Failed to delete user');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -553,8 +584,8 @@ export default function Users() {
                             <Edit className="w-4 h-4" />
                           </button>
                           <button
-                            onClick={() => handleDeleteUser(u.id)}
-                            className="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg transition-all"
+                            onClick={() => handleOpenDelete(u)}
+                            className="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg transition-all cursor-pointer"
                             title="Delete Account"
                           >
                             <Trash2 className="w-4 h-4" />
@@ -832,6 +863,88 @@ export default function Users() {
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* DELETE CONFIRMATION MODAL */}
+      <AnimatePresence>
+        {showDeleteConfirm && userToDelete && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[80] p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-neutral-100"
+            >
+              <div className="p-6 border-b border-neutral-100 flex justify-between items-center bg-rose-600 text-white">
+                <h2 className="text-lg font-black flex items-center gap-2.5">
+                  <Trash2 className="w-5 h-5" />
+                  Confirm Account Deletion
+                </h2>
+                <button
+                  onClick={() => {
+                    setShowDeleteConfirm(false);
+                    setUserToDelete(null);
+                  }}
+                  className="p-1.5 hover:bg-white/20 rounded-full transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-6 space-y-4">
+                <div className="p-4 bg-rose-50 border border-rose-100 rounded-2xl flex items-start gap-3">
+                  <div className="p-2 bg-rose-100 text-rose-700 rounded-xl shrink-0 mt-0.5">
+                    <Shield className="w-4 h-4" />
+                  </div>
+                  <div className="text-xs space-y-1">
+                    <p className="font-black text-rose-900">
+                      {userToDelete.name || userToDelete.email || 'This account'}
+                    </p>
+                    <p className="text-rose-700">
+                      Role: <span className="font-bold capitalize">{userToDelete.role?.replace('_', ' ') || 'User'}</span>
+                      {userToDelete.email && ` • ${userToDelete.email}`}
+                    </p>
+                  </div>
+                </div>
+
+                <p className="text-neutral-600 font-medium text-xs leading-relaxed">
+                  Are you sure you want to permanently delete this user account? All assigned custom permissions and access credentials will be removed. This action cannot be undone.
+                </p>
+
+                <div className="flex gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowDeleteConfirm(false);
+                      setUserToDelete(null);
+                    }}
+                    disabled={isDeleting}
+                    className="flex-1 py-3 border border-neutral-200 rounded-xl font-bold text-neutral-600 hover:bg-neutral-50 active:scale-95 transition-all text-xs cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={confirmDeleteUser}
+                    disabled={isDeleting}
+                    className="flex-1 py-3 bg-rose-600 text-white rounded-xl font-bold shadow-lg shadow-rose-600/20 hover:bg-rose-700 active:scale-95 transition-all text-xs flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                  >
+                    {isDeleting ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        Deleting...
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Delete Permanently
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
             </motion.div>
           </div>
         )}

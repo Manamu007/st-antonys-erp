@@ -218,7 +218,7 @@ router.get('/status', async (req, res) => {
         }
       }
     } catch (err: any) {
-      console.warn('[MongoRoutes] Live proxy check notice:', err?.message || err);
+      // Routine health check network timeout, ignore
     }
 
     const isMongooseConnected = mongoose.connection.readyState === 1;

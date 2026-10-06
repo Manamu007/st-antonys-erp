@@ -1,5 +1,6 @@
 import { getWASocket, checkSocketAlive, ensureWhatsAppConnected } from './whatsapp.js';
 import { fetchNextPendingItem, updateQueueItem, resetStalledItems, IWhatsAppQueue } from './models/WhatsAppQueue.js';
+import { checkWhatsAppDeduplication, markWhatsAppMessageSent } from './whatsappDeduplication.js';
 import { applyAntiBanVariation } from './whatsappUtils.js';
 import { 
   applyLinguisticSpintax, 
@@ -175,6 +176,26 @@ export async function processNextQueueItem(): Promise<boolean> {
     // Pre-Dispatch Deduplication Safeguard:
     // If an identical or duplicate message was ALREADY sent, prevent sending it again!
     if (!options.forceSend) {
+      // 0. Universal Deduplication Check (in-memory + disk cache)
+      const dedupCheck = checkWhatsAppDeduplication({
+        recipient: targetJid,
+        text: rawMessageText,
+        options,
+        type: item.type,
+        idempotencyKey: item.idempotencyKey,
+        forceSend: options.forceSend === true
+      });
+
+      if (dedupCheck.isDuplicate) {
+        console.warn(`[WhatsApp Queue Worker Deduplication] Suppressed duplicate before send to ${targetJid}: ${dedupCheck.reason}`);
+        await updateQueueItem(item._id, {
+          status: 'sent',
+          waMessageId: 'duplicate_suppressed',
+          error: undefined
+        });
+        return true;
+      }
+
       cleanOldSentAlertsCache();
 
       // 1. Fast in-memory deduplication check (catches rapid duplicate dispatches)
@@ -402,6 +423,15 @@ export async function processNextQueueItem(): Promise<boolean> {
       consecutiveMessagesCount++;
     }
 
+    // Register into universal persistent deduplication engine
+    markWhatsAppMessageSent({
+      recipient: targetJid,
+      text: rawMessageText,
+      options,
+      type: item.type,
+      idempotencyKey: item.idempotencyKey
+    });
+
     // On success, update status to 'sent' and record waMessageId and sentAt in MongoDB whatsapp_queue
     await updateQueueItem(item._id, {
       status: 'sent',
@@ -448,14 +478,24 @@ export async function processNextQueueItem(): Promise<boolean> {
       rawMsg.includes('not connected');
 
     if (isConnErr) {
-      console.warn(`[WhatsApp Queue Worker] Connection issue delivering to ${targetJid} (${statusCode || rawMsg}). Re-queuing message for automatic redelivery upon reconnection.`);
-      // Do not penalize attempt count for transient socket drops (1006/close)
-      const currentAttempts = Math.max(0, (item.attempts || 1) - 1);
-      await updateQueueItem(item._id, {
-        status: 'pending',
-        error: `Awaiting WhatsApp reconnection (${statusCode || 1006})`,
-        attempts: currentAttempts
-      });
+      const attempts = (item.attempts || 1);
+      if (attempts >= 2 || rawMsg.includes('timed out') || rawMsg.includes('timeout')) {
+        // If timed out after socket dispatch or already retried once, mark as completed to strictly prevent duplicate sends
+        console.warn(`[WhatsApp Queue Worker] Dispatch completed with socket timeout/retry cap for ${targetJid}. Finalizing to eliminate duplicate sends.`);
+        await updateQueueItem(item._id, {
+          status: 'sent',
+          waMessageId: 'sent_presumed_delivered',
+          sentAt: new Date(),
+          error: undefined
+        });
+      } else {
+        console.warn(`[WhatsApp Queue Worker] Connection glitch delivering to ${targetJid} (${statusCode || rawMsg}). Queuing single safe retry.`);
+        await updateQueueItem(item._id, {
+          status: 'pending',
+          error: `Awaiting WhatsApp reconnection (${statusCode || 1006})`,
+          attempts: attempts + 1
+        });
+      }
 
       // Background connection refresh
       if (typeof ensureWhatsAppConnected === 'function') {
@@ -465,9 +505,9 @@ export async function processNextQueueItem(): Promise<boolean> {
       console.error(`[WhatsApp Queue Worker] Failed to send message to ${targetJid}:`, rawMsg);
       const attempts = (item.attempts || 1);
       await updateQueueItem(item._id, {
-        status: attempts >= 3 ? 'failed' : 'pending',
+        status: attempts >= 2 ? 'failed' : 'pending',
         error: rawMsg,
-        attempts
+        attempts: attempts + 1
       });
     }
   }

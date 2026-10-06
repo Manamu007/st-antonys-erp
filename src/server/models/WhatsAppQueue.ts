@@ -448,22 +448,33 @@ export async function updateQueueItemByWaMessageId(
 }
 
 /**
- * Reset any items that were left in 'processing' state during server restarts
+ * Reset any items that were left in 'processing' state for over 5 minutes (stalled)
  */
-export async function resetStalledItems(): Promise<void> {
+export async function resetStalledItems(cutoffMs: number = 5 * 60 * 1000): Promise<void> {
   const isMongoConnected = mongoose.connection.readyState === 1;
+  const cutoffDate = new Date(Date.now() - cutoffMs);
   if (isMongoConnected) {
     try {
       await WhatsAppQueue.updateMany(
-        { status: 'processing' },
+        { 
+          status: 'processing',
+          $or: [
+            { startedAt: { $lt: cutoffDate } },
+            { startedAt: { $exists: false } }
+          ]
+        },
         { $set: { status: 'pending' } }
       );
     } catch (_) {}
   }
 
+  const now = Date.now();
   for (const item of memoryQueue.values()) {
     if (item.status === 'processing') {
-      item.status = 'pending';
+      const started = item.startedAt ? new Date(item.startedAt).getTime() : 0;
+      if (!started || (now - started > cutoffMs)) {
+        item.status = 'pending';
+      }
     }
   }
   persistLocalQueue();
