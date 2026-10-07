@@ -172,7 +172,7 @@ async function forwardToLiveMongo(
       adjustedPayload.constraints = constraints;
     }
 
-    const timeoutMs = (colPath === 'users' || colPath === 'staff') ? 30000 : 15000;
+    const timeoutMs = (colPath === 'users' || colPath === 'staff') ? 10000 : 4000;
 
     try {
       const vpsRes = await fetch('https://antonyschool.in/api/maintenance/db-proxy', {
@@ -368,14 +368,19 @@ export async function getDocument(colPath: string, id: string): Promise<any | nu
     }
   }
 
+  // Check disk snapshot first for fast, local response
+  const diskDoc = readDiskDoc(colPath, id);
+  if (diskDoc) {
+    return diskDoc;
+  }
+
   const liveDoc = await forwardToLiveMongo('get', colPath, { id });
   if (liveDoc) {
     writeDiskDoc(colPath, id, liveDoc);
     return liveDoc;
   }
 
-  // Fallback to disk snapshot
-  return readDiskDoc(colPath, id);
+  return null;
 }
 
 export async function countDocuments(colPath: string, constraints: any[] = []): Promise<number> {

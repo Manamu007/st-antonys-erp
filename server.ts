@@ -923,16 +923,33 @@ async function startServer() {
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
     
-    // Initialize WhatsApp and start Watchdog to maintain permanent connection
-    setTimeout(async () => {
-      try {
-        console.log("[Server] Starting permanent WhatsApp engine & watchdog...");
-        connectToWhatsApp(io, false, false).catch(err => console.error("WA Init Error:", err));
-        startWhatsAppWatchdog(io);
-      } catch (err: any) {
-        console.error("WA Init Error:", err?.message || err);
-      }
-    }, 1500);
+    // Initialize WhatsApp and background workers only if ENABLE_WHATSAPP === 'true'
+    const isWhatsAppEnabled = process.env.ENABLE_WHATSAPP === 'true';
+    if (isWhatsAppEnabled) {
+      setTimeout(async () => {
+        try {
+          console.log("[Server] Starting permanent WhatsApp engine & watchdog...");
+          connectToWhatsApp(io, false, false).catch(err => console.error("WA Init Error:", err));
+          startWhatsAppWatchdog(io);
+        } catch (err: any) {
+          console.error("WA Init Error:", err?.message || err);
+        }
+      }, 1500);
+
+      // Start local WhatsApp Queue Worker
+      startWhatsAppQueueWorker();
+
+      // Start automated teacher substitution engine background watcher
+      import("./src/whatsapp_bot_v2/services/substitutionEngine.js")
+        .then(({ startSubstitutionEngineListener }) => {
+          startSubstitutionEngineListener();
+        })
+        .catch((err) => {
+          console.error("[Server] Failed to initialize Substitution Engine background watcher:", err);
+        });
+    } else {
+      console.log("[Server] WhatsApp is disabled (ENABLE_WHATSAPP !== 'true'). Completely skipping WhatsApp client, watchdog, queue worker, and background substitution listeners.");
+    }
     
     // Connect to MongoDB using Mongoose for WhatsAppQueue when connection URI is provided
     const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/antonyschool_erp';
@@ -948,29 +965,6 @@ async function startServer() {
     } else {
       console.log('[WhatsApp Queue] Running with persistent local queue storage.');
     }
-
-    // Start local WhatsApp Queue Worker (every 2-3 seconds automated background loop)
-    startWhatsAppQueueWorker();
-
-    // Ensure school data (classes, batches, students, staff) is populated in local/MongoDB
-    getMongoDb()
-      .then((mDb) => seedSchoolDataIfEmpty(mDb))
-      .catch(() => seedSchoolDataIfEmpty(null))
-      .then((res) => {
-        console.log("[DataInitialization] St. Antony's School data check complete:", res.counts);
-      })
-      .catch((err) => {
-        console.warn("[DataInitialization] School data seed notice:", err?.message || err);
-      });
-
-    // Start automated teacher substitution engine background watcher
-    import("./src/whatsapp_bot_v2/services/substitutionEngine.js")
-      .then(({ startSubstitutionEngineListener }) => {
-        startSubstitutionEngineListener();
-      })
-      .catch((err) => {
-        console.error("[Server] Failed to initialize Substitution Engine background watcher:", err);
-      });
 
     // Heartbeat for persistence confirmation
     setInterval(() => {

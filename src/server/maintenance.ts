@@ -356,7 +356,7 @@ async function forwardToLiveProxy(operation: string, colPath: string, id: any, d
     if (operation === "get") return { status: 200, json: { success: true, data: null } };
     return { status: 200, json: { success: true, id: id || 'ok' } };
   }
-  const timeoutMs = (colPath === 'users' || colPath === 'staff') ? 30000 : 15000;
+  const timeoutMs = (colPath === 'users' || colPath === 'staff') ? 10000 : 4000;
   try {
     const safeConstraints = Array.isArray(constraints) ? [...constraints] : [];
     if ((colPath === 'users' || colPath === 'staff') && operation === 'list') {
@@ -908,28 +908,28 @@ export async function handleWithMongoOrLocal(operation: string, colPath: string,
     } catch (_) {}
   }
 
-  // Write operations: Forward to live MongoDB proxy on antonyschool.in first
+  // Write operations: Forward to live MongoDB proxy on antonyschool.in in background so local writes complete immediately
   if (operation === "add") {
     const docId = id || data?.id || data?.uid || crypto.randomUUID();
     await addDocument(colPath, { ...data, id: docId, uid: docId }).catch(() => {});
-    const vpsRes = await forwardToLiveProxy(operation, colPath, docId, data, constraints, body);
-    return { status: 200, json: vpsRes.json?.success ? vpsRes.json : { success: true, id: docId } };
+    forwardToLiveProxy(operation, colPath, docId, data, constraints, body).catch(() => {});
+    return { status: 200, json: { success: true, id: docId } };
   }
 
   if (operation === "set") {
     const docId = id || data?.id || data?.uid;
     if (!docId) return { status: 400, json: { error: "Missing document id" } };
     await setDocument(colPath, docId, data, { merge: true }).catch(() => {});
-    const vpsRes = await forwardToLiveProxy(operation, colPath, docId, data, constraints, body);
-    return { status: 200, json: vpsRes.json?.success ? vpsRes.json : { success: true, id: docId } };
+    forwardToLiveProxy(operation, colPath, docId, data, constraints, body).catch(() => {});
+    return { status: 200, json: { success: true, id: docId } };
   }
 
   if (operation === "update") {
     const docId = id || data?.id || data?.uid;
     if (!docId) return { status: 400, json: { error: "Missing document id" } };
     await updateDocument(colPath, docId, data).catch(() => {});
-    const vpsRes = await forwardToLiveProxy(operation, colPath, docId, data, constraints, body);
-    return { status: 200, json: vpsRes.json?.success ? vpsRes.json : { success: true, id: docId } };
+    forwardToLiveProxy(operation, colPath, docId, data, constraints, body).catch(() => {});
+    return { status: 200, json: { success: true, id: docId } };
   }
 
   if (operation === "delete") {

@@ -91,7 +91,7 @@ const defaultSettings: Settings = {
   teacherLeaveQuotaEnabled: true
 };
 
-const defaultSiteConfig: SiteConfig = {
+export const defaultSiteConfig: SiteConfig = {
   hero: {
     title: "Nurturing Visionary Minds",
     subtitle: "Discover the history, people, and methodology that make St. Antony's a beacon of global education.",
@@ -132,6 +132,46 @@ const defaultSiteConfig: SiteConfig = {
   mapsUrl: "",
   address: "",
   admissionStatus: "open"
+};
+
+const mergeSiteConfig = (base: SiteConfig, incoming: any): SiteConfig => {
+  if (!incoming || typeof incoming !== 'object') return base;
+  return {
+    ...base,
+    ...incoming,
+    hero: {
+      ...base.hero,
+      ...(incoming.hero || {})
+    },
+    about: {
+      ...base.about,
+      ...(incoming.about || {}),
+      gridPhotos: Array.isArray(incoming.about?.gridPhotos)
+        ? incoming.about.gridPhotos
+        : base.about.gridPhotos,
+      stats: Array.isArray(incoming.about?.stats) && incoming.about.stats.length > 0
+        ? incoming.about.stats
+        : base.about.stats
+    },
+    leadership: Array.isArray(incoming.leadership) && incoming.leadership.length > 0
+      ? incoming.leadership
+      : base.leadership,
+    methodology: Array.isArray(incoming.methodology) && incoming.methodology.length > 0
+      ? incoming.methodology
+      : base.methodology,
+    socialLinks: {
+      ...base.socialLinks,
+      ...(incoming.socialLinks || {})
+    },
+    cta: {
+      ...(base.cta || {}),
+      ...(incoming.cta || {})
+    },
+    pillars: {
+      ...(base.pillars || {}),
+      ...(incoming.pillars || {})
+    }
+  };
 };
 
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
@@ -175,7 +215,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         });
         
         if (configData) {
-          setSiteConfig(configData as SiteConfig);
+          setSiteConfig(prev => mergeSiteConfig(prev || defaultSiteConfig, configData));
         }
         
         clearTimeout(safetyTimeout);
@@ -203,8 +243,9 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   };
 
   const updateSiteConfig = async (newConfig: any) => {
-    await dbService.set('siteConfig', 'home', newConfig);
-    setSiteConfig(newConfig);
+    const merged = mergeSiteConfig(siteConfig || defaultSiteConfig, newConfig);
+    await dbService.set('siteConfig', 'home', merged);
+    setSiteConfig(merged);
   };
 
   const value = React.useMemo(() => ({ 

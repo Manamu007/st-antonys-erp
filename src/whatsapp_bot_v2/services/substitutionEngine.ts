@@ -343,7 +343,7 @@ export async function runTeacherSubstitutionEngine(leaveId: string): Promise<boo
 let unsubscribeLeavesListener: (() => void) | null = null;
 
 export async function startSubstitutionEngineListener(): Promise<void> {
-  if (isDatabaseDenied()) {
+  if (process.env.ENABLE_WHATSAPP !== 'true' || isDatabaseDenied()) {
     return;
   }
   

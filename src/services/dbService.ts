@@ -1957,7 +1957,9 @@ export const dbService = {
       if (path === 'students') {
         pushStudentToRemoteServer({ ...cleaned, id }).catch(() => {});
       }
-      clearDocCache(path, id);
+      const cacheKey = getCacheKey(path, id);
+      docCache.set(cacheKey, { data: cleaned, timestamp: Date.now() });
+      saveToPersistentCache(path, id, cleaned);
       clearCollectionCache(path);
       return;
     } catch (err) {

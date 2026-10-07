@@ -9,13 +9,12 @@ export function cn(...inputs: ClassValue[]) {
 export function normalizeUrl(url?: string | null) {
   if (!url || url === 'null' || url === 'undefined' || url === 'NaN') return '';
   const urlStr = String(url).trim();
-  // Convert legacy localhost/127.0.0.1 and antonyschool.in uploads URLs to relative paths so they work universally
-  if (
-    urlStr.includes('localhost:3000/uploads/') || 
-    urlStr.includes('127.0.0.1:3000/uploads/') ||
-    urlStr.includes('antonyschool.in/uploads/')
-  ) {
-    return urlStr.replace(/https?:\/\/(localhost:3000|127\.0\.0\.1:3000|(www\.)?antonyschool\.in)\/uploads\//, '/uploads/');
+  if (urlStr.startsWith('data:') || urlStr.startsWith('blob:')) return urlStr;
+
+  // Convert any host/domain uploads URL to relative /uploads/ path so it loads universally
+  const uploadsIndex = urlStr.indexOf('/uploads/');
+  if (uploadsIndex !== -1) {
+    return urlStr.substring(uploadsIndex);
   }
   return urlStr;
 }

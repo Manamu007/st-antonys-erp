@@ -540,6 +540,9 @@ export function triggerQueueProcessing(): void {
  * Runs smoothly with 15-20s pacing per message (3-4 msgs/min) and interruptible idle sleep.
  */
 export function startWhatsAppQueueWorker(): void {
+  if (process.env.ENABLE_WHATSAPP !== 'true') {
+    return;
+  }
   if (isWorkerRunning) return;
   isWorkerRunning = true;
   console.log('[WhatsApp Queue Worker] Background worker initialized with Meta Anti-Ban Engine (3-4 msgs/min)...');

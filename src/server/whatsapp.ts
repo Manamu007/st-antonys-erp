@@ -40,6 +40,53 @@ import NodeCache from 'node-cache';
 const msgRetryCounterCache = new NodeCache({ stdTTL: 0, checkperiod: 0 });
 const recentMessagesCache = new NodeCache({ stdTTL: 86400, checkperiod: 3600 });
 
+// Active background timer tracking to prevent zombie loops and leaks
+export const activeIntervals = new Set<NodeJS.Timeout>();
+export const activeTimers = new Set<NodeJS.Timeout>();
+
+export function safeSetInterval(fn: () => void | Promise<void>, ms: number): NodeJS.Timeout {
+  const handle = setInterval(() => {
+    if (process.env.ENABLE_WHATSAPP !== 'true') return;
+    fn();
+  }, ms);
+  activeIntervals.add(handle);
+  return handle;
+}
+
+export function safeSetTimeout(fn: () => void | Promise<void>, ms: number): NodeJS.Timeout {
+  const handle = setTimeout(() => {
+    activeTimers.delete(handle);
+    if (process.env.ENABLE_WHATSAPP !== 'true') return;
+    fn();
+  }, ms);
+  activeTimers.add(handle);
+  return handle;
+}
+
+export function cleanupAllTimersAndSocket() {
+  console.log(`[WhatsApp ${process.pid}] Process exiting, closing socket and cleaning up timers...`);
+  for (const interval of activeIntervals) {
+    try { clearInterval(interval); } catch (_) {}
+  }
+  activeIntervals.clear();
+  for (const timer of activeTimers) {
+    try { clearTimeout(timer); } catch (_) {}
+  }
+  activeTimers.clear();
+  if (sock) {
+    try {
+      if (sock.ws) sock.ws.close();
+      sock.ev?.removeAllListeners();
+      sock.end(undefined);
+    } catch (_) {}
+    sock = null;
+  }
+}
+
+process.once('SIGINT', cleanupAllTimersAndSocket);
+process.once('SIGTERM', cleanupAllTimersAndSocket);
+process.once('beforeExit', cleanupAllTimersAndSocket);
+
 export const storeMessageForRetry = async (key: baileys.WAMessageKey, message: any) => {
   if (!key || !key.id || !message) return;
   try {
@@ -894,9 +941,9 @@ export async function reconcileWhatsAppStats() {
 }
 
 // Background periodic reconciliation every 5 minutes
-setTimeout(() => {
+safeSetTimeout(() => {
   reconcileWhatsAppStats().catch(() => {});
-  setInterval(() => {
+  safeSetInterval(() => {
     reconcileWhatsAppStats().catch(() => {});
   }, 5 * 60 * 1000);
 }, 20000);
@@ -1789,6 +1836,9 @@ async function getERPContext(from?: string, pushName?: string) {
 
 export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForce = false) {
   io = ioParam;
+  if (process.env.ENABLE_WHATSAPP !== 'true') {
+    return;
+  }
   console.log(`[WhatsApp ${process.pid}] connectToWhatsApp called (Retry: ${isRetry}, Force: ${isForce}, isConnecting: ${isConnecting})`);
 
   if (connectionStatus === 'open' && sock !== null && !isForce) {
@@ -2144,18 +2194,19 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
             if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
           } catch (_) {}
           
-          io?.emit('wa:error', 'WhatsApp was unlinked from phone. Generating fresh QR code...');
-          setTimeout(() => connectToWhatsApp(io, true, true), 1500);
+          io?.emit('wa:error', 'WhatsApp was unlinked from phone. Generating fresh QR code in 30s...');
+          const logoutDelay = 30000;
+          setTimeout(() => connectToWhatsApp(io, true, true), logoutDelay);
           return;
         }
 
         if (isBadSession) {
           await updateStatus('connecting');
-          console.warn(`[WhatsApp ${process.pid}] Bad Session detected (${errorMsg}). Auto-healing keys and reconnecting...`);
+          console.warn(`[WhatsApp ${process.pid}] Bad Session detected (${errorMsg}). Auto-healing keys and reconnecting in 30s...`);
           try {
             await clearKeys();
           } catch (err: any) {}
-          setTimeout(() => connectToWhatsApp(io, true, true), 1500);
+          setTimeout(() => connectToWhatsApp(io, true, true), 30000);
           return;
         }
 
@@ -2176,7 +2227,7 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
         }
 
         if (isConflict) {
-          console.warn(`[WhatsApp ${process.pid}] Session conflict (440) detected. Re-binding WebSocket in 4s...`);
+          console.warn(`[WhatsApp ${process.pid}] Session conflict (440) detected. Re-binding WebSocket in 30s...`);
           if (sock) {
             try {
               if (sock.ws) sock.ws.close();
@@ -2188,25 +2239,24 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
           await updateStatus('connecting');
           setTimeout(() => {
             connectToWhatsApp(io, true, false);
-          }, 4000);
+          }, 30000);
           return;
         }
 
-        // For unregistered sockets waiting for QR scan: keep generating fresh QR codes
+        // For unregistered sockets waiting for QR scan: prevent tight loop with 30s wait
         if (!isRegistered) {
-          console.log(`[WhatsApp ${process.pid}] Pairing socket stream reset (Code: ${statusCode || 'none'}). Reconnecting with fresh QR in 3s...`);
+          console.log(`[WhatsApp ${process.pid}] Pairing socket stream reset (Code: ${statusCode || 'none'}). Reconnecting with fresh QR in 30s...`);
           await updateStatus('connecting');
-          await delay(3000);
+          await delay(30000);
           connectToWhatsApp(io, true, false);
           return;
         }
 
-        // For registered sockets (already paired): NEVER permanently disconnect!
-        // Instantly auto-reconnect with minor backoff to maintain 24/7 permanent connection
+        // For registered sockets (already paired): Exponential backoff (30s -> 60s -> 120s)
         consecutiveErrors++;
         await updateStatus('connecting');
-        const retryDelay = Math.min(2500 + (consecutiveErrors * 1000), 10000);
-        console.log(`[WhatsApp ${process.pid}] Registered session temporary disconnect (${sanitizedMsg || 'network'}). Auto-reconnecting permanently in ${retryDelay}ms...`);
+        const retryDelay = Math.min(30000 * Math.pow(2, Math.max(0, consecutiveErrors - 1)), 120000);
+        console.log(`[WhatsApp ${process.pid}] Registered session temporary disconnect (${sanitizedMsg || 'network'}). Auto-reconnecting permanently in ${retryDelay / 1000}s (Attempt #${consecutiveErrors})...`);
         await delay(retryDelay);
         connectToWhatsApp(io, true, false);
       } else if (connection === 'open') {
@@ -2253,18 +2303,43 @@ export async function connectToWhatsApp(ioParam: Server, isRetry = false, isForc
         clearInterval(lockInterval);
       }
     }, 10000);
+    activeIntervals.add(lockInterval);
       }
     });
 
+    let lastCredsPersistTime = 0;
+    let credsDebounceHandle: NodeJS.Timeout | null = null;
+
     sock.ev.on('creds.update', async (updateCreds: any) => {
-      console.log(`[WhatsApp ${process.pid}] Credentials updated.`);
       try {
         if (updateCreds && typeof updateCreds === 'object') {
           Object.assign(state.creds, updateCreds);
         }
-        await (currentSaveCreds ? currentSaveCreds() : saveCreds());
+        const now = Date.now();
+        // Throttle credentials updates to at most once every 20 seconds
+        if (now - lastCredsPersistTime >= 20000) {
+          lastCredsPersistTime = now;
+          if (credsDebounceHandle) {
+            clearTimeout(credsDebounceHandle);
+            activeTimers.delete(credsDebounceHandle);
+            credsDebounceHandle = null;
+          }
+          await (currentSaveCreds ? currentSaveCreds() : saveCreds());
+        } else if (!credsDebounceHandle) {
+          const waitRemaining = 20000 - (now - lastCredsPersistTime);
+          credsDebounceHandle = setTimeout(async () => {
+            credsDebounceHandle = null;
+            lastCredsPersistTime = Date.now();
+            try {
+              await (currentSaveCreds ? currentSaveCreds() : saveCreds());
+            } catch (err: any) {
+              console.error(`[WhatsApp] Debounced creds save error:`, err?.message || err);
+            }
+          }, waitRemaining);
+          activeTimers.add(credsDebounceHandle);
+        }
       } catch (err: any) {
-        console.error(`[WhatsApp] Creds update save error:`, err?.message || err);
+        console.error(`[WhatsApp] Creds update error:`, err?.message || err);
       }
     });
 
@@ -3127,6 +3202,9 @@ let unsubscribeStatusListener: (() => void) | null = null;
 let unsubscribeCommandsListener: (() => void) | null = null;
 
 export async function startWhatsAppWatchdog(io: Server) {
+  if (process.env.ENABLE_WHATSAPP !== 'true') {
+    return;
+  }
   if (watchdogStarted) return;
   watchdogStarted = true;
 
@@ -3260,7 +3338,7 @@ export async function startWhatsAppWatchdog(io: Server) {
   }
   
   console.log(`[WhatsApp Watchdog] Starting permanent connection monitor (10s interval)...`);
-  setInterval(async () => {
+  safeSetInterval(async () => {
     try {
       isCooldownActive = false;
       const status = connectionStatus;
@@ -3302,7 +3380,7 @@ export async function startWhatsAppWatchdog(io: Server) {
 }
 
 // Periodic cleanup of expired temporary data and files older than 1 week
-setInterval(async () => {
+safeSetInterval(async () => {
   if (isDatabaseDenied()) return;
   try {
     const db = getDbAdmin();
@@ -3699,14 +3777,14 @@ export async function checkAndRunStaffAutoAttendance() {
 }
 
 // Run automated birthdays and staff auto attendance check every hour
-setInterval(async () => {
+safeSetInterval(async () => {
   if (isDatabaseDenied()) return;
   await checkAndSendAutomatedBirthdays();
   await checkAndRunStaffAutoAttendance();
 }, 60 * 60 * 1000); // Every 1 hour
 
 // Run once on startup after 45 seconds delay to ensure DB/connection is ready
-setTimeout(async () => {
+safeSetTimeout(async () => {
   if (isDatabaseDenied()) return;
   console.log("[Automated Birthdays & Staff Attendance] Running initial startup check...");
   await checkAndSendAutomatedBirthdays();
@@ -3831,7 +3909,7 @@ export const getRemoteWAStatus = async (): Promise<{ status: string; qr: string 
 const recentSentMessageDeduplicationMap = new Map<string, number>();
 
 // Clean up stale deduplication entries every 5 minutes
-setInterval(() => {
+safeSetInterval(() => {
   const now = Date.now();
   for (const [key, timestamp] of recentSentMessageDeduplicationMap.entries()) {
     if (now - timestamp > 120000) { // older than 2 minutes

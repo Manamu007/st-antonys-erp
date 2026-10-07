@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type FC, type FormEvent, type ChangeEvent } from 'react';
 import { dbService, where, doc, onSnapshot } from '../services/dbService';
 import { safeStorage as localStorage } from '../lib/safeStorage';
-import { useSettings } from '../context/SettingsContext';
+import { useSettings, defaultSiteConfig } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
 import { format } from 'date-fns';
 import { 
@@ -309,7 +309,7 @@ const SchoolSettings: FC = () => {
   const [showSecret, setShowSecret] = useState(false);
   const [formData, setFormData] = useState(settings);
   const [loading, setLoading] = useState(false);
-  const [localSiteConfig, setLocalSiteConfig] = useState<any>(siteConfig);
+  const [localSiteConfig, setLocalSiteConfig] = useState<any>(siteConfig || defaultSiteConfig);
   const [diagProgress, setDiagProgress] = useState(0);
   const [isRepairing, setIsRepairing] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
@@ -869,7 +869,8 @@ const SchoolSettings: FC = () => {
         setLoading(true);
         const url = await uploadService.uploadFile(file);
         const keys = path.split('.');
-        const newState = JSON.parse(JSON.stringify(localSiteConfig || {}));
+        const base = localSiteConfig || defaultSiteConfig;
+        const newState = JSON.parse(JSON.stringify(base));
         let current = newState;
         for (let i = 0; i < keys.length - 1; i++) {
           if (!current[keys[i]]) current[keys[i]] = {};
@@ -895,12 +896,14 @@ const SchoolSettings: FC = () => {
       try {
         setLoading(true);
         const url = await uploadService.uploadFile(file);
-        const currentGrid = [...(localSiteConfig?.about?.gridPhotos || ['', '', '', ''])];
+        const base = localSiteConfig || defaultSiteConfig;
+        const currentGrid = [...(base?.about?.gridPhotos || ['', '', '', ''])];
+        while (currentGrid.length < 4) currentGrid.push('');
         currentGrid[index] = url;
         const updatedConfig = {
-          ...localSiteConfig,
+          ...base,
           about: {
-            ...localSiteConfig?.about,
+            ...base?.about,
             gridPhotos: currentGrid
           }
         };
@@ -2697,9 +2700,10 @@ const SchoolSettings: FC = () => {
                               try {
                                 setLoading(true);
                                 const url = await uploadService.uploadFile(file);
-                                const newLeaders = [...(localSiteConfig?.leadership || [])];
+                                const base = localSiteConfig || defaultSiteConfig;
+                                const newLeaders = [...(base?.leadership || defaultSiteConfig.leadership)];
                                 newLeaders[idx] = { ...newLeaders[idx], photoUrl: url };
-                                const updatedConfig = { ...localSiteConfig, leadership: newLeaders };
+                                const updatedConfig = { ...base, leadership: newLeaders };
                                 setLocalSiteConfig(updatedConfig);
                                 await updateSiteConfig(updatedConfig);
                                 toast.success("Photo uploaded and saved!");
